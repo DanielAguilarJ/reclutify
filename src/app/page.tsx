@@ -673,6 +673,38 @@ export default function JobBoardPage() {
           </motion.div>
         </section>
 
+        {/* --- NEW: What's New Section (Modules 6/7/8 additions) --- */}
+        <section className="py-24 px-6 bg-[#D3FB52]/5 border-y border-[#D3FB52]/10 mt-12 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-[50vw] h-[50vw] bg-[#D3FB52] rounded-full blur-[150px] opacity-10 translate-x-1/2 -translate-y-1/2" />
+          <div className="relative max-w-7xl mx-auto">
+            <div className="text-center mb-16">
+               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#D3FB52]/10 border border-[#D3FB52]/20 text-[#D3FB52] text-xs font-semibold uppercase tracking-wider mb-4">
+                 <Sparkles className="h-3.5 w-3.5" />
+                 {language === 'es' ? 'Novedades v2.0' : 'What\'s New v2.0'}
+               </div>
+               <h2 className="text-3xl md:text-5xl font-bold text-white mb-4">
+                 {language === 'es' ? 'Recientes Innovaciones' : 'Latest Innovations'}
+               </h2>
+               <p className="text-lg text-neutral-400">
+                 {language === 'es' ? 'Incorporamos herramientas clave para un reclutamiento impecable y equitativo.' : 'We built key tools for a flawless and fair recruiting process.'}
+               </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+               {[
+                 { title: language === 'es' ? 'Insights de Sesgo' : 'Bias Insights', desc: language === 'es' ? 'Analíticas de equidad y demografía para asegurar reclutamiento imparcial.' : 'Fairness and demographic analytics to ensure unbiased hiring.', icon: Shield },
+                 { title: language === 'es' ? 'Scorecards en PDF' : 'PDF Scorecards', desc: language === 'es' ? 'Exporta el récord de entrevistas con retroalimentación automática al instante.' : 'Export the interview record with automatic feedback instantly.', icon: ArrowUpRight },
+                 { title: language === 'es' ? 'Modo Feria Universitaria' : 'University Fair Mode', desc: language === 'es' ? 'Kioscos interactivos con QR para simulaciones masivas y captación en campus.' : 'Interactive QR kiosks for mass simulations and campus recruitment.', icon: Target },
+               ].map((f, i) => (
+                 <div key={i} className="bg-[#1a1b23] border border-white/10 rounded-3xl p-8 hover:border-[#D3FB52]/40 transition-colors shadow-xl">
+                    <f.icon className="h-8 w-8 text-[#D3FB52] mb-6" />
+                    <h3 className="text-xl font-bold text-white mb-3">{f.title}</h3>
+                    <p className="text-neutral-400 text-sm leading-relaxed">{f.desc}</p>
+                 </div>
+               ))}
+            </div>
+          </div>
+        </section>
+
         {/* Existing Job Board Re-integrated at Bottom */}
         <section id="roles" className="py-24 px-6 relative">
           <div className="absolute inset-0 bg-white/5 rounded-[48px] mx-4 md:mx-8 pointer-events-none" />

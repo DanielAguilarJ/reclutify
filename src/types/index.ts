@@ -3,6 +3,7 @@ export interface Candidate {
   email: string;
   phone: string;
   linkedinUrl?: string;
+  cvData?: any;
 }
 
 export interface TopicRubric {

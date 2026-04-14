@@ -29,6 +29,7 @@ import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import ScoreGauge from '@/components/admin/ScoreGauge';
 import TopicScoreBar from '@/components/admin/TopicScoreBar';
+import PDFExportButton from '@/components/admin/ScorecardPDF';
 
 export default function ReportPage({
   params,
@@ -178,6 +179,7 @@ export default function ReportPage({
         </div>
 
         <div className="ml-auto flex items-center gap-3">
+          <PDFExportButton candidate={candidate} language={language} />
           <button
             onClick={handleExportTranscript}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 cursor-pointer"

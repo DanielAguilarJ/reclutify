@@ -122,6 +122,26 @@ CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummar
     }
 
     const evaluation = JSON.parse(jsonMatch[0]);
+
+    // Priority 5: Envío de correo automáticamente al reclutador (Notificación)
+    try {
+      const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      await fetch(`${origin}/api/notifications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailTo: 'recruiter@reclutify.com', 
+          candidateName: evaluation.candidateName,
+          roleTitle: roleTitle || 'Vacante',
+          score: evaluation.overallScore,
+          recommendation: evaluation.recommendation,
+          reportUrl: `${origin}/admin/pipeline`
+        })
+      });
+    } catch(e) {
+      console.warn("Fallo silencioso en notificación:", e);
+    }
+
     return NextResponse.json({ evaluation });
   } catch (error) {
     console.error('Evaluate API error:', error);

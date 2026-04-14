@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { User, Mail, Phone, ArrowRight } from 'lucide-react';
+import { User, Mail, Phone, ArrowRight, UploadCloud, Loader2, CheckCircle2 } from 'lucide-react';
 import { useInterviewStore } from '@/store/interviewStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
@@ -17,7 +17,45 @@ export default function DetailsForm() {
   const [phone, setPhone] = useState(candidate?.phone || '');
   const [linkedinUrl, setLinkedinUrl] = useState(candidate?.linkedinUrl || '');
 
+  const [cvLoading, setCvLoading] = useState(false);
+  const [cvSuccess, setCvSuccess] = useState(false);
+  const [cvError, setCvError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCvLoading(true);
+    setCvError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/parse-resume', { method: 'POST', body: formData });
+      if (!res.ok) throw new Error('Error upload');
+      const json = await res.json();
+      if (json.data) {
+         if (json.data.name && !name) setName(json.data.name);
+         if (json.data.email && !email) setEmail(json.data.email);
+         if (json.data.phone && !phone) setPhone(json.data.phone);
+         
+         setCandidate({ 
+           ...candidate, 
+           name: name || json.data.name || '', 
+           email: email || json.data.email || '', 
+           phone: phone || json.data.phone || '', 
+           linkedinUrl, 
+           cvData: json.data 
+         });
+      }
+      setCvSuccess(true);
+    } catch(err) {
+       setCvError(language === 'es' ? 'No se pudo leer el CV' : 'Could not parse CV');
+    } finally {
+       setCvLoading(false);
+    }
+  };
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
@@ -55,6 +93,27 @@ export default function DetailsForm() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1.5 flex items-center justify-between">
+              <span>{language === 'es' ? 'Sube tu CV (Opcional)' : 'Upload your CV (Optional)'}</span>
+              <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">{language === 'es' ? 'Dará contexto a la IA' : 'Provides AI context'}</span>
+            </label>
+            <div className={`border border-dashed ${cvSuccess ? 'border-success/50 bg-success/5' : 'border-border bg-muted/5'} rounded-xl p-4 flex flex-col items-center justify-center relative hover:bg-muted/10 transition-colors cursor-pointer`} onClick={() => fileInputRef.current?.click()}>
+              {cvLoading ? (
+                 <div className="flex items-center gap-2 text-primary text-sm font-medium"><Loader2 className="h-4 w-4 animate-spin"/> {language === 'es' ? 'Analizando CV e indexando...' : 'Parsing CV & Indexing...'}</div>
+              ) : cvSuccess ? (
+                 <div className="flex items-center gap-2 text-success text-sm font-medium"><CheckCircle2 className="h-4 w-4"/> {language === 'es' ? 'CV Cargado y Analizado Existosamente' : 'CV Uploaded & Accurately Parsed'}</div>
+              ) : (
+                <>
+                  <UploadCloud className="h-5 w-5 text-muted mb-2" />
+                  <span className="text-xs text-muted font-medium text-center">{language === 'es' ? 'Haz click para subir PDF o DOCX' : 'Click to upload PDF or DOCX'}<br/><span className="text-[10px] opacity-70">El autocompletado rellenará los campos debajo automáticamente</span></span>
+                </>
+              )}
+              <input type="file" ref={fileInputRef} className="hidden" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFileUpload} disabled={cvLoading || cvSuccess} />
+            </div>
+            {cvError && <p className="text-danger text-xs mt-1">{cvError}</p>}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-foreground mb-1.5">
               {t.fullName}

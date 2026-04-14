@@ -2,21 +2,75 @@
 
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { PlusCircle, Users, Ticket, Headset, Crown } from 'lucide-react';
+import { useState } from 'react';
+import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 
 export default function AdminSidebarNav() {
   const pathname = usePathname();
   const { language, planTier } = useAppStore();
+  const [showOrgDropdown, setShowOrgDropdown] = useState(false);
+
+  // Mock organizations for UI
+  const orgs = [
+    { id: '1', name: 'Acme Corp', logo: <Building2 className="h-4 w-4" /> },
+    { id: '2', name: 'Stark Industries', logo: <Building2 className="h-4 w-4" /> }
+  ];
+  const activeOrg = orgs[0];
 
   const navItems = [
+    { label: language === 'es' ? 'Dashboard' : 'Dashboard', href: '/admin', icon: PieChart },
     { label: language === 'es' ? 'Crear Puesto' : 'Create Role', href: '/admin/create-role', icon: PlusCircle },
     { label: language === 'es' ? 'Candidatos' : 'Pipeline', href: '/admin/pipeline', icon: Users },
+    { label: language === 'es' ? 'Equidad (Sesgo)' : 'AI Fairness', href: '/admin/analytics/bias', icon: ShieldAlert },
     { label: 'Tickets', href: '/admin/tickets', icon: Ticket },
   ];
 
   return (
     <div className="space-y-1">
+      {/* Workspace Selector */}
+      <div className="relative mb-6">
+        <button 
+          onClick={() => setShowOrgDropdown(!showOrgDropdown)}
+          className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-background border border-border/50 rounded-xl hover:border-border transition-all group"
+        >
+          <div className="flex items-center gap-2 overflow-hidden">
+            <div className="h-6 w-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              {activeOrg.logo}
+            </div>
+            <span className="text-sm font-semibold text-foreground truncate">{activeOrg.name}</span>
+          </div>
+          <ChevronDown className={`h-4 w-4 text-muted transition-transform ${showOrgDropdown ? 'rotate-180' : ''}`} />
+        </button>
+
+        {showOrgDropdown && (
+          <div className="absolute top-full left-0 w-full mt-1 bg-card border border-border/50 rounded-xl shadow-xl shadow-black/5 p-1 z-50 animate-in fade-in slide-in-from-top-2">
+            {orgs.map(org => (
+              <button key={org.id} className="w-full flex items-center justify-between gap-2 px-2 py-2 hover:bg-background rounded-lg transition-colors">
+                <div className="flex items-center gap-2">
+                  <div className="h-6 w-6 rounded-md bg-primary/5 text-primary flex items-center justify-center shrink-0">
+                    {org.logo}
+                  </div>
+                  <span className="text-sm text-foreground">{org.name}</span>
+                </div>
+                {org.id === activeOrg.id && <Check className="h-3 w-3 text-primary" />}
+              </button>
+            ))}
+            <div className="h-px bg-border/50 my-1 mx-2" />
+            <Link href="/onboarding" className="w-full flex items-center gap-2 px-2 py-2 hover:bg-background rounded-lg transition-colors text-sm text-muted hover:text-foreground">
+              <PlusCircle className="h-4 w-4" />
+              {language === 'es' ? 'Crear Workspace' : 'Create Workspace'}
+            </Link>
+          </div>
+        )}
+      </div>
+
+      <div className="px-3 mb-2">
+        <span className="text-xs font-semibold text-muted uppercase tracking-wider">
+          {language === 'es' ? 'Principal' : 'Main'}
+        </span>
+      </div>
+
       {navItems.map((item) => {
         const isActive = pathname === item.href;
         const Icon = item.icon;

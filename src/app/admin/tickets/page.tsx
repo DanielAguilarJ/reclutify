@@ -1,0 +1,247 @@
+'use client';
+
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Ticket, Copy, Check, Plus, Clock, CheckCircle2, XCircle, Link2 } from 'lucide-react';
+import { useTicketStore } from '@/store/ticketStore';
+import { useAdminStore } from '@/store/adminStore';
+import { useAppStore } from '@/store/appStore';
+
+export default function TicketsPage() {
+  const { tickets, addTicket } = useTicketStore();
+  const { roles } = useAdminStore();
+  const { language } = useAppStore();
+  
+  const [name, setName] = useState('');
+  const [selectedRoleId, setSelectedRoleId] = useState(roles[0]?.id || '');
+  const [selectedLang, setSelectedLang] = useState<'en' | 'es'>('es');
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [justCreated, setJustCreated] = useState<string | null>(null);
+
+  const es = language === 'es';
+
+  const handleGenerate = () => {
+    if (!name.trim() || !selectedRoleId) return;
+    const ticket = addTicket(name.trim(), selectedRoleId, selectedLang);
+    setJustCreated(ticket.token);
+    setName('');
+    setTimeout(() => setJustCreated(null), 3000);
+  };
+
+  const copyLink = (token: string) => {
+    const ticket = tickets.find(t => t.token === token);
+    const role = roles.find(r => r.id === ticket?.roleId);
+    let dParam = '';
+    
+    // Cross-device MVP trick: encode role and ticket directly in the URL 
+    if (ticket && role) {
+      const payload = JSON.stringify({ t: ticket, r: role });
+      dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
+    }
+    
+    const url = `${window.location.origin}/interview/t/${token}${dParam}`;
+    navigator.clipboard.writeText(url);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(null), 2000);
+  };
+
+  const getStatus = (ticket: { used: boolean; expiresAt: number }) => {
+    if (ticket.used) return 'used';
+    // eslint-disable-next-line react-hooks/purity
+    if (Date.now() > ticket.expiresAt) return 'expired';
+    return 'active';
+  };
+
+  const statusConfig = {
+    active: {
+      label: es ? 'Activo' : 'Active',
+      className: 'bg-success/10 text-success border-success/20',
+      icon: CheckCircle2,
+    },
+    used: {
+      label: es ? 'Usado' : 'Used',
+      className: 'bg-muted/10 text-muted border-muted/20',
+      icon: Check,
+    },
+    expired: {
+      label: es ? 'Expirado' : 'Expired',
+      className: 'bg-danger/10 text-danger border-danger/20',
+      icon: XCircle,
+    },
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">
+            {es ? 'Tickets de Entrevista' : 'Interview Tickets'}
+          </h1>
+          <p className="text-sm text-muted mt-1">
+            {es
+              ? 'Genera links únicos de un solo uso para cada candidato. Expiran en 24 horas.'
+              : 'Generate unique, one-time-use links for each candidate. They expire in 24 hours.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Generate Ticket Form */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-card rounded-2xl shadow-sm border border-border/50 p-6 mb-8"
+      >
+        <h2 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+          <Ticket className="h-4 w-4 text-primary" />
+          {es ? 'Generar Nuevo Ticket' : 'Generate New Ticket'}
+        </h2>
+
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={es ? 'Nombre del candidato' : 'Candidate name'}
+            className="flex-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+          />
+          <select
+            value={selectedRoleId}
+            onChange={(e) => setSelectedRoleId(e.target.value)}
+            className="px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+          >
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.title}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedLang}
+            onChange={(e) => setSelectedLang(e.target.value as 'en' | 'es')}
+            className="px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+          >
+            <option value="es">🇲🇽 Español</option>
+            <option value="en">🇺🇸 English</option>
+          </select>
+          <button
+            onClick={handleGenerate}
+            disabled={!name.trim()}
+            className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            {es ? 'Generar' : 'Generate'}
+          </button>
+        </div>
+      </motion.div>
+
+      {/* Tickets Table */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="bg-card rounded-2xl shadow-sm border border-border/50 overflow-hidden"
+      >
+        <div className="px-6 py-4 border-b border-border/50 bg-muted/5">
+          <h3 className="text-sm font-medium text-foreground">
+            {es ? 'Todos los Tickets' : 'All Tickets'} ({tickets.length})
+          </h3>
+        </div>
+
+        {tickets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-muted">
+            <Ticket className="h-10 w-10 mb-3 opacity-30" />
+            <p className="text-sm">{es ? 'No hay tickets generados aún.' : 'No tickets generated yet.'}</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border/30 text-muted text-xs uppercase tracking-wider">
+                  <th className="text-left px-6 py-3 font-medium">{es ? 'Nombre' : 'Name'}</th>
+                  <th className="text-left px-6 py-3 font-medium">{es ? 'Puesto' : 'Role'}</th>
+                  <th className="text-left px-6 py-3 font-medium">{es ? 'Idioma' : 'Language'}</th>
+                  <th className="text-left px-6 py-3 font-medium">Token</th>
+                  <th className="text-left px-6 py-3 font-medium">{es ? 'Expira' : 'Expires'}</th>
+                  <th className="text-left px-6 py-3 font-medium">{es ? 'Estado' : 'Status'}</th>
+                  <th className="text-right px-6 py-3 font-medium">{es ? 'Acción' : 'Action'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <AnimatePresence>
+                  {tickets.map((ticket) => {
+                    const status = getStatus(ticket);
+                    const config = statusConfig[status];
+                    const role = roles.find((r) => r.id === ticket.roleId);
+                    const StatusIcon = config.icon;
+
+                    return (
+                      <motion.tr
+                        key={ticket.id}
+                        initial={{ opacity: 0, backgroundColor: justCreated === ticket.token ? 'rgba(99,102,241,0.1)' : 'transparent' }}
+                        animate={{ opacity: 1, backgroundColor: 'transparent' }}
+                        transition={{ duration: 1 }}
+                        className="border-b border-border/20 hover:bg-muted/5 transition-colors"
+                      >
+                        <td className="px-6 py-4 font-medium text-foreground">
+                          {ticket.candidateName}
+                        </td>
+                        <td className="px-6 py-4 text-muted">
+                          {role?.title || ticket.roleId}
+                        </td>
+                        <td className="px-6 py-4 text-muted">
+                          {ticket.language === 'es' ? '🇲🇽 ES' : '🇺🇸 EN'}
+                        </td>
+                        <td className="px-6 py-4">
+                          <code className="px-2.5 py-1 rounded-lg bg-primary/5 text-primary font-mono text-xs font-bold tracking-wider">
+                            {ticket.token}
+                          </code>
+                        </td>
+                        <td className="px-6 py-4 text-muted">
+                          <div className="flex items-center gap-1.5">
+                            <Clock className="h-3.5 w-3.5" />
+                            {new Date(ticket.expiresAt).toLocaleString(es ? 'es-MX' : 'en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${config.className}`}>
+                            <StatusIcon className="h-3 w-3" />
+                            {config.label}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button
+                            onClick={() => copyLink(ticket.token)}
+                            disabled={status !== 'active'}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                          >
+                            {copiedToken === ticket.token ? (
+                              <>
+                                <Check className="h-3 w-3" />
+                                {es ? '¡Copiado!' : 'Copied!'}
+                              </>
+                            ) : (
+                              <>
+                                <Link2 className="h-3 w-3" />
+                                {es ? 'Copiar Link' : 'Copy Link'}
+                              </>
+                            )}
+                          </button>
+                        </td>
+                      </motion.tr>
+                    );
+                  })}
+                </AnimatePresence>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+}

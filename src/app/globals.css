@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+@theme {
+  /* Handshake Brand Colors from Reference CSS */
+  --color-lime-10: #f9ffe6;
+  --color-lime-20: #e7ff89;
+  --color-lime-30: #d3fb52;
+  --color-lime-40: #a1dd3b;
+  --color-lime-50: #6fbb28;
+  --color-lime-80: #04550b;
+
+  --color-cyan-10: #e1ffff;
+  --color-cyan-20: #9fffff;
+  --color-cyan-30: #7af3ff;
+  --color-cyan-40: #00d3d8;
+  --color-cyan-50: #00b1b5;
+  --color-cyan-80: #004449;
+  --color-cyan-90: #052326;
+
+  --color-purple-10: #f4e6ff;
+  --color-purple-20: #dcb3ff;
+  --color-purple-30: #c58aff;
+  --color-purple-40: #b06aff;
+  --color-purple-50: #9b53f6;
+  --color-purple-60: #7c33cf;
+  --color-purple-70: #5e1a9f;
+  --color-purple-80: #410a70;
+  --color-purple-90: #240040;
+
+  --color-blue-10: #e6ecff;
+  --color-blue-20: #99b8ff;
+  --color-blue-30: #548cff;
+  --color-blue-40: #2e6aff;
+  --color-blue-50: #1552d6;
+  --color-blue-60: #033cad;
+  --color-blue-70: #002985;
+  --color-blue-80: #00195c;
+  --color-blue-90: #000c33;
+
+  --color-magenta-20: #ff99ff;
+  --color-magenta-30: #ff60fe;
+  --color-magenta-40: #ff3ce6;
+  --color-magenta-50: #d622d6;
+  --color-magenta-70: #850185;
+  --color-magenta-80: #59005c;
+  --color-magenta-90: #2c0033;
+
+  --color-orange-10: #ffffe6;
+  --color-orange-20: #fff0ac;
+  --color-orange-30: #ffc573;
+  --color-orange-50: #f94f00;
+  --color-orange-60: #cc3a00;
+
+  --color-green-10: #efffec;
+  --color-green-30: #90ff7d;
+  --color-green-60: #459938;
+  --color-green-90: #052326;
+
+  --color-red-30: #ff737f;
+  --color-red-50: #ff2a40;
+  --color-red-60: #d72235;
+
+  --color-neutral-0: #ffffff;
+  --color-neutral-10: #f3f4fa;
+  --color-neutral-20: #d4d6ec;
+  --color-neutral-30: #b1b3ce;
+  --color-neutral-40: #878aae;
+  --color-neutral-50: #606384;
+  --color-neutral-60: #464862;
+  --color-neutral-70: #323346;
+  --color-neutral-80: #1f202c;
+  --color-neutral-90: #14151c;
+  --color-neutral-100: #000000;
+  
+  --color-eta2022-fuschia: #c51770;
+  --color-eta2022-green: #00dbd5;
+  --color-eta2022-orange: #ef8009;
+  --color-eta2022-pink: #f04588;
+  --color-eta2022-purple: #0c0066;
+  --color-eta2024-hero: #161ec7;
+  --color-eta2025-hero: #1820e5;
+
+  /* App Specific Colors (Legacy) */
+  --color-background: #eaf0ff;
+  --color-foreground: #111111;
+  --color-card: #ffffff;
+  --color-primary: #3b4cca;
+  --color-primary-hover: #3140a6;
+  --color-primary-light: #f1f3fd;
+  --color-muted: #6b7280;
+  --color-border: #e2e8f0;
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-warning: #f59e0b;
+
+  /* Global Animations */
+  --animate-orbPulse: orbPulse 3s ease-in-out infinite;
+  --animate-orbSpeaking: orbSpeaking 1.5s ease-in-out infinite;
+
+  @keyframes orbPulse {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.05); opacity: 1; }
+  }
+  @keyframes orbSpeaking {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.15); opacity: 1; filter: brightness(1.2); }
+  }
+}
+
+@layer base {
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    @apply antialiased selection:bg-lime-30 selection:text-black;
+  }
+}
+
+@layer components {
+  /* Handshake Card Effects */
+  .flip-card {
+    transform-style: preserve-3d;
+    transition: transform 0.6s;
+  }
+  .flip-card:hover .flip-card-inner {
+    transform: rotateY(180deg);
+  }
+  .flip-card-inner {
+    transform-style: preserve-3d;
+    transition: transform 0.6s;
+  }
+  .flip-card-back,
+  .flip-card-front {
+    backface-visibility: hidden;
+  }
+  .flip-card-back {
+    transform: rotateY(180deg);
+  }
+
+  /* Fade mask for Marquee */
+  .mask-image-fade {
+    -webkit-mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+    mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+  }
+}
+
+@layer utilities {
+  .recording-dot {
+    animation: pulse-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 42, 64, 0.4); }
+  50% { opacity: 0.5; box-shadow: 0 0 0 4px rgba(255, 42, 64, 0); }
+}

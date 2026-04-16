@@ -37,7 +37,7 @@ export const InterviewCompleteEmail: React.FC<InterviewCompleteEmailProps> = ({
   return (
     <Html>
       <Head />
-      <Preview>Reporte de Entrevista: {candidateName} - {score}/100</Preview>
+      <Preview>Reporte de Entrevista: {candidateName} - {String(score)}/100</Preview>
       <Body style={{ backgroundColor: '#f9f9fa', fontFamily: 'sans-serif' }}>
         <Container style={{ margin: '0 auto', padding: '20px 0 48px', width: '580px' }}>
           <Section style={{ padding: '24px', backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid #eaeaea' }}>

@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { NextResponse } from 'next/server';
 import { Resend } from 'resend';
 import { InterviewCompleteEmail } from '@/lib/email-templates/interview-complete';
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
       from: 'Reclutify AI <onboarding@resend.dev>',
       to: [emailTo],
       subject: `✅ Nueva entrevista completada — ${candidateName} para ${roleTitle}`,
-      react: InterviewCompleteEmail({ candidateName, roleTitle, score, recommendation, reportUrl }),
+      react: InterviewCompleteEmail({ candidateName, roleTitle, score, recommendation, reportUrl }) as React.ReactElement,
     });
 
     return NextResponse.json({ success: true, data });

@@ -13,6 +13,7 @@ interface InterviewState {
   isRecording: boolean;
   isProcessing: boolean;
   roleId: string | null;
+  screenStream: MediaStream | null;
 
   setPhase: (phase: InterviewPhase) => void;
   setCandidate: (candidate: Candidate) => void;
@@ -27,6 +28,7 @@ interface InterviewState {
   sessionId: string | null;
   setSessionId: (id: string | null) => void;
   setRoleId: (roleId: string | null) => void;
+  setScreenStream: (stream: MediaStream | null) => void;
   reset: () => void;
 }
 
@@ -43,6 +45,7 @@ const initialState = {
   isProcessing: false,
   sessionId: null,
   roleId: null,
+  screenStream: null,
 };
 
 export const useInterviewStore = create<InterviewState>((set) => ({
@@ -69,5 +72,6 @@ export const useInterviewStore = create<InterviewState>((set) => ({
   setIsProcessing: (isProcessing) => set({ isProcessing }),
   setSessionId: (sessionId) => set({ sessionId }),
   setRoleId: (roleId) => set({ roleId }),
+  setScreenStream: (screenStream) => set({ screenStream }),
   reset: () => set(initialState),
 }));

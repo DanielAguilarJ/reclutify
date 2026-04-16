@@ -38,6 +38,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     sessionId,
     setSessionId,
     setRoleId: setStoreRoleId,
+    screenStream,
   } = useInterviewStore();
 
   const { language } = useAppStore();
@@ -301,7 +302,19 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
       // Start video recording
         try {
-          const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+          const tracks: MediaStreamTrack[] = [];
+          if (screenStream && screenStream.getVideoTracks().length > 0) {
+            tracks.push(screenStream.getVideoTracks()[0]);
+          } else if (stream.getVideoTracks().length > 0) {
+            tracks.push(stream.getVideoTracks()[0]);
+          }
+
+          if (stream.getAudioTracks().length > 0) {
+            tracks.push(stream.getAudioTracks()[0]);
+          }
+
+          const recordingStream = new MediaStream(tracks);
+          const mediaRecorder = new MediaRecorder(recordingStream, { mimeType: 'video/webm' });
           mediaRecorderRef.current = mediaRecorder;
           
           mediaRecorder.ondataavailable = (event) => {
@@ -534,10 +547,13 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           console.error('R2 Upload failed, keeping local blob URL', e); 
         }
         
-        // Stop camera tracks
+        // Stop camera and screen tracks
         if (videoRef.current?.srcObject) {
           const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
           tracks.forEach(track => track.stop());
+        }
+        if (screenStream) {
+          screenStream.getTracks().forEach(track => track.stop());
         }
         setPhase('complete');
       };
@@ -546,6 +562,9 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       if (videoRef.current?.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach(track => track.stop());
+      }
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
       }
       setPhase('complete');
     }

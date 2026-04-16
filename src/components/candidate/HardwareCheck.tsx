@@ -27,6 +27,9 @@ export default function HardwareCheck() {
   const [micReady, setMicReady] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [agreed, setAgreed] = useState(false);
+  const [isTestingMic, setIsTestingMic] = useState(false);
+  const [testTranscript, setTestTranscript] = useState('');
+  const recognitionRef = useRef<any>(null);
   
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -102,15 +105,61 @@ export default function HardwareCheck() {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(e) {}
+      }
     };
   }, [startCamera, startMic]);
+
+  const handleTestMic = () => {
+    setIsTestingMic(true);
+    setTestTranscript('');
+
+    const langCode = language === 'es' ? 'es-ES' : 'en-US';
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = langCode;
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          interimTranscript += event.results[i][0].transcript;
+        }
+        setTestTranscript(interimTranscript);
+      };
+
+      recognition.onend = () => {
+        setIsTestingMic(false);
+      };
+
+      recognition.onerror = () => {
+        setIsTestingMic(false);
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        console.error(e);
+        setIsTestingMic(false);
+      }
+    } else {
+      setIsTestingMic(false);
+      setTestTranscript('Speech recognition not supported in this browser.');
+    }
+  };
 
   const handleScreenShareAndContinue = async () => {
     if (!agreed) return;
     try {
-      await navigator.mediaDevices.getDisplayMedia({
+      const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: 'monitor' } as MediaTrackConstraints,
       });
+      useInterviewStore.getState().setScreenStream(stream);
       try {
         await document.documentElement.requestFullscreen();
       } catch {
@@ -278,18 +327,30 @@ export default function HardwareCheck() {
                          className="w-2.5 rounded-full bg-primary/20 transition-all duration-75"
                          style={{
                            height: `${Math.min(100, Math.max(20, volumeLevel * 100 * (1 + (i % 5) * 0.1) * (i % 3 === 0 ? 1.2 : 0.8)))}%`,
-                           backgroundColor: volumeLevel > 0.1 ? 'var(--color-primary-light)' : 'rgba(168, 184, 252, 0.3)',
+                           backgroundColor: volumeLevel > 0.1 ? 'var(--color-primary)' : 'rgba(168, 184, 252, 0.3)',
                          }}
                        />
                      ))}
                    </div>
+                   
+                   {testTranscript && (
+                     <div className="mt-4 w-full p-3 bg-white/50 rounded-xl border border-primary/20 text-center">
+                       <p className="text-sm font-medium text-primary/80 italic">"{testTranscript}"</p>
+                     </div>
+                   )}
                 </div>
 
                 <button
                   type="button"
-                  className="w-full py-3 rounded-full bg-primary text-white font-medium text-sm hover:bg-primary-hover transition-colors shadow-sm shadow-primary/25 cursor-pointer"
+                  onClick={handleTestMic}
+                  disabled={isTestingMic}
+                  className={`w-full py-3 rounded-full text-white font-medium text-sm transition-colors shadow-sm cursor-pointer ${
+                    isTestingMic 
+                      ? 'bg-primary/70 cursor-not-allowed animate-pulse' 
+                      : 'bg-primary hover:bg-primary-hover shadow-primary/25'
+                  }`}
                 >
-                  {t.speakBtn}
+                  {isTestingMic ? (language === 'es' ? 'Escuchando...' : 'Listening...') : t.speakBtn}
                 </button>
               </div>
 

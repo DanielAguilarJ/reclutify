@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import * as mammoth from 'mammoth';
 
 export async function POST(request: Request) {
@@ -15,7 +15,8 @@ export async function POST(request: Request) {
     let text = '';
 
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      const data = await pdfParse(buffer);
+      const parser = new PDFParse({ data: buffer });
+      const data = await parser.getText();
       text = data.text;
     } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.name.endsWith('.docx')) {
       const result = await mammoth.extractRawText({ buffer: buffer });

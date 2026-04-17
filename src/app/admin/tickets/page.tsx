@@ -22,42 +22,54 @@ export default function TicketsPage() {
 
   const es = language === 'es';
 
-  const handleGenerate = async () => {
+  const handleGenerate = () => {
     if (!name.trim() || !selectedRoleId) return;
     setIsSending(true);
     
+    // Generar el ticket y mostrar éxito de inmediato en la UI
     const ticket = addTicket(name.trim(), selectedRoleId, selectedLang);
+    setJustCreated(ticket.token);
+    
+    let dParam = '';
+    const role = roles.find((r) => r.id === ticket.roleId);
+    if (role) {
+      const payload = JSON.stringify({ t: ticket, r: role });
+      dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
+    }
+    const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
 
+    // Disparar la petición al API en segundo plano
     if (email.trim()) {
-      const role = roles.find((r) => r.id === ticket.roleId);
-      let dParam = '';
-      if (role) {
-        const payload = JSON.stringify({ t: ticket, r: role });
-        dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
-      }
-      const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
-
-      try {
-        await fetch('/api/send-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: email.trim(),
-            candidateName: name.trim(),
-            roleTitle: role?.title,
-            link: url,
-            language: selectedLang
-          }),
-        });
-      } catch (error) {
+      fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim(),
+          candidateName: name.trim(),
+          roleTitle: role?.title,
+          link: url,
+          language: selectedLang
+        }),
+      })
+      .then(async (res) => {
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('API Error:', errorData);
+          alert(es ? 'Hubo un error silencioso de servidor al enviar el correo (Brevo API), pero el link ya está generado y activo.' : 'Email delivery failed in the background. The ticket/link is still valid.');
+        }
+      })
+      .catch((error) => {
         console.error('Error sending email:', error);
-      }
+      })
+      .finally(() => {
+        setIsSending(false);
+      });
+    } else {
+      setIsSending(false);
     }
 
-    setJustCreated(ticket.token);
     setName('');
     setEmail('');
-    setIsSending(false);
     setTimeout(() => setJustCreated(null), 3000);
   };
 

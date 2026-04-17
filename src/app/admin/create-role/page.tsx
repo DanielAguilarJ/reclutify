@@ -295,6 +295,7 @@ export default function CreateRolePage() {
   const [location, setLocation] = useState('');
   const [salary, setSalary] = useState('');
   const [generationLanguage, setGenerationLanguage] = useState<'es' | 'en'>(language === 'es' ? 'es' : 'en');
+  const [candidateEmails, setCandidateEmails] = useState<string>('');
   
   // Topics state (now with rubric data)
   const [topics, setTopics] = useState<TopicDraft[]>([]);
@@ -412,8 +413,9 @@ export default function CreateRolePage() {
       rubric: t.rubric,
     }));
 
+    const newRoleId = `role-${Date.now()}`;
     addRole({
-      id: `role-${Date.now()}`,
+      id: newRoleId,
       title: jobTitle,
       description: jobDescription || undefined,
       jobType: jobType || undefined,
@@ -423,6 +425,32 @@ export default function CreateRolePage() {
       createdAt: Date.now(),
     });
 
+    if (process.env.NEXT_PUBLIC_MAKE_WEBHOOK_URL && candidateEmails.trim()) {
+      const candidatesList = candidateEmails
+        .split('\n')
+        .map(e => e.trim())
+        .filter(e => e);
+      
+      const candidatesPayload = candidatesList.map(email => {
+        const nameMatch = email.match(/^([^@]+)/);
+        const name = nameMatch ? nameMatch[1] : email;
+        return { email, name };
+      });
+
+      if (candidatesPayload.length > 0) {
+        fetch(process.env.NEXT_PUBLIC_MAKE_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roleId: newRoleId,
+            roleTitle: jobTitle,
+            candidates: candidatesPayload,
+            language: generationLanguage,
+          }),
+        }).catch(err => console.error("Webhook failed:", err));
+      }
+    }
+
     setSuccess(true);
     setTimeout(() => {
       setJobTitle('');
@@ -431,6 +459,7 @@ export default function CreateRolePage() {
       setLocation('');
       setSalary('');
       setTopics([]);
+      setCandidateEmails('');
       setSuccess(false);
       setShowDescription(false);
     }, 2000);
@@ -681,10 +710,26 @@ export default function CreateRolePage() {
                       </button>
                     </div>
 
+                    <div className="mb-6 pt-4 border-t border-border/30">
+                      <label className="block text-sm font-medium text-foreground mb-1.5">
+                        {language === 'es' ? 'Correos de candidatos (uno por línea)' : 'Candidate emails (one per line)'}
+                      </label>
+                      <textarea
+                        value={candidateEmails}
+                        onChange={(e) => setCandidateEmails(e.target.value)}
+                        placeholder="juan@email.com&#10;maria@email.com&#10;carlos@email.com"
+                        className="w-full px-4 py-3 rounded-xl border border-border bg-background text-foreground text-sm
+                          placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-primary/30 min-h-[100px] resize-y"
+                      />
+                      <p className="text-xs text-muted mt-1">
+                        {language === 'es' ? 'Se enviará un link único a cada correo automáticamente' : 'A unique link will be sent to each email automatically'}
+                      </p>
+                    </div>
+
                     {/* Actions */}
                     <div className="pt-4 flex items-center justify-between border-t border-border/30">
                       <button
-                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setShowDescription(false); }}
+                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setCandidateEmails(''); setShowDescription(false); }}
                         className="px-4 py-2 text-sm font-medium text-muted hover:text-foreground transition-colors"
                       >
                         {language === 'es' ? 'Limpiar' : 'Clear Form'}

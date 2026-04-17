@@ -13,6 +13,8 @@ export default function TicketsPage() {
   const { language } = useAppStore();
   
   const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [isSending, setIsSending] = useState(false);
   const [selectedRoleId, setSelectedRoleId] = useState(roles[0]?.id || '');
   const [selectedLang, setSelectedLang] = useState<'en' | 'es'>('es');
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
@@ -20,11 +22,42 @@ export default function TicketsPage() {
 
   const es = language === 'es';
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!name.trim() || !selectedRoleId) return;
+    setIsSending(true);
+    
     const ticket = addTicket(name.trim(), selectedRoleId, selectedLang);
+
+    if (email.trim()) {
+      const role = roles.find((r) => r.id === ticket.roleId);
+      let dParam = '';
+      if (role) {
+        const payload = JSON.stringify({ t: ticket, r: role });
+        dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
+      }
+      const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
+
+      try {
+        await fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email.trim(),
+            candidateName: name.trim(),
+            roleTitle: role?.title,
+            link: url,
+            language: selectedLang
+          }),
+        });
+      } catch (error) {
+        console.error('Error sending email:', error);
+      }
+    }
+
     setJustCreated(ticket.token);
     setName('');
+    setEmail('');
+    setIsSending(false);
     setTimeout(() => setJustCreated(null), 3000);
   };
 
@@ -105,6 +138,13 @@ export default function TicketsPage() {
             placeholder={es ? 'Nombre del candidato' : 'Candidate name'}
             className="flex-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
           />
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={es ? 'Correo (opcional)' : 'Email (optional)'}
+            className="flex-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+          />
           <select
             value={selectedRoleId}
             onChange={(e) => setSelectedRoleId(e.target.value)}
@@ -126,11 +166,15 @@ export default function TicketsPage() {
           </select>
           <button
             onClick={handleGenerate}
-            disabled={!name.trim()}
+            disabled={!name.trim() || isSending}
             className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
-            <Plus className="h-4 w-4" />
-            {es ? 'Generar' : 'Generate'}
+            {isSending ? (
+              <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            {es ? (isSending ? 'Enviando...' : 'Generar') : (isSending ? 'Sending...' : 'Generate')}
           </button>
         </div>
       </motion.div>

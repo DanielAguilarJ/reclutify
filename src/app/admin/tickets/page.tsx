@@ -23,11 +23,19 @@ export default function TicketsPage() {
   const es = language === 'es';
 
   const handleGenerate = () => {
-    if (!name.trim() || !selectedRoleId) return;
+    if (roles.length === 0) {
+      alert(es ? 'Debes crear un puesto primero en /admin/create-role' : 'You must create a role first in /admin/create-role');
+      return;
+    }
+    const finalRoleId = selectedRoleId || roles[0]?.id;
+    if (!finalRoleId) return;
+    
     setIsSending(true);
     
+    const finalName = name.trim() || (email.trim() ? email.trim().split('@')[0] : 'Candidato');
+
     // Generar el ticket y mostrar éxito de inmediato en la UI
-    const ticket = addTicket(name.trim(), selectedRoleId, selectedLang);
+    const ticket = addTicket(finalName, finalRoleId, selectedLang);
     setJustCreated(ticket.token);
     
     let dParam = '';
@@ -45,7 +53,7 @@ export default function TicketsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email.trim(),
-          candidateName: name.trim(),
+          candidateName: finalName,
           roleTitle: role?.title,
           link: url,
           language: selectedLang
@@ -56,6 +64,8 @@ export default function TicketsPage() {
           const errorData = await res.json().catch(() => ({}));
           console.error('API Error:', errorData);
           alert(es ? 'Hubo un error silencioso de servidor al enviar el correo (Brevo API), pero el link ya está generado y activo.' : 'Email delivery failed in the background. The ticket/link is still valid.');
+        } else {
+          alert(es ? 'Ticket generado y enviado por correo a: ' + email.trim() : 'Ticket generated and emailed to: ' + email.trim());
         }
       })
       .catch((error) => {
@@ -178,7 +188,7 @@ export default function TicketsPage() {
           </select>
           <button
             onClick={handleGenerate}
-            disabled={!name.trim() || isSending}
+            disabled={(!name.trim() && !email.trim()) || isSending}
             className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             {isSending ? (

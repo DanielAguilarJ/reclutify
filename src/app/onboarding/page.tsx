@@ -2,13 +2,14 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/utils/supabase/client';
+import { createOrganization } from '@/app/actions/onboarding';
 import Logo from '@/components/ui/Logo';
-import { Building2, ArrowRight, Briefcase, Users } from 'lucide-react';
+import { Building2, ArrowRight, Briefcase, Users, AlertCircle } from 'lucide-react';
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     size: '1-10',
@@ -18,35 +19,26 @@ export default function OnboardingPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError(null);
     
     try {
-      const supabase = createClient();
-      const slug = formData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      
-      const { data: orgData, error: orgError } = await supabase
-        .from('organizations')
-        .insert([{ name: formData.name, slug }])
-        .select()
-        .single();
-        
-      if (orgError) throw orgError;
+      // Llamar al Server Action que maneja toda la lógica de forma segura
+      const result = await createOrganization({
+        name: formData.name,
+        size: formData.size,
+        industry: formData.industry,
+      });
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (userData?.user) {
-        await supabase
-          .from('user_profiles')
-          .insert([{ 
-             user_id: userData.user.id, 
-             org_id: orgData.id, 
-             full_name: userData.user.user_metadata?.full_name || 'Admin',
-             role: 'owner'
-          }]);
+      if (!result.success) {
+        setError(result.error || 'Error desconocido al crear la organización.');
+        return;
       }
 
+      // Éxito: redirigir al panel de administración
       router.push('/admin');
-    } catch (error) {
-      console.error('Error creating organization:', error);
-      alert('Hubo un error configurando tu workspace. Por favor, intenta de nuevo.');
+      router.refresh();
+    } catch {
+      setError('Ocurrió un error inesperado. Por favor, intenta de nuevo.');
     } finally {
       setLoading(false);
     }
@@ -71,6 +63,14 @@ export default function OnboardingPage() {
              <p className="text-sm text-muted mt-2">Crea tu organización para empezar a evaluar candidatos de forma inteligente.</p>
           </div>
 
+          {/* Mensaje de error descriptivo en la UI (no alert) */}
+          {error && (
+            <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <p className="text-sm text-red-500">{error}</p>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-2">Nombre de la Empresa</label>
@@ -81,7 +81,11 @@ export default function OnboardingPage() {
                   autoFocus
                   placeholder="Ej. Acme Corp"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) => {
+                    setFormData({ ...formData, name: e.target.value });
+                    // Limpiar error al editar
+                    if (error) setError(null);
+                  }}
                   className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all placeholder:text-muted/50 text-sm"
                 />
               </div>

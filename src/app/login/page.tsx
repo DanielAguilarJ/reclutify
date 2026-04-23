@@ -32,8 +32,11 @@ export default function LoginPage() {
       setError(error.message);
       setIsLoading(false);
     } else {
-      router.push('/admin/create-role');
-      router.refresh(); // Refresh to update server components layout
+      // El middleware se encarga de redirigir según el estado del usuario:
+      // - Si tiene org → /admin
+      // - Si no tiene org → /onboarding
+      router.push('/admin');
+      router.refresh();
     }
   };
 

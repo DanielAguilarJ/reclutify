@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { Role, CandidateResult } from '@/types';
 import { createClient } from '@/utils/supabase/client';
 
@@ -109,235 +108,243 @@ function candidateFromSupabase(row: Record<string, unknown>): CandidateResult {
   };
 }
 
+/**
+ * Store de administración — caché en memoria con Supabase como fuente de verdad.
+ * SIN persistencia en localStorage para garantizar sincronización cross-device.
+ */
 export const useAdminStore = create<AdminState>()(
-  persist<AdminState>(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (set: any, get: any) => ({
-      roles: [] as Role[],
-      candidates: [] as CandidateResult[],
-      orgId: null as string | null,
-      loading: false as boolean,
-      error: null as string | null,
+  (set, get) => ({
+    roles: [] as Role[],
+    candidates: [] as CandidateResult[],
+    orgId: null as string | null,
+    loading: false as boolean,
+    error: null as string | null,
 
-      setOrgId: (orgId: string) => set({ orgId }),
+    setOrgId: (orgId: string) => set({ orgId }),
 
-      // ─── Cargar datos desde Supabase ───
-      fetchFromSupabase: async () => {
-        set({ loading: true, error: null });
+    // ─── Cargar datos desde Supabase ───
+    fetchFromSupabase: async () => {
+      set({ loading: true, error: null });
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          set({ loading: false });
+          return;
+        }
+
+        // Obtener el org_id del perfil del usuario
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('org_id')
+          .eq('user_id', user.id)
+          .single();
+
+        if (!profile?.org_id) {
+          set({ loading: false });
+          return;
+        }
+
+        const orgId = profile.org_id;
+        set({ orgId });
+
+        // Cargar roles de la organización
+        const { data: rolesData, error: rolesError } = await supabase
+          .from('roles')
+          .select('*')
+          .eq('org_id', orgId)
+          .order('created_at', { ascending: false });
+
+        if (rolesError && process.env.NODE_ENV === 'development') {
+          console.error('Error cargando roles:', rolesError);
+        }
+
+        // Cargar resultados de candidatos
+        const { data: candidatesData, error: candError } = await supabase
+          .from('candidate_results')
+          .select('*')
+          .eq('org_id', orgId)
+          .order('date', { ascending: false });
+
+        if (candError && process.env.NODE_ENV === 'development') {
+          console.error('Error cargando candidatos:', candError);
+        }
+
+        set({
+          roles: rolesData ? rolesData.map(roleFromSupabase) : [],
+          candidates: candidatesData ? candidatesData.map(candidateFromSupabase) : [],
+          loading: false,
+        });
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Error en fetchFromSupabase:', err);
+        }
+        set({ error: 'Error cargando datos', loading: false });
+      }
+    },
+
+    // ─── Agregar rol: Supabase + store local ───
+    addRole: async (role: Role) => {
+      // Actualizar estado local inmediatamente (optimistic update)
+      set((state: AdminState) => ({
+        roles: [role, ...state.roles],
+      }));
+
+      // Sincronizar con Supabase en segundo plano
+      const orgId = get().orgId;
+      if (orgId) {
         try {
           const supabase = createClient();
-          const { data: { user } } = await supabase.auth.getUser();
-          if (!user) {
-            set({ loading: false });
-            return;
-          }
-
-          // Obtener el org_id del perfil del usuario
-          const { data: profile } = await supabase
-            .from('user_profiles')
-            .select('org_id')
-            .eq('user_id', user.id)
-            .single();
-
-          if (!profile?.org_id) {
-            set({ loading: false });
-            return;
-          }
-
-          const orgId = profile.org_id;
-          set({ orgId });
-
-          // Cargar roles de la organización
-          const { data: rolesData, error: rolesError } = await supabase
+          const { error } = await supabase
             .from('roles')
-            .select('*')
-            .eq('org_id', orgId)
-            .order('created_at', { ascending: false });
+            .upsert(roleToSupabase(role, orgId));
 
-          if (rolesError) {
-            console.error('Error cargando roles:', rolesError);
+          if (error && process.env.NODE_ENV === 'development') {
+            console.error('Error guardando rol en Supabase:', error);
           }
-
-          // Cargar resultados de candidatos
-          const { data: candidatesData, error: candError } = await supabase
-            .from('candidate_results')
-            .select('*')
-            .eq('org_id', orgId)
-            .order('date', { ascending: false });
-
-          if (candError) {
-            console.error('Error cargando candidatos:', candError);
-          }
-
-          set({
-            roles: rolesData ? rolesData.map(roleFromSupabase) : get().roles,
-            candidates: candidatesData ? candidatesData.map(candidateFromSupabase) : get().candidates,
-            loading: false,
-          });
         } catch (err) {
-          console.error('Error en fetchFromSupabase:', err);
-          set({ error: 'Error cargando datos', loading: false });
-        }
-      },
-
-      // ─── Agregar rol: Supabase + store local ───
-      addRole: async (role: Role) => {
-        // Actualizar estado local inmediatamente (optimistic update)
-        set((state: AdminState) => ({
-          roles: [role, ...state.roles],
-        }));
-
-        // Sincronizar con Supabase en segundo plano
-        const orgId = get().orgId;
-        if (orgId) {
-          try {
-            const supabase = createClient();
-            const { error } = await supabase
-              .from('roles')
-              .upsert(roleToSupabase(role, orgId));
-
-            if (error) {
-              console.error('Error guardando rol en Supabase:', error);
-            }
-          } catch (err) {
+          if (process.env.NODE_ENV === 'development') {
             console.error('Error sincronizando rol:', err);
           }
         }
-      },
+      }
+    },
 
-      // ─── Actualizar rol: Supabase + store local ───
-      updateRole: async (id: string, updates: Partial<Role>) => {
-        set((state: AdminState) => ({
-          roles: state.roles.map((r) =>
-            r.id === id ? { ...r, ...updates } : r
-          ),
-        }));
+    // ─── Actualizar rol: Supabase + store local ───
+    updateRole: async (id: string, updates: Partial<Role>) => {
+      set((state: AdminState) => ({
+        roles: state.roles.map((r) =>
+          r.id === id ? { ...r, ...updates } : r
+        ),
+      }));
 
-        const orgId = get().orgId;
-        if (orgId) {
-          try {
-            const supabase = createClient();
-            // Construir objeto de actualización para Supabase
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const supabaseUpdates: Record<string, any> = {};
-            if (updates.title !== undefined) supabaseUpdates.title = updates.title;
-            if (updates.description !== undefined) supabaseUpdates.description = updates.description;
-            if (updates.location !== undefined) supabaseUpdates.location = updates.location;
-            if (updates.salary !== undefined) supabaseUpdates.salary = updates.salary;
-            if (updates.jobType !== undefined) supabaseUpdates.job_type = updates.jobType;
-            if (updates.topics !== undefined) supabaseUpdates.topics = updates.topics;
+      const orgId = get().orgId;
+      if (orgId) {
+        try {
+          const supabase = createClient();
+          // Construir objeto de actualización para Supabase
+          const supabaseUpdates: Record<string, unknown> = {};
+          if (updates.title !== undefined) supabaseUpdates.title = updates.title;
+          if (updates.description !== undefined) supabaseUpdates.description = updates.description;
+          if (updates.location !== undefined) supabaseUpdates.location = updates.location;
+          if (updates.salary !== undefined) supabaseUpdates.salary = updates.salary;
+          if (updates.jobType !== undefined) supabaseUpdates.job_type = updates.jobType;
+          if (updates.topics !== undefined) supabaseUpdates.topics = updates.topics;
 
-            const { error } = await supabase
-              .from('roles')
-              .update(supabaseUpdates)
-              .eq('id', id);
+          const { error } = await supabase
+            .from('roles')
+            .update(supabaseUpdates)
+            .eq('id', id);
 
-            if (error) {
-              console.error('Error actualizando rol en Supabase:', error);
-            }
-          } catch (err) {
+          if (error && process.env.NODE_ENV === 'development') {
+            console.error('Error actualizando rol en Supabase:', error);
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV === 'development') {
             console.error('Error sincronizando actualización de rol:', err);
           }
         }
-      },
+      }
+    },
 
-      // ─── Eliminar rol: Supabase + store local ───
-      removeRole: async (id: string) => {
-        set((state: AdminState) => ({
-          roles: state.roles.filter((r) => r.id !== id),
-        }));
+    // ─── Eliminar rol: Supabase + store local ───
+    removeRole: async (id: string) => {
+      set((state: AdminState) => ({
+        roles: state.roles.filter((r) => r.id !== id),
+      }));
 
-        const orgId = get().orgId;
-        if (orgId) {
-          try {
-            const supabase = createClient();
-            const { error } = await supabase
-              .from('roles')
-              .delete()
-              .eq('id', id);
+      const orgId = get().orgId;
+      if (orgId) {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase
+            .from('roles')
+            .delete()
+            .eq('id', id);
 
-            if (error) {
-              console.error('Error eliminando rol en Supabase:', error);
-            }
-          } catch (err) {
+          if (error && process.env.NODE_ENV === 'development') {
+            console.error('Error eliminando rol en Supabase:', error);
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV === 'development') {
             console.error('Error sincronizando eliminación de rol:', err);
           }
         }
-      },
+      }
+    },
 
-      // ─── Agregar candidato: Supabase + store local ───
-      addCandidate: async (candidate: CandidateResult) => {
-        set((state: AdminState) => ({
-          candidates: [candidate, ...state.candidates],
-        }));
+    // ─── Agregar candidato: Supabase + store local ───
+    addCandidate: async (candidate: CandidateResult) => {
+      set((state: AdminState) => ({
+        candidates: [candidate, ...state.candidates],
+      }));
 
-        // Sincronizar con Supabase — funciona con o sin orgId
-        // (candidatos sin autenticar también insertan resultados)
-        try {
-          const supabase = createClient();
-          const orgId = get().orgId;
+      // Sincronizar con Supabase — funciona con o sin orgId
+      // (candidatos sin autenticar también insertan resultados)
+      try {
+        const supabase = createClient();
+        const orgId = get().orgId;
 
-          // Intentar obtener orgId del rol si no lo tenemos
-          let effectiveOrgId = orgId;
-          if (!effectiveOrgId) {
-            const { data: roleData } = await supabase
-              .from('roles')
-              .select('org_id')
-              .eq('id', candidate.roleId)
-              .single();
-            effectiveOrgId = roleData?.org_id || null;
+        // Intentar obtener orgId del rol si no lo tenemos
+        let effectiveOrgId = orgId;
+        if (!effectiveOrgId) {
+          const { data: roleData } = await supabase
+            .from('roles')
+            .select('org_id')
+            .eq('id', candidate.roleId)
+            .single();
+          effectiveOrgId = roleData?.org_id || null;
+        }
+
+        if (effectiveOrgId) {
+          const { error } = await supabase
+            .from('candidate_results')
+            .upsert(candidateToSupabase(candidate, effectiveOrgId));
+
+          if (error && process.env.NODE_ENV === 'development') {
+            console.error('Error guardando candidato en Supabase:', error);
           }
-
-          if (effectiveOrgId) {
-            const { error } = await supabase
-              .from('candidate_results')
-              .upsert(candidateToSupabase(candidate, effectiveOrgId));
-
-            if (error) {
-              console.error('Error guardando candidato en Supabase:', error);
-            }
-          }
-        } catch (err) {
+        }
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') {
           console.error('Error sincronizando candidato:', err);
         }
-      },
+      }
+    },
 
-      // ─── Actualizar candidato: Supabase + store local ───
-      updateCandidate: async (id: string, updates: Partial<CandidateResult>) => {
-        set((state: AdminState) => ({
-          candidates: state.candidates.map((c) =>
-            c.id === id ? { ...c, ...updates } : c
-          ),
-        }));
+    // ─── Actualizar candidato: Supabase + store local ───
+    updateCandidate: async (id: string, updates: Partial<CandidateResult>) => {
+      set((state: AdminState) => ({
+        candidates: state.candidates.map((c) =>
+          c.id === id ? { ...c, ...updates } : c
+        ),
+      }));
 
-        try {
-          const supabase = createClient();
-          // Construir actualizaciones para Supabase
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const supabaseUpdates: Record<string, any> = {};
-          if (updates.status !== undefined) supabaseUpdates.status = updates.status;
-          if (updates.evaluation !== undefined) supabaseUpdates.evaluation = updates.evaluation;
-          if (updates.transcript !== undefined) supabaseUpdates.transcript = updates.transcript;
-          if (updates.duration !== undefined) supabaseUpdates.duration = updates.duration;
-          if (updates.videoUrl !== undefined) supabaseUpdates.video_url = updates.videoUrl;
+      try {
+        const supabase = createClient();
+        // Construir actualizaciones para Supabase
+        const supabaseUpdates: Record<string, unknown> = {};
+        if (updates.status !== undefined) supabaseUpdates.status = updates.status;
+        if (updates.evaluation !== undefined) supabaseUpdates.evaluation = updates.evaluation;
+        if (updates.transcript !== undefined) supabaseUpdates.transcript = updates.transcript;
+        if (updates.duration !== undefined) supabaseUpdates.duration = updates.duration;
+        if (updates.videoUrl !== undefined) supabaseUpdates.video_url = updates.videoUrl;
 
-          if (Object.keys(supabaseUpdates).length > 0) {
-            const { error } = await supabase
-              .from('candidate_results')
-              .update(supabaseUpdates)
-              .eq('id', id);
+        if (Object.keys(supabaseUpdates).length > 0) {
+          const { error } = await supabase
+            .from('candidate_results')
+            .update(supabaseUpdates)
+            .eq('id', id);
 
-            if (error) {
-              console.error('Error actualizando candidato en Supabase:', error);
-            }
+          if (error && process.env.NODE_ENV === 'development') {
+            console.error('Error actualizando candidato en Supabase:', error);
           }
-        } catch (err) {
+        }
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') {
           console.error('Error sincronizando actualización de candidato:', err);
         }
-      },
-    }),
-    {
-      name: 'worldbrain-admin-storage',
-    }
-  )
+      }
+    },
+  })
 );

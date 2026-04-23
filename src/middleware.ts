@@ -4,17 +4,23 @@ import { createClient } from '@/utils/supabase/middleware'
 // Rutas que requieren autenticación
 const PROTECTED_PREFIXES = ['/admin', '/onboarding'];
 
-// Rutas públicas (no requieren autenticación)
-const PUBLIC_PREFIXES = ['/', '/login', '/interview', '/practice', '/career-fair', '/pricing', '/api'];
+// Rutas públicas específicas (no requieren autenticación)
+const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api'];
 
+/**
+ * Determina si una ruta es protegida (requiere autenticación)
+ */
 function isProtectedRoute(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
+/**
+ * Determina si una ruta es pública (no requiere autenticación)
+ */
 function isPublicRoute(pathname: string): boolean {
-  // La raíz exacta es pública
   if (pathname === '/') return true;
-  return PUBLIC_PREFIXES.some(prefix => prefix !== '/' && pathname.startsWith(prefix));
+  if (pathname === '/login') return true;
+  return PUBLIC_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
 export async function middleware(request: NextRequest) {
@@ -32,11 +38,11 @@ export async function middleware(request: NextRequest) {
   }
 
   // Refrescar la sesión del usuario de forma segura con getUser()
-  const { supabaseResponse, user } = await createClient(request);
+  const { supabaseResponse, supabase, user } = await createClient(request);
 
   const pathname = request.nextUrl.pathname;
 
-  // Si la ruta es protegida y no hay usuario autenticado, redirigir a /login
+  // ─── CASO 1: No autenticado + ruta protegida → /login ───
   if (isProtectedRoute(pathname) && !user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
@@ -45,11 +51,56 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Si el usuario ya está autenticado y visita /login, redirigir al admin
-  if (pathname === '/login' && user) {
-    const adminUrl = request.nextUrl.clone();
-    adminUrl.pathname = '/admin';
-    return NextResponse.redirect(adminUrl);
+  // Para usuarios autenticados, verificar si tienen organización configurada.
+  // Solo hacemos esta query cuando es necesario para las decisiones de routing.
+  if (user && supabase) {
+    const needsOrgCheck =
+      pathname === '/' ||
+      pathname === '/login' ||
+      pathname.startsWith('/admin') ||
+      pathname === '/onboarding';
+
+    if (needsOrgCheck) {
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('org_id')
+        .eq('user_id', user.id)
+        .single();
+
+      const hasOrg = !!profile?.org_id;
+
+      // ─── CASO 2: Autenticado + /login → /admin o /onboarding ───
+      if (pathname === '/login') {
+        const redirectUrl = request.nextUrl.clone();
+        redirectUrl.pathname = hasOrg ? '/admin' : '/onboarding';
+        redirectUrl.search = '';
+        return NextResponse.redirect(redirectUrl);
+      }
+
+      // ─── CASO 3: Autenticado + / (root) → /admin o /onboarding ───
+      if (pathname === '/') {
+        const redirectUrl = request.nextUrl.clone();
+        redirectUrl.pathname = hasOrg ? '/admin' : '/onboarding';
+        redirectUrl.search = '';
+        return NextResponse.redirect(redirectUrl);
+      }
+
+      // ─── CASO 4: Autenticado + /admin/* pero SIN org → /onboarding ───
+      if (pathname.startsWith('/admin') && !hasOrg) {
+        const onboardingUrl = request.nextUrl.clone();
+        onboardingUrl.pathname = '/onboarding';
+        onboardingUrl.search = '';
+        return NextResponse.redirect(onboardingUrl);
+      }
+
+      // ─── CASO 5: Autenticado + /onboarding pero YA tiene org → /admin ───
+      if (pathname === '/onboarding' && hasOrg) {
+        const adminUrl = request.nextUrl.clone();
+        adminUrl.pathname = '/admin';
+        adminUrl.search = '';
+        return NextResponse.redirect(adminUrl);
+      }
+    }
   }
 
   return supabaseResponse;

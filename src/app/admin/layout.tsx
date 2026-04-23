@@ -1,10 +1,14 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import Logo from '@/components/ui/Logo';
-import { PlusCircle, Users, Settings, Ticket, LogOut } from 'lucide-react';
+import { Settings, LogOut } from 'lucide-react';
 import LanguageToggle from '@/components/ui/LanguageToggle';
 import { createClient } from '@/utils/supabase/server';
+import { getUserOrganizations, getActiveOrganizationId } from '@/app/actions/organizations';
 import AdminSidebarNav from './AdminSidebarNav';
+
+// Forzar rendering dinámico — el layout necesita auth de Supabase
+export const dynamic = 'force-dynamic';
 
 export default async function AdminLayout({
   children,
@@ -20,7 +24,14 @@ export default async function AdminLayout({
     redirect('/login');
   }
 
-  const companyName = user.user_metadata?.company_name;
+  // Obtener organizaciones del usuario y la org activa
+  const userOrgs = await getUserOrganizations();
+  const activeOrgId = await getActiveOrganizationId();
+
+  // Determinar la organización activa
+  const activeOrg = userOrgs.find(o => o.id === activeOrgId) || userOrgs[0] || null;
+
+  const companyName = activeOrg?.name || user.user_metadata?.company_name;
   const userName = user.user_metadata?.full_name || 'Admin';
 
   return (
@@ -34,9 +45,12 @@ export default async function AdminLayout({
           </p>
         </div>
 
-        {/* Extracted client-side navigation logic */}
+        {/* Client-side navigation with real org data */}
         <nav className="flex-1 p-3">
-           <AdminSidebarNav />
+           <AdminSidebarNav
+             organizations={userOrgs.map(o => ({ id: o.id, name: o.name }))}
+             activeOrgId={activeOrg?.id || null}
+           />
         </nav>
 
         <div className="p-3 border-t border-border/30 flex flex-col gap-2">

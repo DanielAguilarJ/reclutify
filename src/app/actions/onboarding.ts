@@ -114,23 +114,24 @@ export async function createOrganization(formData: {
   }
 
   // ─── 5. Crear la organización ───
-  const { data: orgData, error: orgError } = await supabase
+  // Generamos el UUID aquí para no necesitar .select() (que falla por RLS SELECT policy
+  // ya que el user_profile aún no está vinculado a esta org)
+  const orgId = crypto.randomUUID();
+
+  const { error: orgError } = await supabase
     .from('organizations')
     .insert([{
+      id: orgId,
       name: trimmedName,
       slug,
-    }])
-    .select('id')
-    .single();
+    }]);
 
-  if (orgError || !orgData) {
+  if (orgError) {
     return {
       success: false,
       error: `Error al crear la organización: ${orgError?.message || 'Error desconocido'}`,
     };
   }
-
-  const orgId = orgData.id;
 
   // ─── 6. Crear/actualizar perfil de usuario ───
   const fullName = user.user_metadata?.full_name || user.email?.split('@')[0] || 'Admin';

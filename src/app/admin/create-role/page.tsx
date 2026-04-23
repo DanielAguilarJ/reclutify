@@ -153,6 +153,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     salary: role.salary || '',
     location: role.location || '',
     description: role.description || '',
+    interviewDuration: role.interviewDuration ?? 30,
   });
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -167,7 +168,8 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     editedRole.jobType !== (role.jobType || '') ||
     editedRole.salary !== (role.salary || '') ||
     editedRole.location !== (role.location || '') ||
-    editedRole.description !== (role.description || '');
+    editedRole.description !== (role.description || '') ||
+    editedRole.interviewDuration !== (role.interviewDuration ?? 30);
 
   return (
     <div className="border-t border-border/50 p-4 bg-muted/5 space-y-4">
@@ -221,6 +223,47 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
         />
       </div>
 
+      {/* ─── Duración de la Entrevista ─── */}
+      <div>
+        <label className="block text-xs font-medium text-muted mb-1 flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {language === 'es' ? 'Duración de Entrevista' : 'Interview Duration'}
+        </label>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {[15, 30, 45, 60, 90].map((mins) => (
+            <button
+              key={mins}
+              type="button"
+              onClick={() => setEditedRole({ ...editedRole, interviewDuration: mins })}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-all ${
+                editedRole.interviewDuration === mins
+                  ? 'bg-primary text-white border-primary shadow-sm'
+                  : 'bg-background border-border text-muted hover:border-primary/30 hover:text-foreground'
+              }`}
+            >
+              {mins} min
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="5"
+            max="180"
+            value={editedRole.interviewDuration}
+            onChange={(e) => setEditedRole({
+              ...editedRole,
+              interviewDuration: Math.max(5, Math.min(180, Number(e.target.value) || 30))
+            })}
+            className="w-20 px-3 py-1.5 rounded-lg border border-border bg-background text-foreground text-sm
+              focus:outline-none focus:ring-2 focus:ring-primary/30 text-center"
+          />
+          <span className="text-xs text-muted">
+            {language === 'es' ? 'min (personalizado)' : 'min (custom)'}
+          </span>
+        </div>
+      </div>
+
       <div>
         <label className="block text-xs font-medium text-muted mb-1">
           {language === 'es' ? 'Temas de Evaluación' : 'Evaluation Topics'}
@@ -255,6 +298,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
                  salary: role.salary || '',
                  location: role.location || '',
                  description: role.description || '',
+                 interviewDuration: role.interviewDuration ?? 30,
                })}
                className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted hover:bg-muted/10 transition-colors"
              >
@@ -836,6 +880,7 @@ export default function CreateRolePage() {
                         </p>
                         <p className="text-xs text-muted mt-0.5">
                           {role.topics.length} {language === 'es' ? 'temas' : 'topics'} •{' '}
+                          {role.interviewDuration ?? 30} min •{' '}
                           {new Date(role.createdAt).toLocaleDateString()}
                           {role.topics.some(t => t.rubric) && (
                             <span className="ml-1.5 text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">

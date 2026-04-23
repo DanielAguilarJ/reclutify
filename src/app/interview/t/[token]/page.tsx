@@ -14,7 +14,11 @@ import { useAdminStore } from '@/store/adminStore';
 import { useTicketStore } from '@/store/ticketStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
+import { createClient } from '@/utils/supabase/client';
 import { ShieldX, Clock, CheckCircle2 } from 'lucide-react';
+
+import type { Role, Topic } from '@/types';
+import type { InterviewTicket } from '@/types';
 
 type TicketStatus = 'loading' | 'valid' | 'invalid' | 'used' | 'expired';
 
@@ -24,7 +28,7 @@ export default function TicketInterviewPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = use(params);
-  const { getTicketByToken, markTicketUsed } = useTicketStore();
+  const { getTicketByToken, markTicketUsed, fetchTicketByToken, syncMarkUsed } = useTicketStore();
   const { roles } = useAdminStore();
   const { phase, setTopics, setCandidate, setPhase, setRoleId } = useInterviewStore();
   const { language, setLanguage, planTier } = useAppStore();
@@ -36,35 +40,46 @@ export default function TicketInterviewPage({
   const [candidateName, setCandidateName] = useState('');
 
   useEffect(() => {
-    // Wait for Zustand hydration to finish before checking
-    const checkTicket = () => {
-      // Check for encoded fallback data in URL (cross-device MVP trick)
-      const params = new URLSearchParams(window.location.search);
-      const d = params.get('d');
-      if (d) {
-        try {
-          const decoded = decodeURIComponent(escape(atob(d)));
-          const payload = JSON.parse(decoded);
-          if (payload.t && payload.r) {
-            const currentTickets = useTicketStore.getState().tickets;
-            const currentRoles = useAdminStore.getState().roles;
-            
-            if (!currentTickets.find((t) => t.token === token)) {
-              useTicketStore.setState({ tickets: [payload.t, ...currentTickets] });
-            }
-            if (!currentRoles.find((r) => r.id === payload.r.id)) {
-              useAdminStore.setState({ roles: [payload.r, ...currentRoles] });
-            }
-          }
-        } catch (e) {
-          console.error('Failed to decode fallback payload');
+    const checkTicket = async () => {
+      // 1. Primero intentar encontrar el ticket en el store local (caché)
+      let currentTicket = getTicketByToken(token);
+      let role: Role | undefined;
+
+      // 2. Si no está en local, buscar en Supabase directamente
+      if (!currentTicket) {
+        const supabaseTicket = await fetchTicketByToken(token);
+        if (supabaseTicket) {
+          currentTicket = supabaseTicket;
         }
       }
 
-      // Always get fresh state, bypassing potential React closure staleness
-      const currentTicket = useTicketStore.getState().tickets.find((t) => t.token === token);
-      const currentRoles = useAdminStore.getState().roles;
+      // 3. Fallback: intentar decodificar datos del URL (compatibilidad hacia atrás)
+      if (!currentTicket) {
+        const params = new URLSearchParams(window.location.search);
+        const d = params.get('d');
+        if (d) {
+          try {
+            const decoded = decodeURIComponent(escape(atob(d)));
+            const payload = JSON.parse(decoded);
+            if (payload.t && payload.r) {
+              const currentTickets = useTicketStore.getState().tickets;
+              const currentRoles = useAdminStore.getState().roles;
+              
+              if (!currentTickets.find((t) => t.token === token)) {
+                useTicketStore.setState({ tickets: [payload.t, ...currentTickets] });
+              }
+              if (!currentRoles.find((r: Role) => r.id === payload.r.id)) {
+                useAdminStore.setState({ roles: [payload.r, ...currentRoles] });
+              }
+              currentTicket = payload.t as InterviewTicket;
+            }
+          } catch (e) {
+            console.error('Failed to decode fallback payload');
+          }
+        }
+      }
 
+      // Verificar estado del ticket
       if (!currentTicket) {
         setTicketStatus('invalid');
         return;
@@ -80,28 +95,62 @@ export default function TicketInterviewPage({
         return;
       }
 
-      // Valid ticket — set up the interview
-      const role = currentRoles.find((r) => r.id === currentTicket.roleId);
+      // Buscar el rol — primero en store local, luego en Supabase
+      role = useAdminStore.getState().roles.find((r) => r.id === currentTicket!.roleId);
+      
+      if (!role) {
+        // Intentar cargar el rol directamente desde Supabase
+        try {
+          const supabase = createClient();
+          const { data: roleData } = await supabase
+            .from('roles')
+            .select('*')
+            .eq('id', currentTicket.roleId)
+            .single();
+
+          if (roleData) {
+            role = {
+              id: roleData.id,
+              title: roleData.title,
+              description: roleData.description || undefined,
+              location: roleData.location || undefined,
+              salary: roleData.salary || undefined,
+              jobType: roleData.job_type || undefined,
+              topics: roleData.topics || [],
+              createdAt: new Date(roleData.created_at).getTime(),
+            };
+            // Agregar al store local para uso futuro
+            const currentRoles = useAdminStore.getState().roles;
+            if (!currentRoles.find((r) => r.id === role!.id)) {
+              useAdminStore.setState({ roles: [role!, ...currentRoles] });
+            }
+          }
+        } catch (err) {
+          console.error('Error cargando rol desde Supabase:', err);
+        }
+      }
+
       if (role) {
         setTopics(role.topics);
         setLocalRoleId(role.id);
-        setRoleId(role.id);  // Store in interview store for InterviewComplete
+        setRoleId(role.id);
         setCandidateName(currentTicket.candidateName);
 
-        // Set app language from ticket
+        // Setear idioma desde el ticket
         setLanguage(currentTicket.language);
 
-        // Pre-fill candidate info
+        // Pre-llenar info del candidato
         setCandidate({
           name: currentTicket.candidateName,
           email: '',
           phone: '',
         });
 
-        // Mark as used immediately so it can't be opened again
+        // Marcar como usado localmente e inmediatamente en Supabase
         markTicketUsed(token);
+        syncMarkUsed(token);
 
-        // Start at the details form so candidate can enter their email and phone
+        // Iniciar en el formulario de detalles
         setPhase('details');
         setTicketStatus('valid');
       } else {
@@ -109,11 +158,11 @@ export default function TicketInterviewPage({
       }
     };
 
-    // Hydration delay
+    // Pequeño delay para hidratación de Zustand
     setTimeout(checkTicket, 100);
   }, [token]);
 
-  // Error screens
+  // Pantallas de error
   if (ticketStatus === 'loading') {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -185,7 +234,7 @@ export default function TicketInterviewPage({
     );
   }
 
-  // Valid ticket — show interview flow
+  // Ticket válido — mostrar flujo de entrevista
   if (phase === 'interview') {
     return <InterviewRoom roleId={localRoleId} />;
   }

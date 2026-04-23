@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2 } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
+import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
 import type { Role, Topic, TopicRubric } from '@/types';
 import Link from 'next/link';
@@ -287,6 +288,9 @@ export default function CreateRolePage() {
   const { addRole, roles, removeRole } = useAdminStore();
   const { language, planTier } = useAppStore();
   const t = dictionaries[language];
+
+  // Sincronizar roles con Supabase al montar
+  useRoles();
 
   // Form state
   const [jobTitle, setJobTitle] = useState('');

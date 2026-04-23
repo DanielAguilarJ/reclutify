@@ -6,11 +6,17 @@ import { Ticket, Copy, Check, Plus, Clock, CheckCircle2, XCircle, Link2 } from '
 import { useTicketStore } from '@/store/ticketStore';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
+import { useTickets } from '@/hooks/useTickets';
+import { useRoles } from '@/hooks/useRoles';
 
 export default function TicketsPage() {
-  const { tickets, addTicket } = useTicketStore();
+  const { tickets, addTicket, syncAddTicket } = useTicketStore();
   const { roles } = useAdminStore();
   const { language } = useAppStore();
+
+  // Sincronizar con Supabase al montar
+  useTickets();
+  useRoles();
   
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -37,6 +43,9 @@ export default function TicketsPage() {
     // Generar el ticket y mostrar éxito de inmediato en la UI
     const ticket = addTicket(finalName, finalRoleId, selectedLang);
     setJustCreated(ticket.token);
+
+    // Sincronizar con Supabase en segundo plano
+    syncAddTicket(ticket);
     
     let dParam = '';
     const role = roles.find((r) => r.id === ticket.roleId);

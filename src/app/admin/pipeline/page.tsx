@@ -6,12 +6,19 @@ import { motion } from 'framer-motion';
 import { Search, ArrowUpRight, Clock, CheckCircle2, AlertCircle, Bot, Loader2, ArrowUpDown } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
+import { useRoles } from '@/hooks/useRoles';
+import { useCandidates } from '@/hooks/useCandidates';
 import type { CandidateResult } from '@/types';
 import CompareModal from '@/components/admin/CompareModal';
 
 export default function PipelinePage() {
   const { candidates, roles, updateCandidate } = useAdminStore();
   const { language } = useAppStore();
+
+  // Sincronizar con Supabase al montar
+  useRoles();
+  useCandidates();
+
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());

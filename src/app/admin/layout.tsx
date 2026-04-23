@@ -12,14 +12,16 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }) {
   const supabase = await createClient();
-  const { data: { session }, error } = await supabase.auth.getSession();
+  // Usar getUser() (seguro) en vez de getSession() (inseguro en server)
+  // getUser() valida el JWT contactando al servidor de auth de Supabase
+  const { data: { user }, error } = await supabase.auth.getUser();
 
-  if (!session || error) {
+  if (!user || error) {
     redirect('/login');
   }
 
-  const companyName = session.user.user_metadata?.company_name;
-  const userName = session.user.user_metadata?.full_name || 'Admin';
+  const companyName = user.user_metadata?.company_name;
+  const userName = user.user_metadata?.full_name || 'Admin';
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -65,7 +67,7 @@ export default async function AdminLayout({
             </div>
             <div className="truncate">
               <p className="text-xs font-medium text-foreground">{userName}</p>
-              <p className="text-xs text-muted truncate max-w-[140px]">{session.user.email}</p>
+              <p className="text-xs text-muted truncate max-w-[140px]">{user.email}</p>
             </div>
           </div>
         </div>

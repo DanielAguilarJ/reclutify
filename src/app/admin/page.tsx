@@ -3,6 +3,8 @@
 import { useMemo } from 'react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
+import { useRoles } from '@/hooks/useRoles';
+import { useCandidates } from '@/hooks/useCandidates';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell
@@ -23,6 +25,10 @@ const PIE_COLORS = {
 export default function AdminDashboardPage() {
   const { candidates, roles } = useAdminStore();
   const { language } = useAppStore();
+
+  // Sincronizar datos con Supabase al montar el componente
+  useRoles();
+  useCandidates();
 
   const metrics = useMemo(() => {
     const totalCandidates = candidates.length;

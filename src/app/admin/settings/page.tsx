@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { User, Bell, Globe, Save, CheckCircle2, CreditCard, Key, Link2, Send, Loader2, Trash2, ExternalLink } from 'lucide-react';
 import { useAppStore, PlanTier } from '@/store/appStore';
@@ -9,8 +9,13 @@ import { dictionaries } from '@/lib/i18n';
 
 export default function SettingsPage() {
   const { language, setLanguage, planTier, setPlanTier } = useAppStore();
-  const { webhookUrl, webhookSecret, webhookLogs, setWebhookUrl, setWebhookSecret, addLog, clearLogs } = useWebhookStore();
+  const { webhookUrl, webhookSecret, webhookLogs, setWebhookUrl, setWebhookSecret, addLog, clearLogs, fetchWebhookConfig, syncWebhookConfig } = useWebhookStore();
   const t = dictionaries[language];
+
+  // Cargar configuración de webhook desde Supabase al montar
+  useEffect(() => {
+    fetchWebhookConfig();
+  }, [fetchWebhookConfig]);
 
   // Local state for mock settings
   const [profile, setProfile] = useState({ name: 'Admin RH', email: 'admin@worldbrain.com', company: 'WorldBrain Mexico' });
@@ -19,13 +24,12 @@ export default function SettingsPage() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
   const [testingWebhook, setTestingWebhook] = useState(false);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setSaveStatus('saving');
-    // Simulate an API call
-    setTimeout(() => {
-      setSaveStatus('success');
-      setTimeout(() => setSaveStatus('idle'), 2000);
-    }, 800);
+    // Sincronizar webhook config con Supabase
+    await syncWebhookConfig();
+    setSaveStatus('success');
+    setTimeout(() => setSaveStatus('idle'), 2000);
   };
 
   const handleTestWebhook = async () => {

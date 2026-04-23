@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { useAdminStore } from '@/store/adminStore';
+import type { BiasFlag } from '@/types';
 import { useAppStore } from '@/store/appStore';
 import { ShieldAlert, Info, TrendingDown, AlertTriangle, ShieldCheck, Users, Clock, Zap } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
@@ -23,8 +24,7 @@ export default function BiasAnalyticsPage() {
   const evaluated = useMemo(() => candidates.filter(c => c.evaluation), [candidates]);
 
   const allFlags = useMemo(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const flags: Array<{ flag: any, candidateName: string, roleTitle: string, date: number }> = [];
+    const flags: Array<{ flag: BiasFlag, candidateName: string, roleTitle: string, date: number }> = [];
     evaluated.forEach(c => {
       if (c.evaluation?.biasFlags) {
         c.evaluation.biasFlags.forEach(f => {
@@ -70,13 +70,14 @@ export default function BiasAnalyticsPage() {
   }, [evaluated]);
 
   const biasByType = useMemo(() => {
-    const types = ['linguistic_bias', 'gender_bias', 'cultural_bias', 'age_bias'];
+    const types: BiasFlag['type'][] = ['linguistic_bias', 'gender_bias', 'cultural_bias', 'age_bias'];
     const result: Record<string, { total: number, high: number, medium: number, low: number }> = {};
     types.forEach(t => result[t] = { total: 0, high: 0, medium: 0, low: 0 });
     allFlags.forEach(({ flag }) => {
-      if (result[flag.type]) {
-        result[flag.type].total++;
-        result[flag.type][flag.severity]++;
+      const bucket = result[flag.type];
+      if (bucket) {
+        bucket.total++;
+        bucket[flag.severity]++;
       }
     });
     return result;

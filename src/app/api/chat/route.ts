@@ -4,7 +4,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const { currentTopic, allTopics, recentMessages, language, roleTitle, roleDescription, isLastTopic } = await req.json();
+    const { currentTopic, allTopics, recentMessages, language, roleTitle, roleDescription, isLastTopic, interviewDuration } = await req.json();
+
+    // Calcular tiempo por tema según la duración configurada
+    const totalTopics = allTopics?.length || 1;
+    const totalMinutes = interviewDuration || 30;
+    const minutesPerTopic = Math.max(2, Math.floor(totalMinutes / totalTopics));
 
 
     const apiKey = process.env.OPENROUTER_API_KEY;
@@ -79,10 +84,10 @@ CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 RULES:
 1. Read the transcript below. The last message is from the CANDIDATE. You must respond as ZARA THE INTERVIEWER with a follow-up question or a new question.
 2. CONTEXT CONTINUITY: Your next question MUST follow logically from the candidate's last answer. Acknowledge what they said briefly, then ask a deeper or related question.
-3. TOPIC PROGRESSION: You have a LIMITED time interview. ${isLastTopic
-        ? 'This is the FINAL topic of the interview. After 2-3 exchanges on this topic, you MUST conclude the interview. Offer your final closing remarks, thank the candidate for their time, and append "[END_INTERVIEW]" at the very end of your response.'
-        : 'After 2-3 exchanges on the current topic, you MUST move to the next topic. Append "[NEXT_TOPIC]" at the very end of your response when ready to advance. Check the topic list above — do NOT stay too long on completed topics.'
-      }
+3. TOPIC PROGRESSION & TIME MANAGEMENT: This interview lasts exactly ${totalMinutes} minutes total. You have approximately ${minutesPerTopic} minutes per topic (${totalTopics} topics total). PACE YOURSELF: Ask only ${minutesPerTopic <= 3 ? '1-2' : minutesPerTopic <= 5 ? '2-3' : '3-4'} questions per topic maximum. ${isLastTopic
+        ? 'This is the FINAL topic of the interview. After 1-2 exchanges on this topic, you MUST conclude the interview. Offer your final closing remarks, thank the candidate for their time, and append "[END_INTERVIEW]" at the very end of your response.'
+        : 'After the allocated exchanges for this topic, transition to the next one by appending "[NEXT_TOPIC]" at the very end of your response. Check the topic list above \u2014 do NOT stay too long on completed topics.'
+      } ${totalMinutes <= 20 ? 'VERY SHORT INTERVIEW: Be concise and direct. Skip pleasantries. Go straight to key questions.' : totalMinutes >= 60 ? 'LONG INTERVIEW: You have time to explore deeply. Dig into examples and edge cases.' : 'STANDARD INTERVIEW: Balance depth with pace.'}
 4. Keep responses well under 50 words. Be conversational and natural.
 5. EXTREMELY IMPORTANT: Respond ONLY in ${lang}. DO NOT USE ANY OTHER LANGUAGE.
 6. EXTREMELY IMPORTANT: Ask EXACTLY ONE question at a time. DO NOT give a list of questions, and DO NOT reveal upcoming questions.`;

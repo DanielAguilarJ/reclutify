@@ -14,6 +14,7 @@ interface InterviewState {
   isProcessing: boolean;
   roleId: string | null;
   screenStream: MediaStream | null;
+  interviewDuration: number; // Duración de la entrevista en minutos
 
   setPhase: (phase: InterviewPhase) => void;
   setCandidate: (candidate: Candidate) => void;
@@ -29,6 +30,7 @@ interface InterviewState {
   setSessionId: (id: string | null) => void;
   setRoleId: (roleId: string | null) => void;
   setScreenStream: (stream: MediaStream | null) => void;
+  setInterviewDuration: (minutes: number) => void;
   reset: () => void;
 }
 
@@ -46,6 +48,7 @@ const initialState = {
   sessionId: null,
   roleId: null,
   screenStream: null,
+  interviewDuration: 30, // Default: 30 minutos
 };
 
 export const useInterviewStore = create<InterviewState>((set) => ({
@@ -72,6 +75,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
   setIsProcessing: (isProcessing) => set({ isProcessing }),
   setSessionId: (sessionId) => set({ sessionId }),
   setRoleId: (roleId) => set({ roleId }),
+  setInterviewDuration: (interviewDuration) => set({ interviewDuration }),
   setScreenStream: (screenStream) => set({ screenStream }),
   reset: () => set(initialState),
 }));

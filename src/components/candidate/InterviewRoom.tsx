@@ -219,6 +219,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           `.trim(),
           recentMessages: allMessages,
           isLastTopic,
+          interviewDuration: useInterviewStore.getState().interviewDuration,
         }),
       });
 

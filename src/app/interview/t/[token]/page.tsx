@@ -30,7 +30,7 @@ export default function TicketInterviewPage({
   const { token } = use(params);
   const { getTicketByToken, markTicketUsed, fetchTicketByToken, syncMarkUsed } = useTicketStore();
   const { roles } = useAdminStore();
-  const { phase, setTopics, setCandidate, setPhase, setRoleId } = useInterviewStore();
+  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration } = useInterviewStore();
   const { language, setLanguage, planTier } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
@@ -116,6 +116,7 @@ export default function TicketInterviewPage({
               location: roleData.location || undefined,
               salary: roleData.salary || undefined,
               jobType: roleData.job_type || undefined,
+              interviewDuration: roleData.interview_duration ?? 30,
               topics: roleData.topics || [],
               createdAt: new Date(roleData.created_at).getTime(),
             };
@@ -134,6 +135,7 @@ export default function TicketInterviewPage({
         setTopics(role.topics);
         setLocalRoleId(role.id);
         setRoleId(role.id);
+        setInterviewDuration(role.interviewDuration ?? 30);
         setCandidateName(currentTicket.candidateName);
 
         // Setear idioma desde el ticket

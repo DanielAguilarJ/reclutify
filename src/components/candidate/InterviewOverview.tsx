@@ -7,7 +7,7 @@ import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 
 export default function InterviewOverview() {
-  const { topics, setPhase, candidate } = useInterviewStore();
+  const { topics, setPhase, candidate, interviewDuration } = useInterviewStore();
   const { language } = useAppStore();
   const t = dictionaries[language];
 
@@ -37,7 +37,9 @@ export default function InterviewOverview() {
             <p className="text-sm font-medium text-foreground">
               {t.estimatedDuration}
             </p>
-            <p className="text-xs text-muted">{t.durationTime}</p>
+            <p className="text-xs text-muted">
+              ~{interviewDuration} {language === 'es' ? 'minutos' : 'minutes'}
+            </p>
           </div>
         </div>
 

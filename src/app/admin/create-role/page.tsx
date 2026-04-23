@@ -300,6 +300,7 @@ export default function CreateRolePage() {
   const [salary, setSalary] = useState('');
   const [generationLanguage, setGenerationLanguage] = useState<'es' | 'en'>(language === 'es' ? 'es' : 'en');
   const [candidateEmails, setCandidateEmails] = useState<string>('');
+  const [interviewDuration, setInterviewDuration] = useState<number>(30);
   
   // Topics state (now with rubric data)
   const [topics, setTopics] = useState<TopicDraft[]>([]);
@@ -425,6 +426,7 @@ export default function CreateRolePage() {
       jobType: jobType || undefined,
       location: location || undefined,
       salary: salary || undefined,
+      interviewDuration,
       topics: roleTopics,
       createdAt: Date.now(),
     });
@@ -462,6 +464,7 @@ export default function CreateRolePage() {
       setJobType('');
       setLocation('');
       setSalary('');
+      setInterviewDuration(30);
       setTopics([]);
       setCandidateEmails('');
       setSuccess(false);
@@ -626,6 +629,44 @@ export default function CreateRolePage() {
                 </motion.div>
               )}
 
+              {/* ─── Duración de la Entrevista ─── */}
+              <div className="mb-5">
+                <label className="block text-xs font-medium text-foreground mb-2 flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-muted" />
+                  {language === 'es' ? 'Duración de la Entrevista' : 'Interview Duration'}
+                </label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {[15, 30, 45, 60, 90].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setInterviewDuration(mins)}
+                      className={`px-3.5 py-1.5 rounded-full text-xs font-medium border transition-all cursor-pointer ${
+                        interviewDuration === mins
+                          ? 'bg-primary text-white border-primary shadow-sm'
+                          : 'bg-background border-border text-muted hover:border-primary/30 hover:text-foreground'
+                      }`}
+                    >
+                      {mins} min
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="5"
+                    max="180"
+                    value={interviewDuration}
+                    onChange={(e) => setInterviewDuration(Math.max(5, Math.min(180, Number(e.target.value) || 30)))}
+                    className="w-20 px-3 py-1.5 rounded-xl border border-border bg-background text-foreground text-sm
+                      focus:outline-none focus:ring-2 focus:ring-primary/30 text-center"
+                  />
+                  <span className="text-xs text-muted">
+                    {language === 'es' ? 'minutos (personalizado)' : 'minutes (custom)'}
+                  </span>
+                </div>
+              </div>
+
               {/* Generate Button */}
               <button
                 onClick={handleGenerateRubric}
@@ -733,7 +774,7 @@ export default function CreateRolePage() {
                     {/* Actions */}
                     <div className="pt-4 flex items-center justify-between border-t border-border/30">
                       <button
-                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setCandidateEmails(''); setShowDescription(false); }}
+                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setInterviewDuration(30); setCandidateEmails(''); setShowDescription(false); }}
                         className="px-4 py-2 text-sm font-medium text-muted hover:text-foreground transition-colors"
                       >
                         {language === 'es' ? 'Limpiar' : 'Clear Form'}

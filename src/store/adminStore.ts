@@ -39,6 +39,7 @@ function roleToSupabase(role: Role, orgId: string) {
     location: role.location || null,
     salary: role.salary || null,
     job_type: role.jobType || null,
+    interview_duration: role.interviewDuration ?? 30,
     topics: role.topics,
     created_at: new Date(role.createdAt).toISOString(),
   };
@@ -55,6 +56,7 @@ function roleFromSupabase(row: Record<string, unknown>): Role {
     location: (row.location as string) || undefined,
     salary: (row.salary as string) || undefined,
     jobType: (row.job_type as string) || undefined,
+    interviewDuration: (row.interview_duration as number) ?? 30,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     topics: (row.topics as any) || [],
     createdAt: new Date(row.created_at as string).getTime(),
@@ -229,6 +231,7 @@ export const useAdminStore = create<AdminState>()(
           if (updates.location !== undefined) supabaseUpdates.location = updates.location;
           if (updates.salary !== undefined) supabaseUpdates.salary = updates.salary;
           if (updates.jobType !== undefined) supabaseUpdates.job_type = updates.jobType;
+          if (updates.interviewDuration !== undefined) supabaseUpdates.interview_duration = updates.interviewDuration;
           if (updates.topics !== undefined) supabaseUpdates.topics = updates.topics;
 
           const { error } = await supabase

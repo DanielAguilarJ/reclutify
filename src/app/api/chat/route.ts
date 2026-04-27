@@ -8,8 +8,37 @@ export async function POST(req: NextRequest) {
 
     // Calcular tiempo por tema según la duración configurada
     const totalTopics = allTopics?.length || 1;
-    const totalMinutes = interviewDuration || 30;
-    const minutesPerTopic = Math.max(2, Math.floor(totalMinutes / totalTopics));
+    const totalMinutes = typeof interviewDuration === 'number' && interviewDuration > 0
+      ? interviewDuration
+      : 30;
+    const minutesPerTopic = totalTopics > 0
+      ? parseFloat((totalMinutes / totalTopics).toFixed(2))
+      : totalMinutes;
+
+    // Adaptive question budget: scales with actual time per topic
+    // < 1 min  → 1-2  (e.g. 5 min / 6 topics = 0.83 min)
+    // 1-2 min  → 1-3  (e.g. 10 min / 6 topics = 1.67 min)
+    // 2-4 min  → 2-3  (e.g. 15 min / 6 topics = 2.5 min)
+    // 4-7 min  → 3-5  (e.g. 30 min / 6 topics = 5 min)
+    // > 7 min  → 4-7  (e.g. 60 min / 6 topics = 10 min)
+    const questionsRange =
+      minutesPerTopic < 1   ? '1-2'
+      : minutesPerTopic < 2 ? '1-3'
+      : minutesPerTopic < 4 ? '2-3'
+      : minutesPerTopic < 7 ? '3-5'
+      : '4-7';
+
+    // Adaptive pacing instruction that matches the configured duration
+    const interviewPaceLabel =
+      totalMinutes <= 7
+        ? 'VERY SHORT INTERVIEW: Be extremely concise. Ask only the single most important question per topic. No pleasantries whatsoever.'
+        : totalMinutes <= 15
+          ? 'SHORT INTERVIEW: Be concise and direct. Skip pleasantries. Go straight to key questions.'
+          : totalMinutes <= 35
+            ? 'STANDARD INTERVIEW: Balance depth with pace.'
+            : totalMinutes <= 55
+              ? 'LONG INTERVIEW: You have time to explore deeply. Ask follow-up questions and dig into examples.'
+              : 'VERY LONG INTERVIEW: Explore topics thoroughly. Dig into edge cases, examples, and lessons learned.';
 
 
     const apiKey = process.env.OPENROUTER_API_KEY;
@@ -84,13 +113,14 @@ CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 RULES:
 1. Read the transcript below. The last message is from the CANDIDATE. You must respond as ZARA THE INTERVIEWER with a follow-up question or a new question.
 2. CONTEXT CONTINUITY: Your next question MUST follow logically from the candidate's last answer. Acknowledge what they said briefly, then ask a deeper or related question.
-3. TOPIC PROGRESSION & TIME MANAGEMENT: This interview lasts exactly ${totalMinutes} minutes total. You have approximately ${minutesPerTopic} minutes per topic (${totalTopics} topics total). PACE YOURSELF: Ask only ${minutesPerTopic <= 3 ? '1-2' : minutesPerTopic <= 5 ? '2-3' : '3-4'} questions per topic maximum. ${isLastTopic
+3. TOPIC PROGRESSION & TIME MANAGEMENT: This interview lasts exactly ${totalMinutes} minutes total. You have approximately ${minutesPerTopic} minutes per topic (${totalTopics} topics total). PACE YOURSELF: Ask only ${questionsRange} questions per topic maximum. ${isLastTopic
         ? 'This is the FINAL topic of the interview. After 1-2 exchanges on this topic, you MUST conclude the interview. Offer your final closing remarks, thank the candidate for their time, and append "[END_INTERVIEW]" at the very end of your response.'
-        : 'After the allocated exchanges for this topic, transition to the next one by appending "[NEXT_TOPIC]" at the very end of your response. Check the topic list above \u2014 do NOT stay too long on completed topics.'
-      } ${totalMinutes <= 20 ? 'VERY SHORT INTERVIEW: Be concise and direct. Skip pleasantries. Go straight to key questions.' : totalMinutes >= 60 ? 'LONG INTERVIEW: You have time to explore deeply. Dig into examples and edge cases.' : 'STANDARD INTERVIEW: Balance depth with pace.'}
+        : 'After the allocated exchanges for this topic, transition to the next one by appending "[NEXT_TOPIC]" at the very end of your response. Check the topic list above — do NOT stay too long on completed topics.'
+      } ${interviewPaceLabel}
 4. Keep responses well under 50 words. Be conversational and natural.
-5. EXTREMELY IMPORTANT: Respond ONLY in ${lang}. DO NOT USE ANY OTHER LANGUAGE.
-6. EXTREMELY IMPORTANT: Ask EXACTLY ONE question at a time. DO NOT give a list of questions, and DO NOT reveal upcoming questions.`;
+5. DEAD END DETECTION: If the candidate has responded with "no sé", "no sabría", "tampoco sé", "no lo sé", "I don't know", or any equivalent dismissive/empty answer 2 or more times consecutively on the CURRENT topic, you MUST immediately output [NEXT_TOPIC] (or [END_INTERVIEW] if last topic) without asking another question on the same topic. DO NOT reformulate or rephrase the same question again.
+6. EXTREMELY IMPORTANT: Respond ONLY in ${lang}. DO NOT USE ANY OTHER LANGUAGE.
+7. EXTREMELY IMPORTANT: Ask EXACTLY ONE question at a time. DO NOT give a list of questions, and DO NOT reveal upcoming questions.`;
 
 
     const userMessage = `Here is the full interview transcript so far:
@@ -100,7 +130,7 @@ ${conversationLines}
 ---
 Now respond as ZARA THE INTERVIEWER. Ask the candidate a follow-up question or a new question about "${currentTopic}". Remember: you are the INTERVIEWER, NOT the candidate. DO NOT answer questions. Only ASK them. ${isLastTopic
         ? 'If you have asked 2-3 questions on this final topic, conclude the interview by saying goodbye and appending [END_INTERVIEW].'
-        : 'If you have asked 2-3 questions on this topic already, transition to the next one by appending [NEXT_TOPIC].'
+        : `If you have asked ${questionsRange} questions on this topic already, OR if the candidate has given 2+ consecutive empty/dismissive answers, transition to the next one by appending [NEXT_TOPIC].`
       }`;
 
 

@@ -59,7 +59,12 @@ export function useCandidates() {
           }
         }
       )
-      .subscribe();
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          // Re-sync to capture any events that arrived during connection setup
+          await useAdminStore.getState().fetchFromSupabase();
+        }
+      });
 
     channelRef.current = channel;
 
@@ -88,9 +93,11 @@ function candidateFromPayload(row: Record<string, unknown>): CandidateResult {
     },
     roleId: row.role_id as string,
     roleTitle: row.role_title as string,
-    date: row.date as number,
+    date: typeof row.date === 'number' && row.date < 1e12
+      ? row.date * 1000  // Unix seconds → ms
+      : (row.date as number),
     status: (row.status as CandidateResult['status']) || 'pending',
-    duration: (row.duration as number) || undefined,
+    duration: row.duration != null ? (row.duration as number) : undefined,
     videoUrl: (row.video_url as string) || undefined,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     evaluation: (row.evaluation as any) || undefined,

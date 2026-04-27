@@ -13,13 +13,18 @@ import { Users, CheckCircle2, Clock, Briefcase, ArrowUpRight } from 'lucide-reac
 import Link from 'next/link';
 
 const COLORS = ['#10B981', '#F59E0B', '#EF4444'];
-const PIE_COLORS = {
+const PIE_COLORS: Record<string, string> = {
+  // ES keys
   'Aprobado': '#10B981',
   'En revisión': '#F59E0B',
   'No recomendado': '#EF4444',
+  // EN keys
+  'Approved': '#10B981',
+  'Not Recommended': '#EF4444',
+  // Raw recommendation values
   'Strong Hire': '#10B981',
-  'Hire': '#10B981',  
-  'Pass': '#EF4444'
+  'Hire': '#10B981',
+  'Pass': '#EF4444',
 };
 
 export default function AdminDashboardPage() {
@@ -38,9 +43,10 @@ export default function AdminDashboardPage() {
     const approved = evaluated.filter(c => c.evaluation?.recommendation === 'Strong Hire' || c.evaluation?.recommendation === 'Hire');
     const approvalRate = evaluated.length > 0 ? (approved.length / evaluated.length) * 100 : 0;
 
-    // Tiempo promedio (se asumen 15 minutos si no hay métrica duration)
-    const totalTime = evaluated.reduce((acc, curr) => acc + (curr.duration || 15), 0);
-    const avgTime = evaluated.length > 0 ? totalTime / evaluated.length : 0;
+    // Average time — only include candidates with a real duration value
+    const withDuration = evaluated.filter(c => c.duration != null);
+    const totalTime = withDuration.reduce((acc, curr) => acc + curr.duration!, 0);
+    const avgTime = withDuration.length > 0 ? totalTime / withDuration.length : 0;
 
     return {
       totalCandidates,

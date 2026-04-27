@@ -94,6 +94,35 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     }
   }, [transcript, hasStarted, timerSeconds]);
 
+  // Timer-based force-advance: ensures topics progress even if AI never emits [NEXT_TOPIC]
+  useEffect(() => {
+    if (!hasStarted || !currentRole?.interviewDuration || topics.length === 0) return;
+
+    const totalSeconds = currentRole.interviewDuration * 60;
+    const secondsPerTopic = Math.floor(totalSeconds / topics.length);
+    const expectedTopicIndex = Math.min(
+      Math.floor(timerSeconds / secondsPerTopic),
+      topics.length - 1
+    );
+
+    // If the clock says we should be on a later topic, force-advance
+    if (
+      expectedTopicIndex > currentTopicIndex &&
+      !isAiSpeaking &&
+      !isProcessing
+    ) {
+      console.log(
+        `[Timer Force-Advance] Expected topic ${expectedTopicIndex}, current ${currentTopicIndex}`
+      );
+      if (expectedTopicIndex >= topics.length - 1) {
+        endInterview();
+      } else {
+        nextTopic();
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timerSeconds, hasStarted]);
+
   // Safe restart of SpeechRecognition — prevents silent death
   const restartRecognition = useCallback(() => {
     if (!interviewActiveRef.current || speakingRef.current) return;
@@ -219,7 +248,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           `.trim(),
           recentMessages: allMessages,
           isLastTopic,
-          interviewDuration: useInterviewStore.getState().interviewDuration,
+          interviewDuration: Number(useInterviewStore.getState().interviewDuration) || 30,
         }),
       });
 

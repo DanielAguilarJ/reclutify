@@ -1,9 +1,41 @@
+export interface CvExperience {
+  company: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  duration: string;
+  responsibilities: string[];
+  achievements: string[];
+}
+
+export interface CvEducation {
+  institution: string;
+  degree: string;
+  field: string;
+  year: string;
+}
+
+export interface CvData {
+  name: string;
+  email: string;
+  phone: string;
+  summary: string;
+  currentTitle: string;
+  totalYearsExperience: number;
+  experience: CvExperience[];
+  education: CvEducation[];
+  skills: string[];
+  languages: string[];
+  certifications: string[];
+  redFlags: string[];
+}
+
 export interface Candidate {
   name: string;
   email: string;
   phone: string;
   linkedinUrl?: string;
-  cvData?: any;
+  cvData?: CvData;
 }
 
 export interface TopicRubric {

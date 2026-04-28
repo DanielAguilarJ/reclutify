@@ -276,6 +276,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         body: JSON.stringify({
           currentTopic: currentTopic.label,
           allTopics,
+          cvData: candidate?.cvData || null,
+          candidateName: candidate?.name || '',
           language: language,
           roleTitle: currentRole?.title || 'Candidate',
           roleDescription: `
@@ -807,6 +809,20 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
                   />
                 </div>
               </motion.div>
+
+              {/* CV Loaded Indicator */}
+              {candidate?.cvData && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-white/80 backdrop-blur-sm rounded-full shadow-sm border border-success/20"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                  <span className="text-xs font-medium text-success">
+                    {language === 'es' ? 'CV Cargado' : 'CV Loaded'}
+                  </span>
+                </motion.div>
+              )}
             </div>
 
             {/* RIGHT COLUMN: Chat History + Status */}

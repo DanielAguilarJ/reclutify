@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const { currentTopic, allTopics, recentMessages, language, roleTitle, roleDescription, isLastTopic, interviewDuration } = await req.json();
+    const { currentTopic, allTopics, recentMessages, language, roleTitle, roleDescription, isLastTopic, interviewDuration, cvData, candidateName } = await req.json();
 
     // Calcular tiempo por tema según la duración configurada
     const totalTopics = allTopics?.length || 1;
@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
     console.log('Role:', roleTitle);
     console.log('Language:', language);
     console.log('Messages count:', recentMessages.length);
+    console.log('CV Data present:', !!cvData);
 
     // Build topic list with status indicators AND rubric-aware depth hints
     const topicList = allTopics
@@ -95,6 +96,70 @@ export async function POST(req: NextRequest) {
       ? `\nEVALUATION GUIDE FOR CURRENT TOPIC: You want to discover if the candidate demonstrates: "${currentTopicData.rubric.excellent}". Ask questions that reveal this level of competence. A weak candidate would show: "${currentTopicData.rubric.poor}".`
       : '';
 
+    // Build CV profile section for the system prompt (only if CV was uploaded)
+    let cvProfileSection = '';
+    let cvVerificationInstructions = '';
+    if (cvData && typeof cvData === 'object' && (cvData.name || cvData.experience?.length || cvData.skills?.length)) {
+      cvProfileSection = `
+
+=== CANDIDATE PROFILE (extracted from their CV) ===
+Name: ${cvData.name || candidateName || 'Unknown'}
+Current/Last Title: ${cvData.currentTitle || 'Not specified'}
+Years of Experience: ${cvData.totalYearsExperience || 'Not specified'}
+Professional Summary: ${cvData.summary || 'Not provided'}
+
+Work Experience:
+${(cvData.experience || []).map((exp: { company?: string; title?: string; startDate?: string; endDate?: string; duration?: string; responsibilities?: string[]; achievements?: string[] }) =>
+  `- ${exp.title || 'Role'} at ${exp.company || 'Company'} (${exp.startDate || '?'} - ${exp.endDate || '?'}, ${exp.duration || 'unknown duration'})
+  Responsibilities: ${(exp.responsibilities || []).join(', ') || 'Not listed'}
+  Achievements: ${(exp.achievements || []).join(', ') || 'Not listed'}`
+).join('\n') || 'No experience listed'}
+
+Education:
+${(cvData.education || []).map((edu: { degree?: string; field?: string; institution?: string; year?: string }) =>
+  `- ${edu.degree || 'Degree'} in ${edu.field || 'Field'} at ${edu.institution || 'Institution'} (${edu.year || 'Year unknown'})`
+).join('\n') || 'No education listed'}
+
+Skills: ${(cvData.skills || []).join(', ') || 'Not listed'}
+Languages: ${(cvData.languages || []).join(', ') || 'Not listed'}
+Certifications: ${(cvData.certifications || []).join(', ') || 'None listed'}
+Red Flags Detected: ${(cvData.redFlags || []).length > 0 ? cvData.redFlags.join('; ') : 'None detected'}
+=== END CANDIDATE PROFILE ===`;
+
+      cvVerificationInstructions = `
+
+CV VERIFICATION INSTRUCTIONS:
+You have access to the candidate's CV profile above. You MUST incorporate BOTH types of questions:
+
+TYPE 1 — VACANCY QUESTIONS (60% of your questions):
+Technical and situational questions related to the job topics listed above.
+
+TYPE 2 — CV VERIFICATION QUESTIONS (40% of your questions):
+Based on the candidate's CV, generate questions to VERIFY and DEEPEN understanding:
+
+a) EXPERIENCE VERIFICATION:
+- Reference specific companies/roles from their CV: "I see you worked at [company] as [title] for [duration]. What was your biggest achievement there?"
+- Ask about specific responsibilities: "How did you handle [specific responsibility from CV]? Give me a concrete example."
+- Probe employment gaps if any were detected in redFlags.
+
+b) SKILLS VERIFICATION:
+- "You list [skill] on your CV. Walk me through a real project where you applied it."
+- "What's your current proficiency in [skill]? Which projects best demonstrate it?"
+
+c) COHERENCE CHECKS:
+- If there are career gaps (check redFlags): ask what they did during that time
+- If they progressed very quickly: ask how they achieved that progression
+- If they changed jobs frequently: ask about their reasons
+
+d) SOFT SKILLS FROM HISTORY:
+- "How did you handle conflicts in your team at [company X]?"
+- "What did you learn from your time at [company Y] that you apply today?"
+
+PROPORTION: Alternate naturally between vacancy questions and CV verification. Don't cluster all CV questions together.
+
+CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consistent with their CV claims. If you detect inconsistencies, probe deeper with follow-up questions. At the end of the interview, your final message before [END_INTERVIEW] should include an internal note: "[CV_CONSISTENCY: Alta/Media/Baja]" to flag the consistency level.`;
+    }
+
     const systemPrompt = `You are Zara, a Senior HR Recruiter. You are conducting a live job interview.
 
 YOUR ONLY JOB: Ask interview questions. Evaluate the candidate's answers. Ask follow-up questions.
@@ -104,12 +169,12 @@ YOU MUST NEVER: Answer questions yourself. Describe your own experience. Speak a
 JOB INFO:
 - Title: ${roleTitle}
 - Description: ${roleDescription}
-
+${cvProfileSection}
 INTERVIEW TOPICS (in order):
 ${topicList}
 
 CURRENT TOPIC: ${currentTopic}${rubricGuidance}
-
+${cvVerificationInstructions}
 RULES:
 1. Read the transcript below. The last message is from the CANDIDATE. You must respond as ZARA THE INTERVIEWER with a follow-up question or a new question.
 2. CONTEXT CONTINUITY: Your next question MUST follow logically from the candidate's last answer. Acknowledge what they said briefly, then ask a deeper or related question.

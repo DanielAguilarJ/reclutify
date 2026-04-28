@@ -36,17 +36,24 @@ export default function DetailsForm() {
       if (!res.ok) throw new Error('Error upload');
       const json = await res.json();
       if (json.data) {
-         if (json.data.name && !name) setName(json.data.name);
-         if (json.data.email && !email) setEmail(json.data.email);
-         if (json.data.phone && !phone) setPhone(json.data.phone);
-         
-         setCandidate({ 
-           ...candidate, 
-           name: name || json.data.name || '', 
-           email: email || json.data.email || '', 
-           phone: phone || json.data.phone || '', 
-           linkedinUrl, 
-           cvData: json.data 
+         // FIX BUG 1: Compute resolved values BEFORE calling any state setters.
+         // React useState setters are async — reading `name` after setName()
+         // in the same closure still returns the stale closure value.
+         const resolvedName = name || json.data.name || '';
+         const resolvedEmail = email || json.data.email || '';
+         const resolvedPhone = phone || json.data.phone || '';
+
+         if (json.data.name && !name) setName(resolvedName);
+         if (json.data.email && !email) setEmail(resolvedEmail);
+         if (json.data.phone && !phone) setPhone(resolvedPhone);
+
+         setCandidate({
+           ...candidate,
+           name: resolvedName,
+           email: resolvedEmail,
+           phone: resolvedPhone,
+           linkedinUrl,
+           cvData: json.data,
          });
       }
       setCvSuccess(true);
@@ -70,7 +77,8 @@ export default function DetailsForm() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
-    setCandidate({ name, email, phone, linkedinUrl });
+    // FIX BUG 2: Spread existing candidate to preserve cvData and any other fields
+    setCandidate({ ...candidate, name, email, phone, linkedinUrl });
     setPhase('overview');
   };
 

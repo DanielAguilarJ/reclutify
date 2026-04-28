@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const s3Client = new S3Client({
   region: 'auto',
@@ -12,32 +13,36 @@ const s3Client = new S3Client({
 
 export async function POST(req: NextRequest) {
   try {
-    const data = await req.formData();
-    const file: File | null = data.get('file') as unknown as File;
-    
-    if (!file) {
-      return NextResponse.json({ success: false, error: 'No file found' }, { status: 400 });
+    const body = await req.json() as { filename?: string; contentType?: string };
+    const { filename, contentType } = body;
+
+    if (!filename) {
+      return NextResponse.json(
+        { success: false, error: 'Missing filename' },
+        { status: 400 }
+      );
     }
-    
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    
-    const filename = `recording-${Date.now()}.webm`;
-    
+
+    const key = filename;
+    const resolvedContentType = contentType || 'video/webm';
+
     const command = new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
-      Key: filename,
-      Body: buffer,
-      ContentType: file.type || 'video/webm',
+      Key: key,
+      ContentType: resolvedContentType,
     });
 
-    await s3Client.send(command);
-    
-    const url = `${process.env.R2_PUBLIC_URL}/${filename}`;
-    
-    return NextResponse.json({ url });
+    // Presigned URL valid for 15 minutes — plenty of time for the client PUT
+    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });
+
+    const publicUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
+
+    return NextResponse.json({ uploadUrl, publicUrl });
   } catch (error) {
-    console.error('Upload Error:', error);
-    return NextResponse.json({ success: false, error: 'Failed to upload' }, { status: 500 });
+    console.error('Presign Error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to generate upload URL' },
+      { status: 500 }
+    );
   }
 }

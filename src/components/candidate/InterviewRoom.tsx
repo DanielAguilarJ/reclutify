@@ -604,29 +604,50 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.onstop = async () => {
         const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+
+        // Temporary in-session fallback — valid only while this tab is open.
+        // Will be replaced by the permanent R2 URL below if the upload succeeds.
         const localUrl = URL.createObjectURL(blob);
-        
-        // Save local URL as immediate fallback
         localStorage.setItem('tempVideoUrl', localUrl);
 
-        const formData = new FormData();
-        formData.append('file', blob);
         try {
-          const res = await fetch('/api/upload-video', {
-             method: 'POST',
-             body: formData
+          const filename = `recording-${sessionId || Date.now()}.webm`;
+          const contentType = 'video/webm';
+
+          // Step 1 – ask the API for a presigned PUT URL (tiny JSON, well within Vercel limits)
+          const presignRes = await fetch('/api/upload-video', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, contentType }),
           });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.url) {
-              // Overwrite local blob with persistent R2 storage URL if successful
-              localStorage.setItem('tempVideoUrl', data.url);
-            }
+
+          if (!presignRes.ok) {
+            throw new Error(`Presign request failed: ${presignRes.status}`);
           }
-        } catch(e) { 
-          console.error('R2 Upload failed, keeping local blob URL', e); 
+
+          const { uploadUrl, publicUrl } = await presignRes.json() as {
+            uploadUrl: string;
+            publicUrl: string;
+          };
+
+          // Step 2 – PUT the blob directly to R2 (bypasses Vercel entirely)
+          const uploadRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': contentType },
+            body: blob,
+          });
+
+          if (!uploadRes.ok) {
+            throw new Error(`R2 PUT failed: ${uploadRes.status}`);
+          }
+
+          // Replace ephemeral blob: URL with the permanent R2 public URL
+          localStorage.setItem('tempVideoUrl', publicUrl);
+        } catch (e) {
+          console.error('R2 Upload failed, keeping local blob URL for this session', e);
+          // localUrl is still in localStorage — video will work for the current tab only
         }
-        
+
         // Stop camera and screen tracks
         if (videoRef.current?.srcObject) {
           const tracks = (videoRef.current.srcObject as MediaStream).getTracks();

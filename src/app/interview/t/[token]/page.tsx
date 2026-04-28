@@ -38,6 +38,10 @@ export default function TicketInterviewPage({
   const [ticketStatus, setTicketStatus] = useState<TicketStatus>('loading');
   const [localRoleId, setLocalRoleId] = useState('');
   const [candidateName, setCandidateName] = useState('');
+  // FIX 7: Track whether the ticket has been marked used so we only do it once
+  // and only after the candidate actually enters the InterviewRoom.
+  const [ticketMarked, setTicketMarked] = useState(false);
+  const [pendingToken, setPendingToken] = useState('');
 
   useEffect(() => {
     const checkTicket = async () => {
@@ -148,9 +152,10 @@ export default function TicketInterviewPage({
           phone: '',
         });
 
-        // Marcar como usado localmente e inmediatamente en Supabase
-        markTicketUsed(token);
-        syncMarkUsed(token);
+        // FIX 7: Removed immediate markTicketUsed/syncMarkUsed calls here.
+        // Ticket is now only burned when the candidate actually enters the InterviewRoom
+        // (phase === 'interview'), preventing permanent ticket loss on early browser close.
+        setPendingToken(token);
 
         // Iniciar en el formulario de detalles
         setPhase('details');
@@ -163,6 +168,18 @@ export default function TicketInterviewPage({
     // Pequeño delay para hidratación de Zustand
     setTimeout(checkTicket, 100);
   }, [token]);
+
+  // FIX 7: Burn the ticket only when the interview actually starts, not at validation time.
+  // This way, candidates who close the browser on DetailsForm/Overview/HardwareCheck
+  // can re-open the same link and resume.
+  useEffect(() => {
+    if (phase === 'interview' && pendingToken && !ticketMarked) {
+      markTicketUsed(pendingToken);
+      syncMarkUsed(pendingToken);
+      setTicketMarked(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // Pantallas de error
   if (ticketStatus === 'loading') {

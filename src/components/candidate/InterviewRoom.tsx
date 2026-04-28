@@ -60,11 +60,17 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const audioRef = useRef<HTMLAudioElement | null>(null); // current audio element
   const interviewActiveRef = useRef<boolean>(false); // tracks if interview is active for safe SR restart
   const ttsTimeoutRef = useRef<NodeJS.Timeout | null>(null); // safety timeout for stuck TTS
+  // FIX 3: Prevents double nextTopic() when timer force-advance and speakText() resolve simultaneously
+  const topicAdvancingRef = useRef<boolean>(false);
+  // FIX 5: Client-side dead-end detection — counts consecutive empty/evasive answers
+  const consecutiveEmptyRef = useRef<number>(0);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
 
   // Sync to Admin Pipeline as "in-progress" automatically — ALWAYS save progress
+  // FIX 2: Removed `timerSeconds` from deps — it was triggering ~1800 Supabase writes/interview.
+  // Duration is accurately captured in endInterview(); no need to sync on every tick.
   useEffect(() => {
     if (!hasStarted) return;
     
@@ -92,13 +98,18 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     } else {
       updateCandidate(currentSessionId, { transcript, duration: timerSeconds });
     }
-  }, [transcript, hasStarted, timerSeconds]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript, hasStarted]);
 
   // Timer-based force-advance: ensures topics progress even if AI never emits [NEXT_TOPIC]
+  // FIX 4: Use Number() coercion so interviewDuration===0 doesn't silently disable the guard.
+  // FIX 3: topicAdvancingRef prevents a double nextTopic() when speakText() resolves at the
+  //         same render cycle that the timer check fires.
   useEffect(() => {
-    if (!hasStarted || !currentRole?.interviewDuration || topics.length === 0) return;
+    const duration = Number(currentRole?.interviewDuration) || 30; // FIX 4
+    if (!hasStarted || topics.length === 0) return;
 
-    const totalSeconds = currentRole.interviewDuration * 60;
+    const totalSeconds = duration * 60;
     const secondsPerTopic = Math.floor(totalSeconds / topics.length);
     const expectedTopicIndex = Math.min(
       Math.floor(timerSeconds / secondsPerTopic),
@@ -111,6 +122,10 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       !isAiSpeaking &&
       !isProcessing
     ) {
+      if (topicAdvancingRef.current) return; // FIX 3: guard against double-advance
+      topicAdvancingRef.current = true;
+      setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
+
       console.log(
         `[Timer Force-Advance] Expected topic ${expectedTopicIndex}, current ${currentTopicIndex}`
       );
@@ -208,6 +223,29 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const handleCandidateUtterance = async (text: string) => {
     if (!text.trim() || isProcessing || isAiSpeaking || speakingRef.current) return;
 
+    // FIX 5: Client-side dead-end detection — if the candidate gives 2+ consecutive
+    // short/evasive answers, force-advance without calling the API.
+    const isEmpty =
+      text.trim().length < 12 ||
+      /\b(no s[eé]|no lo sé|no sabría|tampoco sé|i don'?t know|not sure|no idea)\b/i.test(
+        text.trim()
+      );
+    if (isEmpty) {
+      consecutiveEmptyRef.current += 1;
+    } else {
+      consecutiveEmptyRef.current = 0;
+    }
+    if (consecutiveEmptyRef.current >= 2) {
+      consecutiveEmptyRef.current = 0;
+      setIsProcessing(false);
+      if (isLastTopic) {
+        endInterview();
+      } else {
+        nextTopic();
+      }
+      return; // Skip API call entirely
+    }
+
     addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
     setCurrentSubtitle('');
     setIsRecording(false);
@@ -248,7 +286,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           `.trim(),
           recentMessages: allMessages,
           isLastTopic,
-          interviewDuration: Number(useInterviewStore.getState().interviewDuration) || 30,
+          // FIX 1: Use currentRole (already resolved) as primary source; fall back to store, then 30.
+          // Prevents stale Zustand hydration from silently using the wrong duration.
+          interviewDuration:
+            Number(currentRole?.interviewDuration) ||
+            Number(useInterviewStore.getState().interviewDuration) ||
+            30,
         }),
       });
 
@@ -288,11 +331,16 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         if (finishInterview) {
           endInterview();
         } else if (advanceTopic) {
-          if (isLastTopic) {
-            endInterview(); // Fallback in case it outputs NEXT_TOPIC instead of END_INTERVIEW on the last topic
-          } else {
-            // Advance to next topic
-            nextTopic();
+          // FIX 3: Guard against double-advance — timer force-advance may have already fired
+          // in the same render cycle when speakText() resolved.
+          if (!topicAdvancingRef.current) {
+            topicAdvancingRef.current = true;
+            setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
+            if (isLastTopic) {
+              endInterview(); // Fallback: NEXT_TOPIC on last topic → end
+            } else {
+              nextTopic();
+            }
           }
         }
       }

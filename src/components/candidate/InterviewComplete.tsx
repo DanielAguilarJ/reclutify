@@ -27,11 +27,16 @@ export default function InterviewComplete() {
     
     let isMounted = true;
     const evaluateInterview = async () => {
-      // Determine roleId reliably: prefer store, fall back to URL parsing
+      // FIX 6: The URL pattern is /interview/t/[TOKEN] — the last path segment is the TOKEN,
+      // NOT a roleId. Using it as roleId would corrupt evaluation data.
+      // Prefer the store value; if absent, warn and degrade gracefully rather than use a wrong ID.
       let currentRoleId = storeRoleId || '';
       if (!currentRoleId) {
-        const urlPathparts = window.location.pathname.split('/');
-        currentRoleId = urlPathparts[urlPathparts.length - 1] || 'role-1';
+        console.warn(
+          'InterviewComplete: roleId not found in store. Evaluation roleId will be empty — ' +
+          'data is still saved but role-level context may be missing.'
+        );
+        // currentRoleId stays ''; evaluation will proceed without role context.
       }
       const currentRole = roles.find(r => r.id === currentRoleId);
 

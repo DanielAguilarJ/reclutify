@@ -12,6 +12,7 @@ import { dictionaries } from '@/lib/i18n';
 
 // Marquee Logos (SVG placeholders for trusted companies)
 const trustedLogos = [
+  { name: 'WorldBrain', src: '/worldbrain-logo.webp' },
   { name: 'Microsoft', src: 'https://cdn.prod.website-files.com/61f9082050036c5b7a4899f5/6423178f81ce716edd7f851a_Micrisoft.svg' },
   { name: 'Canva', src: 'https://cdn.prod.website-files.com/61f9082050036c5b7a4899f5/66301630500a1dd9056ad3be_Canva.svg' },
   { name: 'Deloitte', src: 'https://cdn.prod.website-files.com/61f9082050036c5b7a4899f5/6423176ff5659248257a1053_Deloitte.svg' },

@@ -103,6 +103,8 @@ export interface Role {
   salary?: string;
   jobType?: string;
   interviewDuration?: number; // Duración de la entrevista en minutos (default: 30)
+  isPublished?: boolean;
+  publishedAt?: number;
 }
 
 export type InterviewPhase = 'details' | 'overview' | 'hardware' | 'interview' | 'complete';

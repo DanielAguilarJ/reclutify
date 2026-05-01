@@ -42,6 +42,8 @@ function roleToSupabase(role: Role, orgId: string) {
     interview_duration: role.interviewDuration ?? 30,
     topics: role.topics,
     created_at: new Date(role.createdAt).toISOString(),
+    is_published: role.isPublished ?? false,
+    published_at: role.publishedAt ? new Date(role.publishedAt).toISOString() : null,
   };
 }
 
@@ -60,6 +62,8 @@ function roleFromSupabase(row: Record<string, unknown>): Role {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     topics: (row.topics as any) || [],
     createdAt: new Date(row.created_at as string).getTime(),
+    isPublished: (row.is_published as boolean) ?? false,
+    publishedAt: row.published_at ? new Date(row.published_at as string).getTime() : undefined,
   };
 }
 
@@ -233,6 +237,8 @@ export const useAdminStore = create<AdminState>()(
           if (updates.jobType !== undefined) supabaseUpdates.job_type = updates.jobType;
           if (updates.interviewDuration !== undefined) supabaseUpdates.interview_duration = updates.interviewDuration;
           if (updates.topics !== undefined) supabaseUpdates.topics = updates.topics;
+          if (updates.isPublished !== undefined) supabaseUpdates.is_published = updates.isPublished;
+          if (updates.publishedAt !== undefined) supabaseUpdates.published_at = updates.publishedAt ? new Date(updates.publishedAt).toISOString() : null;
 
           const { error } = await supabase
             .from('roles')

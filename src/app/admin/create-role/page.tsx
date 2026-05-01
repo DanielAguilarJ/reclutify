@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2 } from 'lucide-react';
+import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useRoles } from '@/hooks/useRoles';
@@ -156,6 +156,8 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     interviewDuration: role.interviewDuration ?? 30,
   });
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isPublished, setIsPublished] = useState(role.isPublished ?? false);
+  const [publishLoading, setPublishLoading] = useState(false);
 
   const handleSave = () => {
     updateRole(role.id, editedRole);
@@ -280,6 +282,71 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* ─── Publicar en Bolsa de Trabajo ─── */}
+      <div className="pt-3 border-t border-border/30">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Globe className="h-3.5 w-3.5 text-muted" />
+            <span className="text-xs font-medium text-foreground">
+              {language === 'es' ? 'Publicar en Bolsa de Trabajo' : 'Publish to Job Board'}
+            </span>
+            {isPublished && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-bold">
+                <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+                {language === 'es' ? 'Publicado' : 'Published'}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isPublished}
+            disabled={publishLoading}
+            onClick={async () => {
+              setPublishLoading(true);
+              const newVal = !isPublished;
+              setIsPublished(newVal); // Optimistic
+              updateRole(role.id, {
+                isPublished: newVal,
+                publishedAt: newVal ? Date.now() : undefined,
+              });
+              // Also call server action for RLS-safe update
+              try {
+                const { toggleRolePublished } = await import('@/app/actions/jobs');
+                const result = await toggleRolePublished(role.id, newVal);
+                if (!result.success) {
+                  setIsPublished(!newVal); // Revert
+                  updateRole(role.id, {
+                    isPublished: !newVal,
+                    publishedAt: !newVal ? Date.now() : undefined,
+                  });
+                }
+              } catch {
+                setIsPublished(!newVal); // Revert on error
+              } finally {
+                setPublishLoading(false);
+              }
+            }}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
+              publishLoading ? 'opacity-50 cursor-wait' : 'cursor-pointer'
+            } ${
+              isPublished ? 'bg-success' : 'bg-muted/30'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                isPublished ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+        <p className="text-[10px] text-muted mt-1 ml-5">
+          {language === 'es'
+            ? 'Los candidatos podrán ver y aplicar a esta vacante desde /career-fair'
+            : 'Candidates will be able to view and apply to this role from /career-fair'}
+        </p>
       </div>
 
       <div className="pt-2 flex justify-between items-center gap-3">

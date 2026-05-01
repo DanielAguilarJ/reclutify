@@ -2,10 +2,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/utils/supabase/middleware'
 
 // Rutas que requieren autenticación
-const PROTECTED_PREFIXES = ['/admin', '/onboarding'];
+const PROTECTED_PREFIXES = ['/admin', '/onboarding', '/profile/edit', '/feed', '/messages', '/network'];
 
 // Rutas públicas específicas (no requieren autenticación)
-const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api'];
+const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api', '/profile'];
 
 /**
  * Determina si una ruta es protegida (requiere autenticación)

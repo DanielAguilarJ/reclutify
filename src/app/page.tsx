@@ -984,8 +984,8 @@ export default function JobBoardPage() {
             <div>
               <h4 className="text-white font-medium mb-6">Legal</h4>
               <ul className="space-y-4 text-sm text-neutral-400">
-                <li><a href="#" className="hover:text-[#D3FB52] transition-colors">{language === 'es' ? 'Política de Privacidad' : 'Privacy Policy'}</a></li>
-                <li><a href="#" className="hover:text-[#D3FB52] transition-colors">{language === 'es' ? 'Términos de Servicio' : 'Terms of Service'}</a></li>
+                <li><a href="/privacy" className="hover:text-[#D3FB52] transition-colors">{language === 'es' ? 'Aviso de Privacidad' : 'Privacy Policy'}</a></li>
+                <li><a href="/terms" className="hover:text-[#D3FB52] transition-colors">{language === 'es' ? 'Términos de Servicio' : 'Terms of Service'}</a></li>
                 <li><a href="#" className="hover:text-[#D3FB52] transition-colors">{language === 'es' ? 'Seguridad' : 'Security'}</a></li>
               </ul>
             </div>

@@ -5,7 +5,7 @@ import { createClient } from '@/utils/supabase/middleware'
 const PROTECTED_PREFIXES = ['/admin', '/onboarding', '/profile/edit', '/feed', '/messages', '/network'];
 
 // Rutas públicas específicas (no requieren autenticación)
-const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api', '/profile'];
+const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api', '/profile', '/privacy', '/terms'];
 
 /**
  * Determina si una ruta es protegida (requiere autenticación)
@@ -145,6 +145,6 @@ export const config = {
      * - favicon.ico (favicon file)
      * Feel free to modify this pattern to include more paths.
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }

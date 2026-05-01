@@ -1,36 +1,113 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Reclutify — AI Interview Platform
 
-## Getting Started
+Plataforma SaaS de reclutamiento con inteligencia artificial. Conduce entrevistas automatizadas con Zara, nuestra entrevistadora IA, y genera evaluaciones objetivas con detección de sesgos.
 
-First, run the development server:
+**Stack:** Next.js 15 (App Router) · TypeScript · Supabase · Tailwind CSS v4 · Framer Motion · OpenRouter AI
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Node.js** 18.17+ (recommended: 20+)
+- **npm** 9+ or **pnpm**
+- **Supabase** project (free tier works)
+- **OpenRouter** API key
+
+### Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/DanielAguilarJ/reclutify.git
+   cd reclutify
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment variables:**
+   ```bash
+   cp .env.example .env.local
+   ```
+   Open `.env.local` and fill in your actual values. See [`.env.example`](.env.example) for descriptions of each variable.
+
+4. **Run database migrations:**
+   Apply the Supabase migrations in `supabase/migrations/` to your Supabase project.
+
+5. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
+
+6. **Open** [http://localhost:3000](http://localhost:3000) in your browser.
+
+---
+
+## 📁 Project Structure
+
+```
+src/
+├── app/           # Next.js 15 App Router pages & API routes
+│   ├── admin/     # Employer dashboard
+│   ├── api/       # API routes (chat, evaluate, tts, etc.)
+│   ├── career-fair/ # Public job board
+│   ├── feed/      # Candidate social feed
+│   ├── interview/ # AI interview room
+│   ├── login/     # Authentication
+│   ├── messages/  # Real-time messaging
+│   ├── network/   # Professional connections
+│   ├── onboarding/ # User onboarding flows
+│   ├── practice/  # Interview practice mode
+│   ├── pricing/   # Pricing page
+│   ├── privacy/   # Privacy policy (LFPDPPP)
+│   ├── profile/   # User profiles
+│   └── terms/     # Terms of service
+├── components/    # Reusable React components
+├── lib/           # Utilities (i18n, TTS, STT, PostHog)
+├── store/         # Zustand state management
+└── utils/         # Supabase client/server helpers
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 🧪 Testing
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run test          # Run tests
+npm run test:ui       # Run tests with UI
+npm run test:coverage # Run tests with coverage
+```
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## 📦 Scripts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start development server |
+| `npm run build` | Build for production |
+| `npm run start` | Start production server |
+| `npm run lint` | Run ESLint |
+| `npm run test` | Run Vitest tests |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## 🔒 Environment Variables
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+See [`.env.example`](.env.example) for a complete list of required environment variables with descriptions.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**Key services:**
+- **Supabase** — Database, auth, real-time
+- **OpenRouter** — AI models (Gemini, etc.)
+- **Cloudflare R2** — Video storage
+- **Resend / Brevo** — Email notifications
+- **PostHog** — Privacy-first analytics
+
+---
+
+## 📄 License
+
+Proprietary — © WorldBrain EdTech. All rights reserved.

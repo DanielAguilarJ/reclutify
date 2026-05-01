@@ -2,6 +2,7 @@
 
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { z } from 'zod';
 
 /**
  * Resultado tipado del Server Action de onboarding
@@ -9,6 +10,7 @@ import { redirect } from 'next/navigation';
 interface OnboardingResult {
   success: boolean;
   error?: string;
+  redirectTo?: string;
 }
 
 /**
@@ -36,6 +38,130 @@ function randomSuffix(): string {
   }
   return suffix;
 }
+
+/**
+ * Genera un username a partir del nombre completo.
+ * Ejemplo: "Daniel Aguilar" → "daniel-aguilar"
+ */
+function generateUsername(fullName: string): string {
+  return fullName
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// ─── ZOD SCHEMAS ───
+
+const candidateSchema = z.object({
+  full_name: z.string().min(2, 'El nombre debe tener al menos 2 caracteres').max(100),
+  headline: z.string().max(200).optional().default(''),
+  location: z.string().max(100).optional().default(''),
+  is_open_to_work: z.boolean().default(true),
+  username: z.string()
+    .min(3, 'El username debe tener al menos 3 caracteres')
+    .max(30)
+    .regex(/^[a-z0-9_-]+$/, 'Solo letras minúsculas, números, guiones y guiones bajos'),
+});
+
+const employerSchema = z.object({
+  name: z.string().min(2, 'El nombre de la empresa es obligatorio').max(100),
+  size: z.string(),
+  industry: z.string(),
+});
+
+// ─── CANDIDATE ONBOARDING ───
+
+/**
+ * Server Action: Configura el perfil de un candidato.
+ *
+ * Flujo:
+ * 1. Verificar autenticación
+ * 2. Validar datos con Zod
+ * 3. Verificar unicidad de username
+ * 4. Crear/actualizar user_profiles (para middleware routing)
+ * 5. Crear/actualizar profiles (para social network features)
+ * 6. Redirigir a /feed
+ */
+export async function setupCandidateProfile(
+  data: z.infer<typeof candidateSchema>
+): Promise<OnboardingResult> {
+  const supabase = await createClient();
+
+  // ─── 1. Obtener usuario autenticado ───
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return {
+      success: false,
+      error: 'No se pudo verificar tu sesión. Por favor, inicia sesión nuevamente.',
+    };
+  }
+
+  // ─── 2. Validar datos del formulario ───
+  const parsed = candidateSchema.safeParse(data);
+  if (!parsed.success) {
+    const firstError = parsed.error.issues[0]?.message || 'Datos inválidos';
+    return { success: false, error: firstError };
+  }
+
+  // ─── 3. Verificar unicidad de username ───
+  const { data: existingUsername } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('username', parsed.data.username)
+    .neq('user_id', user.id)
+    .maybeSingle();
+
+  if (existingUsername) {
+    return { success: false, error: 'Este username ya está en uso. Intenta con otro.' };
+  }
+
+  // ─── 4. Crear/actualizar user_profiles (routing) ───
+  const fullName = parsed.data.full_name;
+
+  const { error: profileError } = await supabase
+    .from('user_profiles')
+    .upsert([{
+      user_id: user.id,
+      full_name: fullName,
+      role: 'member',
+      user_type: 'candidate',
+      onboarding_completed: true,
+    }], { onConflict: 'user_id' });
+
+  if (profileError) {
+    return {
+      success: false,
+      error: `Error al crear tu perfil: ${profileError.message}`,
+    };
+  }
+
+  // ─── 5. Crear/actualizar profiles (social) ───
+  const { error: socialError } = await supabase
+    .from('profiles')
+    .upsert([{
+      user_id: user.id,
+      username: parsed.data.username,
+      full_name: fullName,
+      headline: parsed.data.headline || null,
+      location: parsed.data.location || null,
+      is_open_to_work: parsed.data.is_open_to_work,
+      user_type: 'candidate',
+    }], { onConflict: 'user_id' });
+
+  if (socialError) {
+    return {
+      success: false,
+      error: `Error al crear tu perfil social: ${socialError.message}`,
+    };
+  }
+
+  return { success: true, redirectTo: '/feed' };
+}
+
+// ─── EMPLOYER ONBOARDING ───
 
 /**
  * Server Action: Crea una organización y vincula al usuario como owner.
@@ -79,13 +205,13 @@ export async function createOrganization(formData: {
   }
 
   // ─── 3. Validar datos del formulario ───
-  const trimmedName = formData.name.trim();
-  if (!trimmedName) {
-    return {
-      success: false,
-      error: 'El nombre de la empresa es obligatorio.',
-    };
+  const parsed = employerSchema.safeParse(formData);
+  if (!parsed.success) {
+    const firstError = parsed.error.issues[0]?.message || 'Datos inválidos';
+    return { success: false, error: firstError };
   }
+
+  const trimmedName = parsed.data.name.trim();
 
   // ─── 4. Generar slug único ───
   let slug = generateSlug(trimmedName);
@@ -143,6 +269,8 @@ export async function createOrganization(formData: {
       org_id: orgId,
       full_name: fullName,
       role: 'owner',
+      user_type: 'employer',
+      onboarding_completed: true,
     }], { onConflict: 'user_id' });
 
   if (profileError) {
@@ -172,5 +300,5 @@ export async function createOrganization(formData: {
     }
   }
 
-  return { success: true };
+  return { success: true, redirectTo: '/admin' };
 }

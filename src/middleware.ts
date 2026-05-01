@@ -51,41 +51,71 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Para usuarios autenticados, verificar si tienen organización configurada.
+  // Para usuarios autenticados, verificar rol y estado de onboarding.
   // Solo hacemos esta query cuando es necesario para las decisiones de routing.
   if (user && supabase) {
-    const needsOrgCheck =
+    const needsProfileCheck =
       pathname === '/' ||
       pathname === '/login' ||
       pathname.startsWith('/admin') ||
-      pathname === '/onboarding';
+      pathname.startsWith('/onboarding') ||
+      pathname.startsWith('/feed') ||
+      pathname.startsWith('/messages') ||
+      pathname.startsWith('/network');
 
-    if (needsOrgCheck) {
+    if (needsProfileCheck) {
       const { data: profile } = await supabase
         .from('user_profiles')
-        .select('org_id')
+        .select('org_id, user_type, onboarding_completed')
         .eq('user_id', user.id)
         .single();
 
       const hasOrg = !!profile?.org_id;
+      const userType = profile?.user_type || null;
+      const onboardingDone = !!profile?.onboarding_completed;
 
-      // ─── CASO 2: Autenticado + /login → /admin o /onboarding ───
+      // ─── CASO 2: Autenticado pero NO completó onboarding ───
+      // Solo redirigir si NO está ya en /onboarding
+      if (!onboardingDone && !pathname.startsWith('/onboarding')) {
+        const onboardingUrl = request.nextUrl.clone();
+        onboardingUrl.pathname = '/onboarding';
+        onboardingUrl.search = '';
+        return NextResponse.redirect(onboardingUrl);
+      }
+
+      // ─── CASO 3: Autenticado + /login → dashboard por rol ───
       if (pathname === '/login') {
         const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = hasOrg ? '/admin' : '/onboarding';
+        redirectUrl.pathname = userType === 'candidate' ? '/feed' : (hasOrg ? '/admin' : '/onboarding');
         redirectUrl.search = '';
         return NextResponse.redirect(redirectUrl);
       }
 
-      // ─── CASO 3: Autenticado + / (root) → /admin o /onboarding ───
+      // ─── CASO 4: Autenticado + / (root) → dashboard por rol ───
       if (pathname === '/') {
         const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = hasOrg ? '/admin' : '/onboarding';
+        redirectUrl.pathname = userType === 'candidate' ? '/feed' : (hasOrg ? '/admin' : '/onboarding');
         redirectUrl.search = '';
         return NextResponse.redirect(redirectUrl);
       }
 
-      // ─── CASO 4: Autenticado + /admin/* pero SIN org → /onboarding ───
+      // ─── CASO 5: Candidato intentando acceder a /admin → /feed ───
+      if (userType === 'candidate' && pathname.startsWith('/admin')) {
+        const feedUrl = request.nextUrl.clone();
+        feedUrl.pathname = '/feed';
+        feedUrl.search = '';
+        return NextResponse.redirect(feedUrl);
+      }
+
+      // ─── CASO 6: Employer intentando acceder a /feed → /admin ───
+      if (userType === 'employer' && pathname.startsWith('/feed')) {
+        const adminUrl = request.nextUrl.clone();
+        adminUrl.pathname = '/admin';
+        adminUrl.search = '';
+        return NextResponse.redirect(adminUrl);
+      }
+
+      // ─── CASO 7: Autenticado + /admin/* pero SIN org → /onboarding ───
       if (pathname.startsWith('/admin') && !hasOrg) {
         const onboardingUrl = request.nextUrl.clone();
         onboardingUrl.pathname = '/onboarding';
@@ -93,12 +123,12 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(onboardingUrl);
       }
 
-      // ─── CASO 5: Autenticado + /onboarding pero YA tiene org → /admin ───
-      if (pathname === '/onboarding' && hasOrg) {
-        const adminUrl = request.nextUrl.clone();
-        adminUrl.pathname = '/admin';
-        adminUrl.search = '';
-        return NextResponse.redirect(adminUrl);
+      // ─── CASO 8: Autenticado + /onboarding pero YA completó → dashboard ───
+      if (pathname.startsWith('/onboarding') && onboardingDone) {
+        const dashUrl = request.nextUrl.clone();
+        dashUrl.pathname = userType === 'candidate' ? '/feed' : '/admin';
+        dashUrl.search = '';
+        return NextResponse.redirect(dashUrl);
       }
     }
   }

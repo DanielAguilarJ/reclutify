@@ -35,6 +35,22 @@ export const dictionaries = {
     card4Mini: 'Analytics',
     card4Title: 'Get instant hiring signals and rubrics',
 
+    // Header CTAs
+    ctaSeekJob: 'Find a Job',
+    ctaPostJob: 'Post a Job',
+
+    // RoleSplitCTA
+    roleSplitBadgeCandidate: 'For you',
+    roleSplitTitleCandidate: 'Find your next job',
+    roleSplitSubCandidate: 'Create your professional profile, connect with companies and practice interviews with AI',
+    roleSplitCtaCandidate: 'Start as Candidate →',
+    roleSplitFeaturesCandidate: ['Public professional profile', 'AI Job Match %', 'Interview practice', 'Professional connections'],
+    roleSplitBadgeEmployer: 'For your company',
+    roleSplitTitleEmployer: 'Hire the best talent',
+    roleSplitSubEmployer: 'Post jobs, use AI to evaluate candidates and eliminate bias in your hiring process',
+    roleSplitCtaEmployer: 'Start as Employer →',
+    roleSplitFeaturesEmployer: ['AI interviews with Zara', 'Automatic scorecard', 'Bias analysis', 'Candidate pipeline'],
+
     // Details Form
     welcomeTitle: 'Welcome to your interview',
     welcomeSub: 'Please enter your details to get started',
@@ -179,6 +195,22 @@ export const dictionaries = {
     card3Title: 'Automatiza la evaluación con IA hiperrealista',
     card4Mini: 'Analíticas',
     card4Title: 'Obtén señales de contratación al instante',
+
+    // Header CTAs
+    ctaSeekJob: 'Buscar Empleo',
+    ctaPostJob: 'Publicar Vacante',
+
+    // RoleSplitCTA
+    roleSplitBadgeCandidate: 'Para ti',
+    roleSplitTitleCandidate: 'Encuentra tu próximo empleo',
+    roleSplitSubCandidate: 'Crea tu perfil profesional, conecta con empresas y practica entrevistas con AI',
+    roleSplitCtaCandidate: 'Comenzar como Candidato →',
+    roleSplitFeaturesCandidate: ['Perfil profesional público', 'AI Job Match %', 'Práctica de entrevistas', 'Conexiones profesionales'],
+    roleSplitBadgeEmployer: 'Para tu empresa',
+    roleSplitTitleEmployer: 'Contrata al mejor talento',
+    roleSplitSubEmployer: 'Publica vacantes, usa AI para evaluar candidatos y elimina sesgos en tu proceso',
+    roleSplitCtaEmployer: 'Comenzar como Empleador →',
+    roleSplitFeaturesEmployer: ['Entrevistas AI con Zara', 'Scorecard automático', 'Análisis de sesgos', 'Pipeline de candidatos'],
 
     // Details Form
     welcomeTitle: 'Bienvenido a tu entrevista',

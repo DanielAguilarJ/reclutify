@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence, useScroll, useTransform } from 'framer-motion';
-import { Briefcase, ArrowRight, Clock, MapPin, DollarSign, ChevronDown, ArrowUpRight, Zap, Target, LineChart, MessageSquare, Check, X, Sparkles, Shield } from 'lucide-react';
+import { Briefcase, ArrowRight, Clock, MapPin, DollarSign, ChevronDown, ArrowUpRight, Zap, Target, LineChart, MessageSquare, Check, X, Sparkles, Shield, UserSearch, Building2 } from 'lucide-react';
 import Logo from '@/components/ui/Logo';
 import LanguageToggle from '@/components/ui/LanguageToggle';
 import { useAdminStore } from '@/store/adminStore';
@@ -63,10 +63,18 @@ export default function JobBoardPage() {
             Log in
           </Link>
           <Link
-            href="#roles"
-            className="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium text-sm bg-[#D3FB52] text-black hover:bg-[#c1e847] transition-colors"
+            href="/onboarding?role=candidate"
+            className="hidden md:inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg font-medium text-sm bg-[#00D3D8]/15 text-[#00D3D8] border border-[#00D3D8]/30 hover:bg-[#00D3D8]/25 transition-colors"
           >
-            {t.ctaFindJob}
+            <UserSearch className="w-4 h-4" />
+            {t.ctaSeekJob}
+          </Link>
+          <Link
+            href="/onboarding?role=employer"
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg font-medium text-sm bg-[#D3FB52] text-black hover:bg-[#c1e847] transition-colors"
+          >
+            <Building2 className="w-4 h-4" />
+            {t.ctaPostJob}
           </Link>
         </div>
       </header>
@@ -256,6 +264,124 @@ export default function JobBoardPage() {
                 </div>
              </motion.div>
 
+          </div>
+        </section>
+
+        {/* --- Role Split CTA Section --- */}
+        <section className="py-24 px-4 md:px-8 max-w-[1400px] mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6 }}
+            className="text-center mb-12"
+          >
+            <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight mb-4">
+              {language === 'es' ? '¿Qué estás buscando?' : 'What are you looking for?'}
+            </h2>
+            <p className="text-lg text-neutral-400 max-w-2xl mx-auto">
+              {language === 'es'
+                ? 'Elige tu camino y empieza en menos de 2 minutos'
+                : 'Choose your path and get started in under 2 minutes'}
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Card: Candidate */}
+            <motion.div
+              whileHover={{ y: -8 }}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.5 }}
+            >
+              <Link
+                href="/onboarding?role=candidate"
+                className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] p-8 md:p-10 min-h-[380px] bg-[#d6faff] text-[#052326] transition-transform"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-[#00D3D8]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="relative z-10">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-12 h-12 rounded-2xl bg-[#052326]/10 flex items-center justify-center">
+                      <UserSearch className="w-6 h-6" />
+                    </div>
+                    <span className="px-3 py-1 rounded-full border border-[#052326]/20 text-sm font-medium tracking-wide">
+                      {t.roleSplitBadgeCandidate}
+                    </span>
+                  </div>
+                  <h3 className="text-3xl lg:text-4xl font-bold leading-tight mb-3 transition-transform duration-300 group-hover:-translate-y-1">
+                    {t.roleSplitTitleCandidate}
+                  </h3>
+                  <p className="text-[#052326]/70 text-base leading-relaxed mb-6 max-w-md">
+                    {t.roleSplitSubCandidate}
+                  </p>
+                  <div className="flex flex-wrap gap-2 mb-8">
+                    {t.roleSplitFeaturesCandidate.map((feat: string, i: number) => (
+                      <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#052326]/5 border border-[#052326]/10 text-xs font-medium">
+                        <Check className="w-3 h-3 text-[#00D3D8]" />
+                        {feat}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="relative z-10 flex items-center justify-between">
+                  <span className="text-lg font-bold group-hover:text-[#00D3D8] transition-colors">
+                    {t.roleSplitCtaCandidate}
+                  </span>
+                  <div className="bg-[#052326] text-white p-4 rounded-full opacity-0 transform translate-y-4 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300">
+                    <ArrowUpRight className="w-6 h-6" />
+                  </div>
+                </div>
+              </Link>
+            </motion.div>
+
+            {/* Card: Employer */}
+            <motion.div
+              whileHover={{ y: -8 }}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.5, delay: 0.1 }}
+            >
+              <Link
+                href="/onboarding?role=employer"
+                className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] p-8 md:p-10 min-h-[380px] bg-[#f1feca] text-[#052326] transition-transform"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-[#D3FB52]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="relative z-10">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-12 h-12 rounded-2xl bg-[#052326]/10 flex items-center justify-center">
+                      <Building2 className="w-6 h-6" />
+                    </div>
+                    <span className="px-3 py-1 rounded-full border border-[#052326]/20 text-sm font-medium tracking-wide">
+                      {t.roleSplitBadgeEmployer}
+                    </span>
+                  </div>
+                  <h3 className="text-3xl lg:text-4xl font-bold leading-tight mb-3 transition-transform duration-300 group-hover:-translate-y-1">
+                    {t.roleSplitTitleEmployer}
+                  </h3>
+                  <p className="text-[#052326]/70 text-base leading-relaxed mb-6 max-w-md">
+                    {t.roleSplitSubEmployer}
+                  </p>
+                  <div className="flex flex-wrap gap-2 mb-8">
+                    {t.roleSplitFeaturesEmployer.map((feat: string, i: number) => (
+                      <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#052326]/5 border border-[#052326]/10 text-xs font-medium">
+                        <Check className="w-3 h-3 text-[#D3FB52]" />
+                        {feat}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="relative z-10 flex items-center justify-between">
+                  <span className="text-lg font-bold group-hover:text-[#3d7a02] transition-colors">
+                    {t.roleSplitCtaEmployer}
+                  </span>
+                  <div className="bg-[#052326] text-white p-4 rounded-full opacity-0 transform translate-y-4 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300">
+                    <ArrowUpRight className="w-6 h-6" />
+                  </div>
+                </div>
+              </Link>
+            </motion.div>
           </div>
         </section>
 

@@ -2,6 +2,9 @@
  * Types for the Professional Profile / Social Network features.
  */
 
+/** Canonical user roles for routing and access control */
+export type UserRole = 'candidate' | 'employer' | 'admin';
+
 export interface ProfileExperience {
   id: string;
   title: string;

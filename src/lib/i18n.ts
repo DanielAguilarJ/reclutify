@@ -51,6 +51,23 @@ export const dictionaries = {
     roleSplitCtaEmployer: 'Start as Employer →',
     roleSplitFeaturesEmployer: ['AI interviews with Zara', 'Automatic scorecard', 'Bias analysis', 'Candidate pipeline'],
 
+    // Login / Register
+    loginTab: 'Sign In',
+    registerTab: 'Create Account',
+    emailLabel: 'Email',
+    passwordLabel: 'Password',
+    confirmPasswordLabel: 'Confirm Password',
+    fullNameLabel: 'Full Name',
+    forgotPassword: 'Forgot your password?',
+    orContinueWith: 'or continue with',
+    loginBtn: 'Sign In',
+    registerBtn: 'Create Account',
+    noAccount: "Don't have an account?",
+    hasAccount: 'Already have an account?',
+    roleCandidate: 'Looking for a job',
+    roleEmployer: "I'm an employer",
+    roleRequired: 'Select your profile to continue',
+
     // Details Form
     welcomeTitle: 'Welcome to your interview',
     welcomeSub: 'Please enter your details to get started',
@@ -211,6 +228,23 @@ export const dictionaries = {
     roleSplitSubEmployer: 'Publica vacantes, usa AI para evaluar candidatos y elimina sesgos en tu proceso',
     roleSplitCtaEmployer: 'Comenzar como Empleador →',
     roleSplitFeaturesEmployer: ['Entrevistas AI con Zara', 'Scorecard automático', 'Análisis de sesgos', 'Pipeline de candidatos'],
+
+    // Login / Register
+    loginTab: 'Iniciar Sesión',
+    registerTab: 'Crear Cuenta',
+    emailLabel: 'Correo electrónico',
+    passwordLabel: 'Contraseña',
+    confirmPasswordLabel: 'Confirmar contraseña',
+    fullNameLabel: 'Nombre completo',
+    forgotPassword: '¿Olvidaste tu contraseña?',
+    orContinueWith: 'o continúa con',
+    loginBtn: 'Iniciar Sesión',
+    registerBtn: 'Crear Cuenta',
+    noAccount: '¿No tienes cuenta?',
+    hasAccount: '¿Ya tienes cuenta?',
+    roleCandidate: 'Busco empleo',
+    roleEmployer: 'Soy empleador',
+    roleRequired: 'Selecciona tu perfil para continuar',
 
     // Details Form
     welcomeTitle: 'Bienvenido a tu entrevista',

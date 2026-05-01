@@ -63,14 +63,14 @@ export default function JobBoardPage() {
             Log in
           </Link>
           <Link
-            href="/onboarding?role=candidate"
+            href="/login?tab=register&role=candidate"
             className="hidden md:inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg font-medium text-sm bg-[#00D3D8]/15 text-[#00D3D8] border border-[#00D3D8]/30 hover:bg-[#00D3D8]/25 transition-colors"
           >
             <UserSearch className="w-4 h-4" />
             {t.ctaSeekJob}
           </Link>
           <Link
-            href="/onboarding?role=employer"
+            href="/login?tab=register&role=employer"
             className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg font-medium text-sm bg-[#D3FB52] text-black hover:bg-[#c1e847] transition-colors"
           >
             <Building2 className="w-4 h-4" />
@@ -296,7 +296,7 @@ export default function JobBoardPage() {
               transition={{ duration: 0.5 }}
             >
               <Link
-                href="/onboarding?role=candidate"
+                href="/login?tab=register&role=candidate"
                 className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] p-8 md:p-10 min-h-[380px] bg-[#d6faff] text-[#052326] transition-transform"
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-[#00D3D8]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
@@ -344,7 +344,7 @@ export default function JobBoardPage() {
               transition={{ duration: 0.5, delay: 0.1 }}
             >
               <Link
-                href="/onboarding?role=employer"
+                href="/login?tab=register&role=employer"
                 className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] p-8 md:p-10 min-h-[380px] bg-[#f1feca] text-[#052326] transition-transform"
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-[#D3FB52]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />

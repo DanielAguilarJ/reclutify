@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const { jobTitle, description, jobType, language, customTopics } = await req.json();
+    const { jobTitle, description, jobType, language, customTopics, singleCriterion } = await req.json();
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -17,7 +17,29 @@ export async function POST(req: NextRequest) {
     let systemPrompt: string;
     let userMessage: string;
 
-    if (customTopics && customTopics.length > 0) {
+    if (singleCriterion && singleCriterion.name) {
+      // Mode: SINGLE CRITERION — generate rubric for one specific criterion
+      systemPrompt = `You are an expert HR consultant. Generate evaluation criteria for ONE specific interview topic.
+
+Return a JSON object with:
+- "label": "${singleCriterion.name}" (keep as-is)
+- "rubric": {
+  - "excellent": 1 sentence describing what a top-performing candidate (9-10 score) demonstrates
+  - "acceptable": 1 sentence describing what an adequate candidate (6-8 score) demonstrates
+  - "poor": 1 sentence describing what a weak candidate (0-5 score) demonstrates
+  - "weight": ${singleCriterion.weight || 5}
+}
+
+JOB CONTEXT:
+- Title: ${jobTitle || 'Not specified'}
+- Type: ${jobType || 'Not specified'}
+- Description: ${description || 'Not provided'}
+
+Return ONLY the JSON object. No markdown, no explanation.
+CRITICAL: All text values MUST be in ${lang}.`;
+
+      userMessage = `Generate evaluation rubric for this criterion: "${singleCriterion.name}" (weight: ${singleCriterion.weight || 5}/10)`;
+    } else if (customTopics && customTopics.length > 0) {
       // Mode: ENRICH existing topics defined by the admin
       systemPrompt = `You are an expert HR consultant. A recruiter has defined custom interview topics for the role "${jobTitle}". 
 Your job is to ENRICH each topic with evaluation criteria and an importance weight.
@@ -99,6 +121,19 @@ DESCRIPTION: ${description || 'Not provided — infer from the title'}`;
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
+
+    // Single criterion mode returns a single object, not an array
+    if (singleCriterion && singleCriterion.name) {
+      const jsonObjMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonObjMatch) {
+        return NextResponse.json(
+          { error: 'Failed to parse single criterion JSON' },
+          { status: 500 }
+        );
+      }
+      const criterion = JSON.parse(jsonObjMatch[0]);
+      return NextResponse.json({ criterion });
+    }
 
     // Parse the JSON array from response
     const jsonMatch = content.match(/\[[\s\S]*\]/);

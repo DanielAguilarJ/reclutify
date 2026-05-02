@@ -514,7 +514,14 @@ export default function CreateRolePage() {
       if (i !== index) return t;
       return {
         ...t,
-        rubric: t.rubric ? { ...t.rubric, weight } : { excellent: '', acceptable: '', poor: '', weight },
+        rubric: t.rubric 
+          ? { ...t.rubric, weight } 
+          : { 
+              excellent: `Dominio sobresaliente en ${t.label}; demuestra experiencia avanzada con ejemplos concretos`,
+              acceptable: `Conocimiento funcional en ${t.label}; puede aplicarlo con supervisión mínima`,
+              poor: `Carencias notables en ${t.label}; no logra demostrar competencia básica`,
+              weight 
+            },
       };
     }));
   };
@@ -522,6 +529,41 @@ export default function CreateRolePage() {
   // ─── Save role ───
   const handleSaveRole = () => {
     if (!jobTitle.trim() || topics.length === 0) return;
+
+    // ─── Validation: Check critical topics have rubric content ───
+    const criticalWithoutRubric = topics.filter(t => {
+      const weight = t.rubric?.weight ?? 5;
+      if (weight < 8) return false; // Only block for critical (≥8)
+      // Check if rubric exists AND has non-empty descriptors
+      if (!t.rubric) return true;
+      return !t.rubric.excellent?.trim() || !t.rubric.acceptable?.trim() || !t.rubric.poor?.trim();
+    });
+
+    if (criticalWithoutRubric.length > 0) {
+      const names = criticalWithoutRubric.map(t => `"${t.label}"`).join(', ');
+      alert(
+        language === 'es'
+          ? `⚠️ Los siguientes criterios CRÍTICOS (peso ≥ 8) no tienen definidos los niveles Excelente / Aceptable / Deficiente:\n\n${names}\n\nZara no podrá evaluar correctamente sin estas rúbricas. Usa "Enriquecer con IA" o "Generar Rúbrica con IA" para generarlas automáticamente.`
+          : `⚠️ The following CRITICAL criteria (weight ≥ 8) don't have Excellent / Acceptable / Deficient levels defined:\n\n${names}\n\nZara won't be able to evaluate correctly without these rubrics. Use "Enrich with AI" or "Generate AI Rubric" to auto-generate them.`
+      );
+      return;
+    }
+
+    // Warning for non-critical topics without rubric (don't block, just warn)
+    const nonCriticalWithoutRubric = topics.filter(t => {
+      if (!t.rubric) return true;
+      return !t.rubric.excellent?.trim() || !t.rubric.acceptable?.trim() || !t.rubric.poor?.trim();
+    });
+
+    if (nonCriticalWithoutRubric.length > 0) {
+      const names = nonCriticalWithoutRubric.map(t => `"${t.label}"`).join(', ');
+      const proceed = confirm(
+        language === 'es'
+          ? `⚡ Los siguientes criterios no tienen rúbrica completa:\n\n${names}\n\nZara generará descriptores automáticos basados en el nombre del criterio. ¿Deseas continuar?`
+          : `⚡ The following criteria don't have complete rubrics:\n\n${names}\n\nZara will auto-generate descriptors based on the criterion name. Continue?`
+      );
+      if (!proceed) return;
+    }
 
     const roleTopics: Topic[] = topics.map((t, i) => ({
       id: `t-${Date.now()}-${i}`,

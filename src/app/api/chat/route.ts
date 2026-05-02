@@ -58,28 +58,50 @@ export async function POST(req: NextRequest) {
     console.log('Messages count:', recentMessages.length);
     console.log('CV Data present:', !!cvData);
 
+    // ─── Helper: ensure every topic has a rubric (fallback if missing/empty) ───
+    const ensureRubric = (t: { label: string; rubric?: { weight?: number; excellent?: string; acceptable?: string; poor?: string } }) => {
+      const r = t.rubric;
+      const weight = r?.weight ?? 5;
+      const excellent = (r?.excellent && r.excellent.trim()) || `Dominio sobresaliente en ${t.label}; demuestra experiencia avanzada con ejemplos concretos`;
+      const acceptable = (r?.acceptable && r.acceptable.trim()) || `Conocimiento funcional en ${t.label}; puede aplicarlo con supervisión mínima`;
+      const poor = (r?.poor && r.poor.trim()) || `Carencias notables en ${t.label}; no logra demostrar competencia básica`;
+      return { weight, excellent, acceptable, poor };
+    };
+
     // Build topic list with status indicators AND rubric-aware depth hints
     const topicList = allTopics
       ? allTopics.map((t: { label: string; status: string; rubric?: { weight: number; excellent: string; acceptable: string; poor: string } }, i: number) => {
         const icon = t.status === 'completed' ? '✅' : t.status === 'current' ? '👉' : '⏳';
+        const rubric = ensureRubric(t);
 
         // Rubric-aware depth guidance
         let depthHint = '';
-        let criteriaHint = '';
-        if (t.rubric) {
-          if (t.rubric.weight >= 8) {
-            depthHint = ' [DEEP DIVE — ask 3+ questions, this is critical]';
-          } else if (t.rubric.weight <= 3) {
-            depthHint = ' [QUICK — ask 1-2 questions max]';
-          }
-          if (t.status === 'current' && t.rubric.excellent) {
-            criteriaHint = `\n      → Evaluate if candidate can: "${t.rubric.excellent}"`;
-          }
+        if (rubric.weight >= 8) {
+          depthHint = ' [DEEP DIVE — ask 3+ questions, this is critical]';
+        } else if (rubric.weight <= 3) {
+          depthHint = ' [QUICK — ask 1-2 questions max]';
         }
 
-        return `  ${i + 1}. ${icon} ${t.label}${depthHint} [${t.status}]${criteriaHint}`;
+        let criteriaHint = '';
+        if (t.status === 'current') {
+          criteriaHint = `\n      → Evaluate if candidate can: "${rubric.excellent}"`;
+        }
+
+        return `  ${i + 1}. ${icon} ${t.label} (Weight: ${rubric.weight}/10)${depthHint} [${t.status}]${criteriaHint}`;
       }).join('\n')
       : `  - ${currentTopic}`;
+
+    // ─── BLOQUE 4: Rúbrica completa por criterio (NEVER empty) ───
+    const rubricBlock = allTopics
+      ? allTopics.map((t: { label: string; status: string; rubric?: { weight: number; excellent: string; acceptable: string; poor: string } }) => {
+        const r = ensureRubric(t);
+        const criticality = r.weight >= 8 ? 'CRITICAL' : r.weight >= 5 ? 'IMPORTANT' : 'BASIC';
+        return `  CRITERION: ${t.label} (Weight: ${r.weight}/10 — ${criticality})
+  ✅ EXCELLENT: ${r.excellent}
+  ⚡ ACCEPTABLE: ${r.acceptable}
+  ❌ DEFICIENT: ${r.poor}`;
+      }).join('\n\n')
+      : '';
 
     // Build the conversation as a formatted transcript inside a SINGLE user message.
     const conversationLines = recentMessages.map((m: { role: string; content: string }) => {
@@ -92,8 +114,9 @@ export async function POST(req: NextRequest) {
 
     // Get current topic rubric for enhanced guidance
     const currentTopicData = allTopics?.find((t: { label: string; status: string }) => t.label === currentTopic);
-    const rubricGuidance = currentTopicData?.rubric
-      ? `\nEVALUATION GUIDE FOR CURRENT TOPIC: You want to discover if the candidate demonstrates: "${currentTopicData.rubric.excellent}". Ask questions that reveal this level of competence. A weak candidate would show: "${currentTopicData.rubric.poor}".`
+    const currentRubric = currentTopicData ? ensureRubric(currentTopicData) : null;
+    const rubricGuidance = currentRubric
+      ? `\nEVALUATION GUIDE FOR CURRENT TOPIC: You want to discover if the candidate demonstrates: "${currentRubric.excellent}". An acceptable candidate would show: "${currentRubric.acceptable}". A weak candidate would show: "${currentRubric.poor}". Ask questions that reveal which level the candidate is at.`
       : '';
 
     // Build CV profile section for the system prompt (only if CV was uploaded)
@@ -172,6 +195,9 @@ JOB INFO:
 ${cvProfileSection}
 INTERVIEW TOPICS (in order):
 ${topicList}
+
+EVALUATION RUBRIC (use this to calibrate your questions and assess candidate responses):
+${rubricBlock || '  No specific rubric provided — evaluate based on general competence for the role.'}
 
 CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 ${cvVerificationInstructions}

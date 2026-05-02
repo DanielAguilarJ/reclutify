@@ -12,32 +12,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Build weighted rubric context if topics have rubric data
-    const hasRubrics = topics.some((t: { rubric?: unknown }) => t.rubric);
+    // ─── Helper: ensure every topic has a rubric (fallback if missing/empty) ───
+    const ensureRubric = (t: { label: string; rubric?: { weight?: number; excellent?: string; acceptable?: string; poor?: string } }) => {
+      const r = t.rubric;
+      const weight = r?.weight ?? 5;
+      const excellent = (r?.excellent && r.excellent.trim()) || `Dominio sobresaliente en ${t.label}`;
+      const acceptable = (r?.acceptable && r.acceptable.trim()) || `Conocimiento funcional en ${t.label}`;
+      const poor = (r?.poor && r.poor.trim()) || `Carencias notables en ${t.label}`;
+      return { weight, excellent, acceptable, poor };
+    };
 
-    let rubricContext = '';
-    if (hasRubrics) {
-      rubricContext = `\n\nWEIGHTED EVALUATION RUBRIC:
+    // Build weighted rubric context — ALWAYS include rubric (with fallback)
+    const rubricContext = `\n\nWEIGHTED EVALUATION RUBRIC:
 Use the following criteria to score each topic. The weight indicates importance — higher weight = more impact on overallScore.
 
 ${topics.map((t: { label: string; rubric?: { weight: number; excellent: string; acceptable: string; poor: string } }) => {
-        if (t.rubric) {
-          return `📋 "${t.label}" (weight: ${t.rubric.weight}/10)
-   • Excellent (9-10): ${t.rubric.excellent}
-   • Acceptable (6-8): ${t.rubric.acceptable}
-   • Poor (0-5): ${t.rubric.poor}`;
-        }
-        return `📋 "${t.label}" (weight: 5/10 — default)`;
-      }).join('\n\n')}
+      const rubric = ensureRubric(t);
+      return `📋 "${t.label}" (weight: ${rubric.weight}/10)
+   • Excellent (9-10): ${rubric.excellent}
+   • Acceptable (6-8): ${rubric.acceptable}
+   • Poor (0-5): ${rubric.poor}`;
+    }).join('\n\n')}
 
 SCORING RULES:
 - Score each topic 0-10 based on the criteria above
 - Calculate overallScore as a WEIGHTED AVERAGE: sum(score × weight) / sum(weights) × 10
 - A topic with weight 9 counts 3x more than one with weight 3
 - recommendation thresholds: >=80 = "Strong Hire", >=60 = "Hire", <60 = "Pass"`;
-    }
 
     const topicList = topics.map((t: { label: string }) => t.label).join(', ');
+    const hasRubrics = topics.some((t: { rubric?: unknown }) => t.rubric);
 
     const systemPrompt = `You are an expert HR Evaluator. Analyze the following interview transcript for candidate "${candidateName}".
 Your objective is to honestly and critically evaluate if the candidate is suitable for the role:
@@ -122,6 +126,35 @@ CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummar
     }
 
     const evaluation = JSON.parse(jsonMatch[0]);
+
+    // ─── Server-side weighted score recalculation ───
+    // The AI provides topicScores; we recalculate overallScore with exact weighted average
+    if (evaluation.topicScores && typeof evaluation.topicScores === 'object') {
+      let weightedSum = 0;
+      let totalWeight = 0;
+
+      for (const t of topics as { label: string; rubric?: { weight?: number } }[]) {
+        const rubric = ensureRubric(t);
+        const score = evaluation.topicScores[t.label] ?? 0;
+        weightedSum += score * rubric.weight;
+        totalWeight += rubric.weight;
+      }
+
+      if (totalWeight > 0) {
+        // Weighted average on 0-10 scale, then multiply by 10 for 0-100
+        const weightedScore = Math.round((weightedSum / totalWeight) * 10);
+        evaluation.overallScore = Math.min(100, Math.max(0, weightedScore));
+
+        // Recalculate recommendation based on weighted score
+        if (evaluation.overallScore >= 80) {
+          evaluation.recommendation = 'Strong Hire';
+        } else if (evaluation.overallScore >= 60) {
+          evaluation.recommendation = 'Hire';
+        } else {
+          evaluation.recommendation = 'Pass';
+        }
+      }
+    }
 
     // Priority 5: Envío de correo automáticamente al reclutador (Notificación)
     try {

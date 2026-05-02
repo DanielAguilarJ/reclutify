@@ -39,6 +39,11 @@ export async function POST(req: Request) {
     const step3 = isEs ? '<strong>3. Conversa con la IA:</strong> Responderás preguntas pregrabadas de nuestra IA, similar a una videollamada real. Toma tu tiempo y sé tú mismo(a).' : '<strong>3. Talk to the AI:</strong> You will answer questions from our AI, similar to a real video call. Take your time and be yourself.';
 
     const buttonText = isEs ? 'Comenzar Entrevista Ahora' : 'Start Interview Now';
+    
+    const videoText = isEs 
+      ? '¿Tienes dudas sobre cómo unirte? <a href="https://www.youtube.com/watch?v=k21ac2OAjHM" target="_blank" style="color: #4f46e5; text-decoration: underline; font-weight: 600;">Mira nuestro video tutorial aquí</a>.' 
+      : 'Have questions about how to join? <a href="https://www.youtube.com/watch?v=k21ac2OAjHM" target="_blank" style="color: #4f46e5; text-decoration: underline; font-weight: 600;">Watch our video tutorial here</a>.';
+
     const footerText = isEs
       ? 'Este enlace es personal, intransferible y expirará en 24 horas.'
       : 'This link is personal, non-transferable, and will expire in 24 hours.';
@@ -165,6 +170,10 @@ export async function POST(req: Request) {
             <div class="button-wrapper">
               <a href="${link}" class="button">${buttonText}</a>
             </div>
+
+            <p style="text-align: center; font-size: 15px; margin-top: -10px; margin-bottom: 40px; color: #4b5563;">
+              ${videoText}
+            </p>
 
             <p>
               ${isEs ? '¡Mucho éxito!' : 'Best of luck!'}<br/>

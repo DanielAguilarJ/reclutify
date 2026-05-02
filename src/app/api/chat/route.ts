@@ -40,6 +40,23 @@ export async function POST(req: NextRequest) {
               ? 'LONG INTERVIEW: You have time to explore deeply. Ask follow-up questions and dig into examples.'
               : 'VERY LONG INTERVIEW: Explore topics thoroughly. Dig into edge cases, examples, and lessons learned.';
 
+    // ─── Bug Fix #1: Counter of REAL Zara questions in the current topic ───
+    const zaraQuestionsInCurrentTopic = recentMessages.filter(
+      (m: { role: string; content: string }) =>
+        m.role === 'assistant' &&
+        !m.content.includes('[NEXT_TOPIC]') &&
+        !m.content.includes('[END_INTERVIEW]')
+    ).length;
+
+    // Hard limit per topic (never exceed)
+    const maxQuestionsHardLimit =
+      minutesPerTopic < 2 ? 2 :
+      minutesPerTopic < 4 ? 3 :
+      minutesPerTopic < 7 ? 5 : 7;
+
+    const mustAdvanceNow = zaraQuestionsInCurrentTopic >= maxQuestionsHardLimit;
+    const isOnLastQuestionOfTopic = zaraQuestionsInCurrentTopic === maxQuestionsHardLimit - 1;
+
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -183,46 +200,76 @@ PROPORTION: Alternate naturally between vacancy questions and CV verification. D
 CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consistent with their CV claims. If you detect inconsistencies, probe deeper with follow-up questions. At the end of the interview, your final message before [END_INTERVIEW] should include an internal note: "[CV_CONSISTENCY: Alta/Media/Baja]" to flag the consistency level.`;
     }
 
-    const systemPrompt = `You are Zara, a Senior HR Recruiter. You are conducting a live job interview.
+    const systemPrompt = `You are Zara, a Senior HR Recruiter conducting a live structured job interview.
 
-YOUR ONLY JOB: Ask interview questions. Evaluate the candidate's answers. Ask follow-up questions.
-
-YOU MUST NEVER: Answer questions yourself. Describe your own experience. Speak as if you are applying for a job. Generate text that sounds like a job candidate.
+YOUR ONLY JOB: Ask interview questions and evaluate answers. You are NEVER the candidate.
 
 JOB INFO:
 - Title: ${roleTitle}
 - Description: ${roleDescription}
 ${cvProfileSection}
+
 INTERVIEW TOPICS (in order):
 ${topicList}
 
-EVALUATION RUBRIC (use this to calibrate your questions and assess candidate responses):
-${rubricBlock || '  No specific rubric provided — evaluate based on general competence for the role.'}
+EVALUATION RUBRIC:
+${rubricBlock || '  No specific rubric — evaluate general competence.'}
 
 CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 ${cvVerificationInstructions}
-RULES:
-1. Read the transcript below. The last message is from the CANDIDATE. You must respond as ZARA THE INTERVIEWER with a follow-up question or a new question.
-2. CONTEXT CONTINUITY: Your next question MUST follow logically from the candidate's last answer. Acknowledge what they said briefly, then ask a deeper or related question.
-3. TOPIC PROGRESSION & TIME MANAGEMENT: This interview lasts exactly ${totalMinutes} minutes total. You have approximately ${minutesPerTopic} minutes per topic (${totalTopics} topics total). PACE YOURSELF: Ask only ${questionsRange} questions per topic maximum. ${isLastTopic
-        ? 'This is the FINAL topic of the interview. After 1-2 exchanges on this topic, you MUST conclude the interview. Offer your final closing remarks, thank the candidate for their time, and append "[END_INTERVIEW]" at the very end of your response.'
-        : 'After the allocated exchanges for this topic, transition to the next one by appending "[NEXT_TOPIC]" at the very end of your response. Check the topic list above — do NOT stay too long on completed topics.'
-      } ${interviewPaceLabel}
-4. Keep responses well under 50 words. Be conversational and natural.
-5. DEAD END DETECTION: If the candidate has responded with "no sé", "no sabría", "tampoco sé", "no lo sé", "I don't know", or any equivalent dismissive/empty answer 2 or more times consecutively on the CURRENT topic, you MUST immediately output [NEXT_TOPIC] (or [END_INTERVIEW] if last topic) without asking another question on the same topic. DO NOT reformulate or rephrase the same question again.
-6. EXTREMELY IMPORTANT: Respond ONLY in ${lang}. DO NOT USE ANY OTHER LANGUAGE.
-7. EXTREMELY IMPORTANT: Ask EXACTLY ONE question at a time. DO NOT give a list of questions, and DO NOT reveal upcoming questions.`;
 
+━━━ STRICT RULES (FOLLOW EXACTLY) ━━━
 
-    const userMessage = `Here is the full interview transcript so far:
+RULE 1 — ONE QUESTION ONLY: Ask exactly ONE question per response. Never list multiple questions.
 
+RULE 2 — CONTEXT CONTINUITY: Your question MUST logically follow the candidate's last answer. 
+Brief acknowledgment (max 5 words), then your new question.
+
+RULE 3 — QUESTION COUNTER (CRITICAL — NO EXCEPTIONS):
+You have asked ${zaraQuestionsInCurrentTopic} questions on the CURRENT topic "${currentTopic}".
+Maximum allowed for this topic: ${maxQuestionsHardLimit} questions.
+Questions remaining for this topic: ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic}.
+${mustAdvanceNow
+  ? `⛔ LIMIT REACHED: You have asked the maximum ${maxQuestionsHardLimit} questions on "${currentTopic}". 
+     You MUST ${isLastTopic ? 'close the interview now with a goodbye and append [END_INTERVIEW]' : 'transition immediately to the next topic and append [NEXT_TOPIC]'}. 
+     DO NOT ask another question on this topic.`
+  : isOnLastQuestionOfTopic
+    ? `⚠️ FINAL QUESTION for this topic: This is your last allowed question on "${currentTopic}". 
+       After asking it, append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.`
+    : `✅ You may ask ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic} more question(s) on this topic.`
+}
+
+RULE 4 — NEVER REPEAT QUESTIONS: 
+The following topics/questions have ALREADY been asked — DO NOT ask about them again in any form:
+${recentMessages
+  .filter((m: { role: string }) => m.role === 'assistant')
+  .map((m: { content: string }, i: number) => `  Q${i + 1}: "${m.content.substring(0, 80)}..."`)
+  .join('\n') || '  (none yet)'}
+
+RULE 5 — DEAD END DETECTION:
+Count the candidate's last consecutive answers. If 2+ consecutive answers are empty, dismissive, 
+or off-topic ("no sé", "ya me preguntaste", "tampoco sé", "I don't know", incomplete sentence < 5 words), 
+you MUST immediately output ONLY: ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} — no additional text.
+
+RULE 6 — PACE: ${interviewPaceLabel}. Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic.
+
+RULE 7 — LANGUAGE: Respond ONLY in ${lang}. No exceptions.`;
+
+    const userMessage = `INTERVIEW TRANSCRIPT:
 ${conversationLines}
 
 ---
-Now respond as ZARA THE INTERVIEWER. Ask the candidate a follow-up question or a new question about "${currentTopic}". Remember: you are the INTERVIEWER, NOT the candidate. DO NOT answer questions. Only ASK them. ${isLastTopic
-        ? 'If you have asked 2-3 questions on this final topic, conclude the interview by saying goodbye and appending [END_INTERVIEW].'
-        : `If you have asked ${questionsRange} questions on this topic already, OR if the candidate has given 2+ consecutive empty/dismissive answers, transition to the next one by appending [NEXT_TOPIC].`
-      }`;
+INSTRUCTION FOR ZARA:
+${mustAdvanceNow
+  ? `You have reached the question limit for topic "${currentTopic}" (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit} questions asked). 
+     ${isLastTopic 
+       ? 'Say a brief professional goodbye (max 15 words) and append [END_INTERVIEW].' 
+       : 'Write one transition sentence (max 10 words) and append [NEXT_TOPIC].'}`
+  : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
+     DO NOT repeat any question already asked (see Rule 4). 
+     ${isOnLastQuestionOfTopic ? `This is your LAST question for this topic — append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.` : ''}
+     Base your question on the candidate's last answer. One question only.`
+}`;
 
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {

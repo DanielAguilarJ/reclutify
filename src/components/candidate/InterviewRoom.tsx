@@ -64,9 +64,26 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const topicAdvancingRef = useRef<boolean>(false);
   // FIX 5: Client-side dead-end detection — counts consecutive empty/evasive answers
   const consecutiveEmptyRef = useRef<number>(0);
+  // FIX 6: Tracks where the current topic started in the transcript (for hard-limit guard)
+  const topicStartIndexRef = useRef<number>(0);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
+
+  // Compute the hard question limit (mirrors the API logic)
+  const interviewDurationMins = Number(currentRole?.interviewDuration) || 30;
+  const minutesPerTopic = topics.length > 0 ? interviewDurationMins / topics.length : interviewDurationMins;
+  const maxQuestionsHardLimit =
+    minutesPerTopic < 2 ? 2 :
+    minutesPerTopic < 4 ? 3 :
+    minutesPerTopic < 7 ? 5 : 7;
+
+  // Reset topic start index whenever the topic advances
+  useEffect(() => {
+    topicStartIndexRef.current = transcript.length;
+    consecutiveEmptyRef.current = 0;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTopicIndex]);
 
   // Sync to Admin Pipeline as "in-progress" automatically — ALWAYS save progress
   // FIX 2: Removed `timerSeconds` from deps — it was triggering ~1800 Supabase writes/interview.
@@ -262,6 +279,26 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         ...transcript.map((m) => ({ role: m.role, content: m.content })),
         { role: 'user', content: text },
       ];
+
+      // FIX 6 (Frontend Guard): Hard-coded question counter — if the model failed to
+      // include [NEXT_TOPIC], the frontend forces the advance before calling the API.
+      const zaraQsInTopic = transcript
+        .slice(topicStartIndexRef.current)
+        .filter(m => m.role === 'assistant' &&
+                     !m.content.includes('[NEXT_TOPIC]') &&
+                     !m.content.includes('[END_INTERVIEW]'))
+        .length;
+
+      if (zaraQsInTopic >= maxQuestionsHardLimit) {
+        console.log(`[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`);
+        setIsProcessing(false);
+        if (isLastTopic) {
+          endInterview();
+        } else {
+          nextTopic();
+        }
+        return;
+      }
 
       // Send all topics with completion status and rubric data
       const allTopics = topics.map((t, idx) => ({

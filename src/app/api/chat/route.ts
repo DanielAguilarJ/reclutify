@@ -23,6 +23,53 @@ export async function POST(req: NextRequest) {
       sessionId,
     } = rawBody;
 
+    // ─── Telemetry Helper ───
+    // Logs every detail needed to reproduce and debug any issue.
+    // Runs asynchronously so it never blocks the response to the candidate.
+    const logTelemetry = async (opts: {
+      turnIndex: number;
+      model: string;
+      promptText?: string;
+      responseText?: string;
+      reasoningText?: string;
+      errorText?: string;
+      durationMs?: number;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; reasoning_tokens?: number };
+      debugState?: Record<string, unknown>;
+    }) => {
+      if (!sessionId) return;
+      try {
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+        if (!supabaseUrl || !supabaseKey) return;
+
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        await supabase.from('interview_telemetry').insert({
+          session_id: sessionId,
+          candidate_name: candidateName || null,
+          role_title: roleTitle || null,
+          turn_index: opts.turnIndex,
+          model: opts.model,
+          prompt_tokens: opts.usage?.prompt_tokens || 0,
+          completion_tokens: opts.usage?.completion_tokens || 0,
+          total_tokens: opts.usage?.total_tokens || 0,
+          reasoning_tokens: opts.usage?.reasoning_tokens || 0,
+          reasoning_text: opts.reasoningText || null,
+          prompt_text: opts.promptText || null,
+          response_text: opts.responseText || null,
+          error_text: opts.errorText || null,
+          duration_ms: opts.durationMs || 0,
+          raw_payload: {
+            ...rawBody,
+            _debug: opts.debugState || {},
+          },
+        });
+      } catch (e) {
+        console.error('[Telemetry] Failed to log:', e);
+      }
+    };
+
     // ─── Time calculations ───
     const totalTopics = allTopics?.length || 1;
     const totalMinutes = typeof interviewDuration === 'number' && interviewDuration > 0
@@ -418,6 +465,28 @@ ${mustAdvanceNow
     if (!response.ok) {
       const errorData = await response.text();
       console.error('OpenRouter error:', errorData);
+
+      // LOG THE ERROR — this is the most valuable telemetry
+      logTelemetry({
+        turnIndex: recentMessages.length + 1,
+        model: 'x-ai/grok-4.20',
+        promptText: systemPrompt + '\n\n' + userMessage,
+        errorText: `HTTP ${response.status}: ${errorData}`,
+        durationMs,
+        debugState: {
+          zaraQuestionsInCurrentTopic,
+          maxQuestionsHardLimit,
+          currentTopicIndex,
+          timerSeconds,
+          isClosingPhase,
+          mustAdvanceNow,
+          isOnLastQuestionOfTopic,
+          isLastTopic,
+          percentComplete,
+          httpStatus: response.status,
+        },
+      });
+
       return NextResponse.json(
         { error: 'Failed to get AI response' },
         { status: 500 }
@@ -429,40 +498,41 @@ ${mustAdvanceNow
     const reasoning = data.choices?.[0]?.message?.reasoning || '';
     const usage = data.usage || {};
 
-    // --- TELEMETRY LOGGING (Async) ---
-    if (sessionId) {
-      // Execute in background to not block the response
-      (async () => {
-        try {
-          const { createClient } = await import('@supabase/supabase-js');
-          const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-          // Use service role if available to bypass RLS, otherwise fallback to anon
-          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-          
-          if (supabaseUrl && supabaseKey) {
-            const supabase = createClient(supabaseUrl, supabaseKey);
-            await supabase.from('interview_telemetry').insert({
-              session_id: sessionId,
-              candidate_name: candidateName,
-              role_title: roleTitle,
-              turn_index: recentMessages.length + 1,
-              model: 'x-ai/grok-4.20',
-              prompt_tokens: usage.prompt_tokens || 0,
-              completion_tokens: usage.completion_tokens || 0,
-              total_tokens: usage.total_tokens || 0,
-              reasoning_tokens: usage.reasoning_tokens || 0,
-              reasoning_text: reasoning,
-              prompt_text: systemPrompt + '\n\n' + userMessage,
-              response_text: aiMessage,
-              duration_ms: durationMs,
-              raw_payload: rawBody,
-            });
-          }
-        } catch (e) {
-          console.error('Failed to log telemetry:', e);
-        }
-      })();
-    }
+    // --- TELEMETRY LOGGING (Async — never blocks response) ---
+    logTelemetry({
+      turnIndex: recentMessages.length + 1,
+      model: 'x-ai/grok-4.20',
+      promptText: systemPrompt + '\n\n' + userMessage,
+      responseText: aiMessage,
+      reasoningText: reasoning || null,
+      durationMs,
+      usage,
+      debugState: {
+        zaraQuestionsInCurrentTopic,
+        maxQuestionsHardLimit,
+        questionsRange,
+        currentTopicIndex,
+        topicStartIndex,
+        timerSeconds,
+        elapsedMinutes,
+        remainingMinutes,
+        percentComplete,
+        isClosingPhase,
+        isLastTopic,
+        isOpeningPhase,
+        isTransitionToNewTopic,
+        mustAdvanceNow,
+        isOnLastQuestionOfTopic,
+        interviewPaceLabel,
+        totalTopics,
+        totalMinutes,
+        minutesPerTopic,
+        effectiveSecondsPerQuestion,
+        realisticQuestionsPerTopic,
+        currentTopic,
+        messagesCount: recentMessages?.length || 0,
+      },
+    });
     // ---------------------------------
 
     console.log('AI RAW Response:', aiMessage.substring(0, 200));
@@ -522,8 +592,31 @@ Return ONLY valid JSON, no markdown.`
     }
 
     return NextResponse.json({ message: aiMessage, sentiment });
-  } catch (error) {
-    console.error('Chat API error:', error);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.error('Chat API error:', err);
+
+    // Even on catastrophic failure, try to log what happened
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        await supabase.from('interview_telemetry').insert({
+          session_id: 'CRASH',
+          candidate_name: null,
+          role_title: null,
+          turn_index: 0,
+          model: 'x-ai/grok-4.20',
+          error_text: `CRASH: ${err.message}\n\nStack: ${err.stack || 'N/A'}`,
+          duration_ms: 0,
+        });
+      }
+    } catch (telemetryErr) {
+      console.error('[Telemetry] Failed to log crash:', telemetryErr);
+    }
+
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

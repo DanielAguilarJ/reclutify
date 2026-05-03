@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
       currentTopicIndex = 0,
       topicStartIndex = 0,
       isClosingPhase = false,
+      sessionId,
     } = await req.json();
 
     // ─── Time calculations ───
@@ -392,6 +393,7 @@ ${mustAdvanceNow
 }`;
 
 
+    const startTime = Date.now();
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -411,6 +413,7 @@ ${mustAdvanceNow
         max_tokens: 300,
       }),
     });
+    const durationMs = Date.now() - startTime;
 
     if (!response.ok) {
       const errorData = await response.text();
@@ -423,6 +426,43 @@ ${mustAdvanceNow
 
     const data = await response.json();
     let aiMessage = data.choices?.[0]?.message?.content || '';
+    const reasoning = data.choices?.[0]?.message?.reasoning || '';
+    const usage = data.usage || {};
+
+    // --- TELEMETRY LOGGING (Async) ---
+    if (sessionId) {
+      // Execute in background to not block the response
+      (async () => {
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          // Use service role if available to bypass RLS, otherwise fallback to anon
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+          
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl, supabaseKey);
+            await supabase.from('interview_telemetry').insert({
+              session_id: sessionId,
+              candidate_name: candidateName,
+              role_title: roleTitle,
+              turn_index: recentMessages.length + 1,
+              model: 'x-ai/grok-4.20',
+              prompt_tokens: usage.prompt_tokens || 0,
+              completion_tokens: usage.completion_tokens || 0,
+              total_tokens: usage.total_tokens || 0,
+              reasoning_tokens: usage.reasoning_tokens || 0,
+              reasoning_text: reasoning,
+              prompt_text: systemPrompt + '\n\n' + userMessage,
+              response_text: aiMessage,
+              duration_ms: durationMs,
+            });
+          }
+        } catch (e) {
+          console.error('Failed to log telemetry:', e);
+        }
+      })();
+    }
+    // ---------------------------------
 
     console.log('AI RAW Response:', aiMessage.substring(0, 200));
     console.log('====== END CHAT API DEBUG ======\n');

@@ -350,6 +350,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           currentTopicIndex,
           topicStartIndex: topicStartIndexRef.current,
           isClosingPhase,
+          sessionId: sessionId || 'unknown-session',
         }),
       });
 

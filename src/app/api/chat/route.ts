@@ -4,59 +4,96 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const { currentTopic, allTopics, recentMessages, language, roleTitle, roleDescription, isLastTopic, interviewDuration, cvData, candidateName } = await req.json();
+    const {
+      currentTopic,
+      allTopics,
+      recentMessages,
+      language,
+      roleTitle,
+      roleDescription,
+      isLastTopic,
+      interviewDuration,
+      cvData,
+      candidateName,
+      // NEW: time & position awareness from frontend
+      timerSeconds = 0,
+      currentTopicIndex = 0,
+      topicStartIndex = 0,
+      isClosingPhase = false,
+    } = await req.json();
 
-    // Calcular tiempo por tema según la duración configurada
+    // ─── Time calculations ───
     const totalTopics = allTopics?.length || 1;
     const totalMinutes = typeof interviewDuration === 'number' && interviewDuration > 0
       ? interviewDuration
       : 30;
+    const totalSeconds = totalMinutes * 60;
     const minutesPerTopic = totalTopics > 0
       ? parseFloat((totalMinutes / totalTopics).toFixed(2))
       : totalMinutes;
 
-    // Adaptive question budget: scales with actual time per topic
-    // < 1 min  → 1-2  (e.g. 5 min / 6 topics = 0.83 min)
-    // 1-2 min  → 1-3  (e.g. 10 min / 6 topics = 1.67 min)
-    // 2-4 min  → 2-3  (e.g. 15 min / 6 topics = 2.5 min)
-    // 4-7 min  → 3-5  (e.g. 30 min / 6 topics = 5 min)
-    // > 7 min  → 4-7  (e.g. 60 min / 6 topics = 10 min)
-    const questionsRange =
-      minutesPerTopic < 1   ? '1-2'
-      : minutesPerTopic < 2 ? '1-3'
-      : minutesPerTopic < 4 ? '2-3'
-      : minutesPerTopic < 7 ? '3-5'
-      : '4-7';
+    // Real-time awareness
+    const elapsedMinutes = (timerSeconds / 60).toFixed(1);
+    const remainingSeconds = Math.max(0, totalSeconds - timerSeconds);
+    const remainingMinutes = (remainingSeconds / 60).toFixed(1);
+    const percentComplete = Math.min(100, Math.round((timerSeconds / totalSeconds) * 100));
+    const topicsRemaining = totalTopics - currentTopicIndex;
+    const minutesPerRemainingTopic = topicsRemaining > 0
+      ? parseFloat((remainingSeconds / 60 / topicsRemaining).toFixed(1))
+      : 0;
 
-    // Adaptive pacing instruction that matches the configured duration
-    const interviewPaceLabel =
-      totalMinutes <= 7
-        ? 'VERY SHORT INTERVIEW: Be extremely concise. Ask only the single most important question per topic. No pleasantries whatsoever.'
-        : totalMinutes <= 15
-          ? 'SHORT INTERVIEW: Be concise and direct. Skip pleasantries. Go straight to key questions.'
-          : totalMinutes <= 35
-            ? 'STANDARD INTERVIEW: Balance depth with pace.'
-            : totalMinutes <= 55
-              ? 'LONG INTERVIEW: You have time to explore deeply. Ask follow-up questions and dig into examples.'
-              : 'VERY LONG INTERVIEW: Explore topics thoroughly. Dig into edge cases, examples, and lessons learned.';
-
-    // ─── Bug Fix #1: Counter of REAL Zara questions in the current topic ───
-    const zaraQuestionsInCurrentTopic = recentMessages.filter(
+    // ─── BUG FIX #1: Count questions ONLY from the current topic ───
+    // topicStartIndex tells us where in the conversation the current topic began
+    const messagesInCurrentTopic = recentMessages.slice(topicStartIndex);
+    const zaraQuestionsInCurrentTopic = messagesInCurrentTopic.filter(
       (m: { role: string; content: string }) =>
         m.role === 'assistant' &&
         !m.content.includes('[NEXT_TOPIC]') &&
         !m.content.includes('[END_INTERVIEW]')
     ).length;
 
-    // Hard limit per topic (never exceed)
-    const maxQuestionsHardLimit =
-      minutesPerTopic < 2 ? 2 :
-      minutesPerTopic < 4 ? 3 :
-      minutesPerTopic < 7 ? 5 : 7;
+    // Adaptive question budget — tuned for real-world TTS overhead (~15-20s per question)
+    // For short interviews, each question cycle (AI speaks + candidate responds) takes ~45-60s
+    // So we calculate based on realistic throughput, not raw time division
+    const effectiveSecondsPerQuestion = totalMinutes <= 10 ? 50 : 40; // TTS is proportionally costlier in short interviews
+    const realisticQuestionsPerTopic = Math.max(1, Math.floor((minutesPerTopic * 60) / effectiveSecondsPerQuestion));
+
+    const maxQuestionsHardLimit = Math.min(
+      minutesPerTopic < 1   ? 2 :
+      minutesPerTopic < 2   ? 3 :
+      minutesPerTopic < 3   ? 4 :
+      minutesPerTopic < 5   ? 5 :
+      minutesPerTopic < 8   ? 6 : 7,
+      Math.max(2, realisticQuestionsPerTopic + 1) // never fewer than 2
+    );
+
+    const questionsRange =
+      minutesPerTopic < 1   ? '1-2'
+      : minutesPerTopic < 2 ? '2-3'
+      : minutesPerTopic < 3 ? '2-4'
+      : minutesPerTopic < 5 ? '3-5'
+      : minutesPerTopic < 8 ? '4-6'
+      : '5-7';
 
     const mustAdvanceNow = zaraQuestionsInCurrentTopic >= maxQuestionsHardLimit;
     const isOnLastQuestionOfTopic = zaraQuestionsInCurrentTopic === maxQuestionsHardLimit - 1;
 
+    // Interview pace label
+    const interviewPaceLabel =
+      totalMinutes <= 7
+        ? 'VERY SHORT INTERVIEW: Be ultra-concise. Ask pointed, high-signal questions. Zero small talk. Each question must extract maximum insight in minimum time.'
+        : totalMinutes <= 15
+          ? 'SHORT INTERVIEW: Be concise and direct. Minimal pleasantries. Focus on the most revealing questions for each topic.'
+          : totalMinutes <= 35
+            ? 'STANDARD INTERVIEW: Balance depth with pace. Include brief acknowledgments and natural transitions.'
+            : totalMinutes <= 55
+              ? 'LONG INTERVIEW: You have time to explore deeply. Ask follow-up questions, dig into examples, and probe edge cases.'
+              : 'VERY LONG INTERVIEW: Explore topics thoroughly. Use storytelling prompts, edge cases, and lessons learned.';
+
+    // ─── Interview phase detection ───
+    const isFirstMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').length === 0;
+    const isOpeningPhase = isFirstMessage || (zaraQuestionsInCurrentTopic === 0 && currentTopicIndex === 0);
+    const isTransitionToNewTopic = zaraQuestionsInCurrentTopic === 0 && currentTopicIndex > 0;
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -69,13 +106,15 @@ export async function POST(req: NextRequest) {
     const lang = language === 'es' ? 'Spanish (Español)' : 'English';
 
     console.log('\n====== CHAT API DEBUG ======');
-    console.log('Topic:', currentTopic);
+    console.log('Topic:', currentTopic, `(${currentTopicIndex + 1}/${totalTopics})`);
     console.log('Role:', roleTitle);
-    console.log('Language:', language);
-    console.log('Messages count:', recentMessages.length);
+    console.log('Timer:', `${elapsedMinutes}m elapsed / ${remainingMinutes}m remaining (${percentComplete}%)`);
+    console.log('Questions in topic:', zaraQuestionsInCurrentTopic, '/', maxQuestionsHardLimit);
+    console.log('Closing phase:', isClosingPhase);
+    console.log('Messages count:', recentMessages.length, '| topicStartIndex:', topicStartIndex);
     console.log('CV Data present:', !!cvData);
 
-    // ─── Helper: ensure every topic has a rubric (fallback if missing/empty) ───
+    // ─── Helper: ensure every topic has a rubric ───
     const ensureRubric = (t: { label: string; rubric?: { weight?: number; excellent?: string; acceptable?: string; poor?: string } }) => {
       const r = t.rubric;
       const weight = r?.weight ?? 5;
@@ -91,12 +130,11 @@ export async function POST(req: NextRequest) {
         const icon = t.status === 'completed' ? '✅' : t.status === 'current' ? '👉' : '⏳';
         const rubric = ensureRubric(t);
 
-        // Rubric-aware depth guidance
         let depthHint = '';
         if (rubric.weight >= 8) {
-          depthHint = ' [DEEP DIVE — ask 3+ questions, this is critical]';
+          depthHint = ' [DEEP DIVE — prioritize this topic]';
         } else if (rubric.weight <= 3) {
-          depthHint = ' [QUICK — ask 1-2 questions max]';
+          depthHint = ' [QUICK — 1-2 questions max]';
         }
 
         let criteriaHint = '';
@@ -108,7 +146,7 @@ export async function POST(req: NextRequest) {
       }).join('\n')
       : `  - ${currentTopic}`;
 
-    // ─── BLOQUE 4: Rúbrica completa por criterio (NEVER empty) ───
+    // Full rubric block
     const rubricBlock = allTopics
       ? allTopics.map((t: { label: string; status: string; rubric?: { weight: number; excellent: string; acceptable: string; poor: string } }) => {
         const r = ensureRubric(t);
@@ -120,7 +158,7 @@ export async function POST(req: NextRequest) {
       }).join('\n\n')
       : '';
 
-    // Build the conversation as a formatted transcript inside a SINGLE user message.
+    // Build the conversation as a formatted transcript
     const conversationLines = recentMessages.map((m: { role: string; content: string }) => {
       if (m.role === 'assistant') {
         return `ZARA (Entrevistadora): ${m.content}`;
@@ -129,14 +167,14 @@ export async function POST(req: NextRequest) {
       }
     }).join('\n\n');
 
-    // Get current topic rubric for enhanced guidance
+    // Current topic rubric for enhanced guidance
     const currentTopicData = allTopics?.find((t: { label: string; status: string }) => t.label === currentTopic);
     const currentRubric = currentTopicData ? ensureRubric(currentTopicData) : null;
     const rubricGuidance = currentRubric
       ? `\nEVALUATION GUIDE FOR CURRENT TOPIC: You want to discover if the candidate demonstrates: "${currentRubric.excellent}". An acceptable candidate would show: "${currentRubric.acceptable}". A weak candidate would show: "${currentRubric.poor}". Ask questions that reveal which level the candidate is at.`
       : '';
 
-    // Build CV profile section for the system prompt (only if CV was uploaded)
+    // Build CV profile section
     let cvProfileSection = '';
     let cvVerificationInstructions = '';
     if (cvData && typeof cvData === 'object' && (cvData.name || cvData.experience?.length || cvData.skills?.length)) {
@@ -200,16 +238,67 @@ PROPORTION: Alternate naturally between vacancy questions and CV verification. D
 CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consistent with their CV claims. If you detect inconsistencies, probe deeper with follow-up questions. At the end of the interview, your final message before [END_INTERVIEW] should include an internal note: "[CV_CONSISTENCY: Alta/Media/Baja]" to flag the consistency level.`;
     }
 
-    const systemPrompt = `You are Zara, a Senior HR Recruiter conducting a live structured job interview.
+    // ─── Build previous questions list (for anti-repetition) ───
+    const previousQuestions = recentMessages
+      .filter((m: { role: string }) => m.role === 'assistant')
+      .map((m: { content: string }, i: number) => `  Q${i + 1}: "${m.content.substring(0, 100)}..."`)
+      .join('\n') || '  (none yet)';
 
-YOUR ONLY JOB: Ask interview questions and evaluate answers. You are NEVER the candidate.
+    // ─── TIME STATUS BLOCK ───
+    const timeStatusBlock = `
+━━━ TIME STATUS (REAL-TIME — USE THIS TO PACE YOURSELF) ━━━
+⏱ Elapsed: ${elapsedMinutes} min of ${totalMinutes} min total (${percentComplete}% complete)
+⏳ Remaining: ${remainingMinutes} min
+📍 Current Topic: ${currentTopicIndex + 1} of ${totalTopics} ("${currentTopic}")
+📊 Topics remaining after this: ${topicsRemaining - 1}
+⏰ Available time per remaining topic: ~${minutesPerRemainingTopic} min
+🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${maxQuestionsHardLimit} max
+${isClosingPhase ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the interview time. You MUST wrap up now.' : ''}`;
+
+    // ─── INTERVIEW PHASE INSTRUCTIONS ───
+    let phaseInstruction = '';
+    if (isClosingPhase && isLastTopic) {
+      phaseInstruction = `
+PHASE: CLOSING (MANDATORY)
+You have reached the closing phase. Your response MUST:
+1. Briefly acknowledge the candidate's last answer (max 8 words)
+2. Thank the candidate for their time and participation
+3. Mention that the evaluation team will review the interview
+4. Wish them well
+5. Append [END_INTERVIEW] at the end
+DO NOT ask any more questions. This is the final message.`;
+    } else if (isClosingPhase) {
+      phaseInstruction = `
+PHASE: CLOSING — ACCELERATE
+Time is almost up. Skip to your final question and append [NEXT_TOPIC] to advance quickly.
+If you're on the last topic, close the interview with [END_INTERVIEW].`;
+    } else if (isTransitionToNewTopic) {
+      phaseInstruction = `
+PHASE: TOPIC TRANSITION
+You are transitioning to a new topic: "${currentTopic}".
+Your response MUST:
+1. Provide a smooth transition sentence (e.g., "Excellent, now let's move on to ${currentTopic}.")
+2. Ask your FIRST question about this new topic
+The transition should feel natural, like a professional interviewer guiding the conversation.`;
+    } else {
+      phaseInstruction = `
+PHASE: EXPLORATION
+Continue exploring topic "${currentTopic}". Ask probing, follow-up questions that dig deeper into the candidate's knowledge.
+${currentRubric ? `Your goal: determine if the candidate reaches EXCELLENT level ("${currentRubric.excellent}") or falls to POOR level ("${currentRubric.poor}").` : ''}`;
+    }
+
+    // ─── SYSTEM PROMPT v2.0 ───
+    const systemPrompt = `You are Zara, a Senior HR Recruiter at a top-tier corporation conducting a professional structured interview.
+You are an EXPERT interviewer trained in behavioral interviewing techniques (STAR method), technical assessment, and candidate evaluation.
+
+YOUR IDENTITY: Professional, warm but focused, efficient. You make candidates feel respected while extracting maximum signal from every answer.
 
 JOB INFO:
 - Title: ${roleTitle}
 - Description: ${roleDescription}
 ${cvProfileSection}
 
-INTERVIEW TOPICS (in order):
+INTERVIEW STRUCTURE (${totalTopics} topics in ${totalMinutes} minutes):
 ${topicList}
 
 EVALUATION RUBRIC:
@@ -218,12 +307,36 @@ ${rubricBlock || '  No specific rubric — evaluate general competence.'}
 CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 ${cvVerificationInstructions}
 
+${timeStatusBlock}
+
+${phaseInstruction}
+
+━━━ INTERVIEWER METHODOLOGY ━━━
+
+You follow a professional interview methodology:
+
+1. ACKNOWLEDGE → PROBE → EVALUATE
+   - First: Brief acknowledgment of the candidate's answer (2-8 words max, never empty)
+   - Then: One focused question that digs deeper based on what they said
+   - Internally: Evaluate if their answer reveals EXCELLENT, ACCEPTABLE, or POOR competence
+
+2. QUESTION TYPES (vary these):
+   - BEHAVIORAL: "Tell me about a time when..." / "Describe a situation where..."
+   - TECHNICAL: "How would you implement..." / "Explain how..."
+   - SITUATIONAL: "What would you do if..." / "Imagine that..."
+   - PROBING: "Can you elaborate on..." / "What specifically did you do when..."
+
+3. DEPTH CALIBRATION:
+   - If the candidate gives a STRONG answer → ask a harder follow-up to find their ceiling
+   - If the candidate gives a WEAK answer → ask a simpler version or move on (don't torture them)
+   - If the candidate gives a VAGUE answer → ask for a specific example or concrete detail
+
 ━━━ STRICT RULES (FOLLOW EXACTLY) ━━━
 
-RULE 1 — ONE QUESTION ONLY: Ask exactly ONE question per response. Never list multiple questions.
+RULE 1 — ONE QUESTION ONLY: Each response contains exactly ONE question. Never list multiple questions or sub-questions.
 
-RULE 2 — CONTEXT CONTINUITY: Your question MUST logically follow the candidate's last answer. 
-Brief acknowledgment (max 5 words), then your new question.
+RULE 2 — CONTEXT CONTINUITY: Your question MUST logically follow the candidate's last answer.
+Brief acknowledgment (2-8 words), then your new question.
 
 RULE 3 — QUESTION COUNTER (CRITICAL — NO EXCEPTIONS):
 You have asked ${zaraQuestionsInCurrentTopic} questions on the CURRENT topic "${currentTopic}".
@@ -231,7 +344,7 @@ Maximum allowed for this topic: ${maxQuestionsHardLimit} questions.
 Questions remaining for this topic: ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic}.
 ${mustAdvanceNow
   ? `⛔ LIMIT REACHED: You have asked the maximum ${maxQuestionsHardLimit} questions on "${currentTopic}". 
-     You MUST ${isLastTopic ? 'close the interview now with a goodbye and append [END_INTERVIEW]' : 'transition immediately to the next topic and append [NEXT_TOPIC]'}. 
+     You MUST ${isLastTopic ? 'close the interview now with a professional goodbye and append [END_INTERVIEW]' : 'smoothly transition to the next topic and append [NEXT_TOPIC]'}. 
      DO NOT ask another question on this topic.`
   : isOnLastQuestionOfTopic
     ? `⚠️ FINAL QUESTION for this topic: This is your last allowed question on "${currentTopic}". 
@@ -240,21 +353,23 @@ ${mustAdvanceNow
 }
 
 RULE 4 — NEVER REPEAT QUESTIONS: 
-The following topics/questions have ALREADY been asked — DO NOT ask about them again in any form:
-${recentMessages
-  .filter((m: { role: string }) => m.role === 'assistant')
-  .map((m: { content: string }, i: number) => `  Q${i + 1}: "${m.content.substring(0, 80)}..."`)
-  .join('\n') || '  (none yet)'}
+The following questions have ALREADY been asked — DO NOT ask about them again in any form:
+${previousQuestions}
 
 RULE 5 — DEAD END DETECTION:
-Count the candidate's last consecutive answers. If 2+ consecutive answers are empty, dismissive, 
-or off-topic ("no sé", "ya me preguntaste", "tampoco sé", "I don't know", incomplete sentence < 5 words), 
+If the candidate gives 2+ consecutive empty, dismissive, or off-topic answers ("no sé", "tampoco sé", "I don't know", or responses under 5 words), 
 you MUST immediately output ONLY: ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} — no additional text.
 
-RULE 6 — PACE: ${interviewPaceLabel}. Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic.
+RULE 6 — PACE: ${interviewPaceLabel}
+Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic, ~${questionsRange} questions/topic.
 
-RULE 7 — LANGUAGE: Respond ONLY in ${lang}. No exceptions.`;
+RULE 7 — LANGUAGE: Respond ONLY in ${lang}. No exceptions.
 
+RULE 8 — TRANSITIONS: When you include [NEXT_TOPIC], you MUST say a brief transition sentence BEFORE the tag. Example: "Gracias por compartir eso. Pasemos al siguiente tema. [NEXT_TOPIC]"
+
+RULE 9 — PROFESSIONAL CLOSING: When you include [END_INTERVIEW], end with a warm, professional goodbye. Thank the candidate for their time and mention that the team will be in touch.`;
+
+    // ─── USER MESSAGE ───
     const userMessage = `INTERVIEW TRANSCRIPT:
 ${conversationLines}
 
@@ -263,12 +378,17 @@ INSTRUCTION FOR ZARA:
 ${mustAdvanceNow
   ? `You have reached the question limit for topic "${currentTopic}" (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit} questions asked). 
      ${isLastTopic 
-       ? 'Say a brief professional goodbye (max 15 words) and append [END_INTERVIEW].' 
-       : 'Write one transition sentence (max 10 words) and append [NEXT_TOPIC].'}`
-  : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
+       ? 'Deliver a professional closing: thank the candidate, mention next steps, and append [END_INTERVIEW].' 
+       : 'Write a smooth transition sentence acknowledging the topic, then append [NEXT_TOPIC].'}`
+  : isClosingPhase && isLastTopic
+    ? `TIME IS UP. Deliver your professional closing message. Thank the candidate for their time and append [END_INTERVIEW].`
+    : isClosingPhase
+      ? `TIME IS RUNNING OUT (${remainingMinutes} min left). Ask one final quick question and append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'}.`
+      : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
      DO NOT repeat any question already asked (see Rule 4). 
-     ${isOnLastQuestionOfTopic ? `This is your LAST question for this topic — append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.` : ''}
-     Base your question on the candidate's last answer. One question only.`
+     ${isOnLastQuestionOfTopic ? `This is your LAST question for this topic — after asking it, append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.` : ''}
+     ${isTransitionToNewTopic ? `This is a NEW TOPIC — start with a smooth transition from the previous topic.` : 'Base your question on the candidate\'s last answer.'}
+     One question only.`
 }`;
 
 
@@ -308,7 +428,6 @@ ${mustAdvanceNow
     aiMessage = aiMessage.replace(/^(ZARA\s*(\(Entrevistadora\))?\s*:\s*)/i, '').trim();
 
     // ===== Module 5: Sentiment Analysis =====
-    // Get the candidate's last message for analysis
     const lastCandidateMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').pop();
     let sentiment = null;
     

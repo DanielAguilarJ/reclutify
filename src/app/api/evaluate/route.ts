@@ -95,12 +95,13 @@ CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummar
         'X-Title': 'Reclutify AI Interviewer',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'deepseek/deepseek-v4-flash:exacto',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Analyze the following interview transcript and generate the evaluation JSON report:\n\n${JSON.stringify(transcript)}` }
         ],
-        response_format: { type: 'json_object' }
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
       }),
     });
 

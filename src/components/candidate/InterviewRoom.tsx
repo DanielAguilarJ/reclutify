@@ -70,13 +70,23 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
 
-  // Compute the hard question limit (mirrors the API logic)
+  // Compute the hard question limit (mirrors the API logic — MUST stay in sync)
   const interviewDurationMins = Number(currentRole?.interviewDuration) || 30;
+  const totalDurationSeconds = interviewDurationMins * 60;
   const minutesPerTopic = topics.length > 0 ? interviewDurationMins / topics.length : interviewDurationMins;
-  const maxQuestionsHardLimit =
-    minutesPerTopic < 2 ? 2 :
-    minutesPerTopic < 4 ? 3 :
-    minutesPerTopic < 7 ? 5 : 7;
+  const effectiveSecondsPerQuestion = interviewDurationMins <= 10 ? 50 : 40;
+  const realisticQuestionsPerTopic = Math.max(1, Math.floor((minutesPerTopic * 60) / effectiveSecondsPerQuestion));
+  const maxQuestionsHardLimit = Math.min(
+    minutesPerTopic < 1   ? 2 :
+    minutesPerTopic < 2   ? 3 :
+    minutesPerTopic < 3   ? 4 :
+    minutesPerTopic < 5   ? 5 :
+    minutesPerTopic < 8   ? 6 : 7,
+    Math.max(2, realisticQuestionsPerTopic + 1)
+  );
+
+  // Closing phase detection — at 90% of total duration, signal Zara to wrap up
+  const isClosingPhase = hasStarted && timerSeconds >= totalDurationSeconds * 0.90;
 
   // Reset topic start index whenever the topic advances
   useEffect(() => {
@@ -119,19 +129,25 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   }, [transcript, hasStarted]);
 
   // Timer-based force-advance: ensures topics progress even if AI never emits [NEXT_TOPIC]
-  // FIX 4: Use Number() coercion so interviewDuration===0 doesn't silently disable the guard.
-  // FIX 3: topicAdvancingRef prevents a double nextTopic() when speakText() resolves at the
-  //         same render cycle that the timer check fires.
+  // Includes 20% grace margin to compensate for TTS audio playback time
   useEffect(() => {
-    const duration = Number(currentRole?.interviewDuration) || 30; // FIX 4
+    const duration = Number(currentRole?.interviewDuration) || 30;
     if (!hasStarted || topics.length === 0) return;
 
-    const totalSeconds = duration * 60;
-    const secondsPerTopic = Math.floor(totalSeconds / topics.length);
+    const totalSecs = duration * 60;
+    // 1.2x margin: gives TTS time to finish before we force-advance
+    const secondsPerTopic = Math.floor((totalSecs / topics.length) * 1.2);
     const expectedTopicIndex = Math.min(
       Math.floor(timerSeconds / secondsPerTopic),
       topics.length - 1
     );
+
+    // Hard stop: if we've exceeded 100% of total time, end immediately
+    if (timerSeconds >= totalSecs && !isAiSpeaking && !isProcessing) {
+      console.log(`[Timer Hard Stop] Total time ${duration}m exceeded — ending interview`);
+      endInterview();
+      return;
+    }
 
     // If the clock says we should be on a later topic, force-advance
     if (
@@ -139,7 +155,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       !isAiSpeaking &&
       !isProcessing
     ) {
-      if (topicAdvancingRef.current) return; // FIX 3: guard against double-advance
+      if (topicAdvancingRef.current) return;
       topicAdvancingRef.current = true;
       setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
 
@@ -325,12 +341,15 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           `.trim(),
           recentMessages: allMessages,
           isLastTopic,
-          // FIX 1: Use currentRole (already resolved) as primary source; fall back to store, then 30.
-          // Prevents stale Zustand hydration from silently using the wrong duration.
           interviewDuration:
             Number(currentRole?.interviewDuration) ||
             Number(useInterviewStore.getState().interviewDuration) ||
             30,
+          // NEW: Time & position awareness for Zara v2.0
+          timerSeconds,
+          currentTopicIndex,
+          topicStartIndex: topicStartIndexRef.current,
+          isClosingPhase,
         }),
       });
 
@@ -397,9 +416,11 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     setIsAiSpeaking(true);
     interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
 
+    // Professional greeting with interview roadmap — sets expectations like a top-tier recruiter
+    const topicNames = topics.map(t => t.label).join(', ');
     const greeting = language === 'es'
-      ? `Hola ${candidate.name}, soy Zara. Soy la reclutadora encargada de tu proceso para el puesto de ${currentRole?.title}. ¿Comenzamos? Hábleme un poco de tu experiencia relevante, por favor.`
-      : `Hi ${candidate.name}, I am Zara. I am the recruiter in charge of your process for the ${currentRole?.title} role. Shall we begin? Please tell me a bit about your relevant experience.`;
+      ? `Hola ${candidate.name}, soy Zara, tu entrevistadora para el puesto de ${currentRole?.title}. Esta entrevista durará aproximadamente ${interviewDurationMins} minutos y evaluaremos ${topics.length} áreas clave: ${topicNames}. Comencemos con ${topics[0]?.label || 'el primer tema'}. Cuéntame sobre tu experiencia en esta área.`
+      : `Hi ${candidate.name}, I'm Zara, your interviewer for the ${currentRole?.title} position. This interview will take approximately ${interviewDurationMins} minutes and we'll cover ${topics.length} key areas: ${topicNames}. Let's start with ${topics[0]?.label || 'the first topic'}. Tell me about your experience in this area.`;
 
     addTranscriptEntry({
       role: 'assistant',
@@ -774,13 +795,29 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             >
               {language === 'es' ? 'Terminar Anticipadamente' : 'End Early'}
             </button>
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow-sm border border-black/[0.04]">
-              <Clock className="h-4 w-4 text-primary" />
-              <span className="text-sm font-semibold text-foreground tracking-tight">
-                {formatTime(timerSeconds)}
-              </span>
-            </div>
-            {/* Removing Manual Topic Buttons per User Request */}
+            {/* Countdown Timer with color-coded alerts */}
+            {(() => {
+              const remaining = Math.max(0, totalDurationSeconds - timerSeconds);
+              const remainPct = totalDurationSeconds > 0 ? remaining / totalDurationSeconds : 1;
+              const isUrgent = remainPct <= 0.10; // last 10%
+              const isWarning = remainPct <= 0.25; // last 25%
+              const timerColor = isUrgent ? 'text-danger' : isWarning ? 'text-warning' : 'text-primary';
+              const borderColor = isUrgent ? 'border-danger/30' : isWarning ? 'border-warning/30' : 'border-black/[0.04]';
+              const iconColor = isUrgent ? 'text-danger' : isWarning ? 'text-warning' : 'text-primary';
+              return (
+                <div className={`flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow-sm border ${borderColor} transition-colors`}>
+                  <Clock className={`h-4 w-4 ${iconColor} ${isUrgent ? 'animate-pulse' : ''}`} />
+                  <div className="flex flex-col items-end">
+                    <span className={`text-sm font-semibold ${timerColor} tracking-tight tabular-nums`}>
+                      {formatTime(remaining)}
+                    </span>
+                    <span className="text-[10px] text-muted/50 leading-none">
+                      {formatTime(timerSeconds)} / {formatTime(totalDurationSeconds)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <div className="w-[120px]" /> /* spacer */

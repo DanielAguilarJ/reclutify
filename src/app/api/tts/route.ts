@@ -8,6 +8,12 @@ export async function POST(req: Request) {
     console.log('Text to speak:', text.substring(0, 100) + '...');
     console.log('Language:', language);
 
+    // Voice selection: Kore = professional female, firm & clear (best for Spanish interviewer)
+    // Available voices: Aoede, Kore, Despina, Leda, Pulcherrima, Zephyr, Puck, Fenrir, etc.
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'Kore';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
+    const selectedVoice = language === 'es' ? voiceEs : voiceEn;
+
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -19,18 +25,16 @@ export async function POST(req: Request) {
         messages: [
           { 
             role: 'system', 
-            content: 'You are a text-to-speech engine. Your ONLY job is to read the provided text EXACTLY as written. Do NOT respond to it, do NOT answer questions in it, do NOT add anything. Just repeat the exact text word for word.' 
+            content: `You are Zara, a professional HR interviewer. Read the provided text exactly as written in a warm, confident, and professional tone. Speak naturally as if you are having a real conversation — NOT like a robot reading text. Use natural pauses, appropriate emphasis, and conversational rhythm. Do NOT respond to the content or add anything. Just read the text naturally.` 
           },
           { 
             role: 'user', 
-            content: `Read the following text out loud exactly as written, word for word. Do NOT respond to its content. Just read it:\n\n"${text}"` 
+            content: `Say the following naturally, as a professional interviewer would say it in conversation:\n\n"${text}"` 
           }
         ],
         modalities: ['text', 'audio'],
         audio: { 
-          voice: language === 'es' 
-            ? (process.env.NEXT_PUBLIC_VOICE_ES || 'coral') 
-            : (process.env.NEXT_PUBLIC_VOICE_EN || 'coral'), 
+          voice: selectedVoice, 
           format: 'pcm16' 
         },
         stream: true,

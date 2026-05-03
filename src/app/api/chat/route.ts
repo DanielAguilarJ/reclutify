@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
       topicStartIndex = 0,
       isClosingPhase = false,
       sessionId,
+      isOpeningPhase: clientOpeningPhase = false,
     } = rawBody;
 
     // ─── Telemetry Helper ───
@@ -93,12 +94,18 @@ export async function POST(req: NextRequest) {
     // ─── BUG FIX #1: Count questions ONLY from the current topic ───
     // topicStartIndex tells us where in the conversation the current topic began
     const messagesInCurrentTopic = recentMessages.slice(topicStartIndex);
-    const zaraQuestionsInCurrentTopic = messagesInCurrentTopic.filter(
+    const assistantMessagesInTopic = messagesInCurrentTopic.filter(
       (m: { role: string; content: string }) =>
         m.role === 'assistant' &&
         !m.content.includes('[NEXT_TOPIC]') &&
         !m.content.includes('[END_INTERVIEW]')
-    ).length;
+    );
+    // BUG FIX #5: Don't count the opening greeting as a question.
+    // The first assistant message on topic 0 is the greeting, not a question.
+    const isFirstTopicWithGreeting = currentTopicIndex === 0 && assistantMessagesInTopic.length > 0 && topicStartIndex === 0;
+    const zaraQuestionsInCurrentTopic = isFirstTopicWithGreeting
+      ? Math.max(0, assistantMessagesInTopic.length - 1)
+      : assistantMessagesInTopic.length;
 
     // Adaptive question budget — tuned for real-world TTS overhead (~15-20s per question)
     // For short interviews, each question cycle (AI speaks + candidate responds) takes ~45-60s
@@ -140,8 +147,8 @@ export async function POST(req: NextRequest) {
 
     // ─── Interview phase detection ───
     const isFirstMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').length === 0;
-    const isOpeningPhase = isFirstMessage || (zaraQuestionsInCurrentTopic === 0 && currentTopicIndex === 0);
-    const isTransitionToNewTopic = zaraQuestionsInCurrentTopic === 0 && currentTopicIndex > 0;
+    const isOpeningPhase = clientOpeningPhase || isFirstMessage;
+    const isTransitionToNewTopic = !isOpeningPhase && zaraQuestionsInCurrentTopic === 0 && currentTopicIndex > 0;
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -206,14 +213,12 @@ export async function POST(req: NextRequest) {
       }).join('\n\n')
       : '';
 
-    // Build the conversation as a formatted transcript
-    const conversationLines = recentMessages.map((m: { role: string; content: string }) => {
-      if (m.role === 'assistant') {
-        return `ZARA (Entrevistadora): ${m.content}`;
-      } else {
-        return `CANDIDATO: ${m.content}`;
-      }
-    }).join('\n\n');
+    // Build the conversation as structured messages for the model
+    // This preserves the real conversational flow so the AI can follow the thread
+    const conversationMessages = recentMessages.map((m: { role: string; content: string }) => ({
+      role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
+      content: m.content,
+    }));
 
     // Current topic rubric for enhanced guidance
     const currentTopicData = allTopics?.find((t: { label: string; status: string }) => t.label === currentTopic);
@@ -305,14 +310,27 @@ ${isClosingPhase ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the inter
 
     // ─── INTERVIEW PHASE INSTRUCTIONS ───
     let phaseInstruction = '';
-    if (isClosingPhase && isLastTopic) {
+    if (isOpeningPhase) {
+      phaseInstruction = `
+PHASE: OPENING (MANDATORY)
+This is the START of the interview. You MUST deliver a professional opening:
+1. Greet the candidate warmly by name ("${candidateName}")
+2. Introduce yourself as Zara, their interviewer for the position of ${roleTitle}
+3. Briefly explain the interview format: "This interview will last approximately ${totalMinutes} minutes and we'll discuss ${totalTopics} key areas."
+4. Make the candidate feel comfortable with a brief encouraging phrase
+5. Then ask your FIRST question about the first topic: "${currentTopic}"
+
+Keep the opening concise but warm (3-4 sentences max before your first question).
+Do NOT list all the topics — just mention you'll cover several areas.
+End with exactly ONE question about "${currentTopic}".`;
+    } else if (isClosingPhase && isLastTopic) {
       phaseInstruction = `
 PHASE: CLOSING (MANDATORY)
 You have reached the closing phase. Your response MUST:
 1. Briefly acknowledge the candidate's last answer (max 8 words)
-2. Thank the candidate for their time and participation
-3. Mention that the evaluation team will review the interview
-4. Wish them well
+2. Thank the candidate sincerely for their time and participation
+3. Mention that the evaluation team will review the interview and they will be contacted about next steps
+4. Wish them well with a warm, encouraging closing
 5. Append [END_INTERVIEW] at the end
 DO NOT ask any more questions. This is the final message.`;
     } else if (isClosingPhase) {
@@ -325,7 +343,7 @@ If you're on the last topic, close the interview with [END_INTERVIEW].`;
 PHASE: TOPIC TRANSITION
 You are transitioning to a new topic: "${currentTopic}".
 Your response MUST:
-1. Provide a smooth transition sentence (e.g., "Excellent, now let's move on to ${currentTopic}.")
+1. Provide a smooth transition sentence (e.g., "Muy bien, ahora pasemos a hablar sobre ${currentTopic}.")
 2. Ask your FIRST question about this new topic
 The transition should feel natural, like a professional interviewer guiding the conversation.`;
     } else {
@@ -417,28 +435,109 @@ RULE 8 — TRANSITIONS: When you include [NEXT_TOPIC], you MUST say a brief tran
 
 RULE 9 — PROFESSIONAL CLOSING: When you include [END_INTERVIEW], end with a warm, professional goodbye. Thank the candidate for their time and mention that the team will be in touch.`;
 
-    // ─── USER MESSAGE ───
-    const userMessage = `INTERVIEW TRANSCRIPT:
-${conversationLines}
-
----
-INSTRUCTION FOR ZARA:
-${mustAdvanceNow
-  ? `You have reached the question limit for topic "${currentTopic}" (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit} questions asked). 
+    // ─── BUILD INSTRUCTION MESSAGE ───
+    const instructionContent = isOpeningPhase
+      ? `This is the start of the interview. Deliver your professional opening greeting and first question as described in the OPENING phase instructions.`
+      : mustAdvanceNow
+        ? `You have reached the question limit for topic "${currentTopic}" (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit} questions asked). 
      ${isLastTopic 
        ? 'Deliver a professional closing: thank the candidate, mention next steps, and append [END_INTERVIEW].' 
        : 'Write a smooth transition sentence acknowledging the topic, then append [NEXT_TOPIC].'}`
-  : isClosingPhase && isLastTopic
-    ? `TIME IS UP. Deliver your professional closing message. Thank the candidate for their time and append [END_INTERVIEW].`
-    : isClosingPhase
-      ? `TIME IS RUNNING OUT (${remainingMinutes} min left). Ask one final quick question and append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'}.`
-      : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
+        : isClosingPhase && isLastTopic
+          ? `TIME IS UP. Deliver your professional closing message. Thank the candidate for their time and append [END_INTERVIEW].`
+          : isClosingPhase
+            ? `TIME IS RUNNING OUT (${remainingMinutes} min left). Ask one final quick question and append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'}.`
+            : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
      DO NOT repeat any question already asked (see Rule 4). 
      ${isOnLastQuestionOfTopic ? `This is your LAST question for this topic — after asking it, append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.` : ''}
      ${isTransitionToNewTopic ? `This is a NEW TOPIC — start with a smooth transition from the previous topic.` : 'Base your question on the candidate\'s last answer.'}
-     One question only.`
-}`;
+     One question only.`;
 
+    // ─── BUILD MESSAGES ARRAY (Conversational Structure) ───
+    // Instead of sending everything as flat text, we send proper role-based messages.
+    // This lets the model understand the real conversation flow and maintain context.
+    const modelMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    // Add the conversation history as proper alternating messages
+    // BUG FIX #1: Merge instruction INTO the last user message to avoid
+    // two consecutive 'user' roles which break LLM role alternation.
+    if (isOpeningPhase && conversationMessages.length === 0) {
+      // No conversation yet — add a single user message with the instruction
+      modelMessages.push({ role: 'user', content: `[SYSTEM INSTRUCTION — not from the candidate]\n${instructionContent}` });
+    } else if (conversationMessages.length > 0) {
+      // Add all messages EXCEPT the last one
+      for (let i = 0; i < conversationMessages.length - 1; i++) {
+        modelMessages.push({ role: conversationMessages[i].role, content: conversationMessages[i].content });
+      }
+      // Merge the last message (candidate's reply) WITH the instruction
+      const lastMsg = conversationMessages[conversationMessages.length - 1];
+      if (lastMsg.role === 'user') {
+        // Append instruction to the candidate's message (most common case)
+        modelMessages.push({
+          role: 'user',
+          content: `${lastMsg.content}\n\n---\n[INSTRUCTION FOR ZARA — respond to the candidate's message above]\n${instructionContent}`,
+        });
+      } else {
+        // Edge case: last message is from assistant (shouldn't happen, but be safe)
+        modelMessages.push({ role: lastMsg.role, content: lastMsg.content });
+        modelMessages.push({ role: 'user', content: `[INSTRUCTION FOR ZARA]\n${instructionContent}` });
+      }
+    }
+
+
+    // ─── BUG FIX #4: Fire sentiment analysis IN PARALLEL with main AI call ───
+    // Previously, sentiment ran AFTER the AI response, adding 1-3s extra latency.
+    // Now both calls run concurrently — the candidate hears Zara faster.
+    const lastCandidateMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').pop();
+    let sentimentPromise: Promise<Record<string, unknown> | null> | null = null;
+    if (lastCandidateMessage) {
+      sentimentPromise = (async () => {
+        try {
+          const sentimentResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://reclutify.com',
+              'X-Title': 'Reclutify AI Interviewer',
+            },
+            body: JSON.stringify({
+              model: 'deepseek/deepseek-v4-flash',
+              messages: [
+                {
+                  role: 'system',
+                  content: `Analyze this interview response for sentiment signals. Return JSON only: { "confidence": <0-100>, "evasion": <boolean>, "keySignals": ["<signal1>", "<signal2>"] }
+Rules:
+- confidence: How confident/assured the candidate sounds (0=very anxious/uncertain, 100=very confident/clear)
+- evasion: true if the candidate avoids answering directly, gives vague non-answers, or redirects
+- keySignals: 2-3 brief labels like "specific examples", "vague language", "strong technical depth", "hedging", "clear articulation", "inconsistency"
+Return ONLY valid JSON, no markdown.`
+                },
+                {
+                  role: 'user',
+                  content: `Candidate response: "${lastCandidateMessage.content}"`
+                }
+              ],
+              response_format: { type: 'json_object' },
+              temperature: 0.3,
+            }),
+          });
+          if (sentimentResponse.ok) {
+            const sentimentData = await sentimentResponse.json();
+            const sentimentContent = sentimentData.choices?.[0]?.message?.content || '';
+            const sentimentMatch = sentimentContent.match(/\{[\s\S]*\}/);
+            if (sentimentMatch) {
+              return JSON.parse(sentimentMatch[0]);
+            }
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      })();
+    }
 
     const startTime = Date.now();
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -451,13 +550,10 @@ ${mustAdvanceNow
       },
       body: JSON.stringify({
         model: 'x-ai/grok-4.20',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
+        messages: modelMessages,
         reasoning: { enabled: true },
         temperature: 0.7,
-        max_tokens: 300,
+        max_tokens: 400,
       }),
     });
     const durationMs = Date.now() - startTime;
@@ -470,7 +566,7 @@ ${mustAdvanceNow
       logTelemetry({
         turnIndex: recentMessages.length + 1,
         model: 'x-ai/grok-4.20',
-        promptText: systemPrompt + '\n\n' + userMessage,
+        promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
         errorText: `HTTP ${response.status}: ${errorData}`,
         durationMs,
         debugState: {
@@ -502,7 +598,7 @@ ${mustAdvanceNow
     logTelemetry({
       turnIndex: recentMessages.length + 1,
       model: 'x-ai/grok-4.20',
-      promptText: systemPrompt + '\n\n' + userMessage,
+      promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
       responseText: aiMessage,
       reasoningText: reasoning || null,
       durationMs,
@@ -538,56 +634,20 @@ ${mustAdvanceNow
     console.log('AI RAW Response:', aiMessage.substring(0, 200));
     console.log('====== END CHAT API DEBUG ======\n');
 
-    // Strip any "ZARA:" prefix the model might prepend
+    // Strip any "ZARA:" prefix or instruction echoes the model might prepend
     aiMessage = aiMessage.replace(/^(ZARA\s*(\(Entrevistadora\))?\s*:\s*)/i, '').trim();
+    aiMessage = aiMessage.replace(/^\[INSTRUCTION[^\]]*\].*?\n/i, '').trim();
+    aiMessage = aiMessage.replace(/^\[SYSTEM INSTRUCTION[^\]]*\].*?\n/i, '').trim();
 
-    // ===== Module 5: Sentiment Analysis =====
-    const lastCandidateMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').pop();
+    // ===== Module 5: Sentiment Analysis (runs in parallel — non-blocking) =====
+    // BUG FIX #4: Sentiment was running AFTER the main AI call, adding 1-3s latency.
+    // Now we fire it concurrently. The promise was started before the main AI call.
     let sentiment = null;
-    
-    if (lastCandidateMessage) {
+    if (sentimentPromise) {
       try {
-        const sentimentResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://reclutify.com',
-            'X-Title': 'Reclutify AI Interviewer',
-          },
-          body: JSON.stringify({
-            model: 'deepseek/deepseek-v4-flash',
-            messages: [
-              {
-                role: 'system',
-                content: `Analyze this interview response for sentiment signals. Return JSON only: { "confidence": <0-100>, "evasion": <boolean>, "keySignals": ["<signal1>", "<signal2>"] }
-Rules:
-- confidence: How confident/assured the candidate sounds (0=very anxious/uncertain, 100=very confident/clear)
-- evasion: true if the candidate avoids answering directly, gives vague non-answers, or redirects
-- keySignals: 2-3 brief labels like "specific examples", "vague language", "strong technical depth", "hedging", "clear articulation", "inconsistency"
-Return ONLY valid JSON, no markdown.`
-              },
-              {
-                role: 'user',
-                content: `Candidate response: "${lastCandidateMessage.content}"`
-              }
-            ],
-            response_format: { type: 'json_object' },
-            temperature: 0.3,
-          }),
-        });
-
-        if (sentimentResponse.ok) {
-          const sentimentData = await sentimentResponse.json();
-          const sentimentContent = sentimentData.choices?.[0]?.message?.content || '';
-          const sentimentMatch = sentimentContent.match(/\{[\s\S]*\}/);
-          if (sentimentMatch) {
-            sentiment = JSON.parse(sentimentMatch[0]);
-          }
-        }
+        sentiment = await sentimentPromise;
       } catch (err) {
         console.error('Sentiment analysis error (non-blocking):', err);
-        // Sentiment analysis failure is non-critical — continue without it
       }
     }
 

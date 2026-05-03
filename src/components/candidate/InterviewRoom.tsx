@@ -145,7 +145,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     // Hard stop: if we've exceeded 100% of total time, end immediately
     if (timerSeconds >= totalSecs && !isAiSpeaking && !isProcessing) {
       console.log(`[Timer Hard Stop] Total time ${duration}m exceeded — ending interview`);
-      endInterview();
+      // BUG FIX #3: Speak a closing message before ending
+      const closingMsg = language === 'es'
+        ? `Ha sido un placer hablar contigo. Hemos llegado al final de nuestra entrevista. El equipo de evaluación revisará tu desempeño y te contactarán pronto. ¡Mucho éxito!`
+        : `It's been great speaking with you. We've reached the end of our interview. The evaluation team will review your performance and be in touch soon. Best of luck!`;
+      addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+      speakText(closingMsg).then(() => endInterview());
       return;
     }
 
@@ -163,9 +168,20 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         `[Timer Force-Advance] Expected topic ${expectedTopicIndex}, current ${currentTopicIndex}`
       );
       if (expectedTopicIndex >= topics.length - 1) {
-        endInterview();
+        // BUG FIX #3: Speak closing before ending
+        const closingMsg = language === 'es'
+          ? `Perfecto, hemos cubierto todos los temas. Muchas gracias por tu tiempo y tus respuestas. ¡Te deseamos mucho éxito!`
+          : `Great, we've covered all the topics. Thank you so much for your time and answers. We wish you the best of luck!`;
+        addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+        speakText(closingMsg).then(() => endInterview());
       } else {
-        nextTopic();
+        // BUG FIX #3: Speak transition before advancing
+        const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
+        const transitionMsg = language === 'es'
+          ? `Muy bien, avancemos al siguiente tema: ${nextTopicLabel}.`
+          : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
+        addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
+        speakText(transitionMsg).then(() => nextTopic());
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -256,6 +272,10 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const handleCandidateUtterance = async (text: string) => {
     if (!text.trim() || isProcessing || isAiSpeaking || speakingRef.current) return;
 
+    // BUG FIX #2: Save transcript entry FIRST, before any early returns.
+    // Previously, dead-end detection returned before saving, losing the candidate's message.
+    addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
+
     // FIX 5: Client-side dead-end detection — if the candidate gives 2+ consecutive
     // short/evasive answers, force-advance without calling the API.
     const isEmpty =
@@ -270,16 +290,27 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     }
     if (consecutiveEmptyRef.current >= 2) {
       consecutiveEmptyRef.current = 0;
-      setIsProcessing(false);
       if (isLastTopic) {
+        // BUG FIX #3: Speak closing before ending
+        const closingMsg = language === 'es'
+          ? `Entiendo. Hemos llegado al final de la entrevista. Muchas gracias por tu participación, ${candidate.name}. El equipo te contactará pronto. ¡Éxito!`
+          : `I understand. We've reached the end of the interview. Thank you for your participation, ${candidate.name}. The team will be in touch soon. Best of luck!`;
+        addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+        await speakText(closingMsg);
         endInterview();
       } else {
+        // BUG FIX #3: Speak transition before advancing
+        const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
+        const transitionMsg = language === 'es'
+          ? `De acuerdo, pasemos al siguiente tema: ${nextTopicLabel}.`
+          : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
+        addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
+        await speakText(transitionMsg);
         nextTopic();
       }
       return; // Skip API call entirely
     }
 
-    addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
     setCurrentSubtitle('');
     setIsRecording(false);
     setIsProcessing(true);
@@ -291,26 +322,45 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
     try {
       // Send full conversation transcript for complete context
-      const allMessages = [
-        ...transcript.map((m) => ({ role: m.role, content: m.content })),
-        { role: 'user', content: text },
-      ];
+      // Note: transcript already includes the user entry we just added above
+      const allMessages = transcript.map((m) => ({ role: m.role, content: m.content }));
+      // Add the latest entry that we just pushed (it may not be in `transcript` yet due to React state batching)
+      const lastEntry = allMessages[allMessages.length - 1];
+      if (!lastEntry || lastEntry.content !== text || lastEntry.role !== 'user') {
+        allMessages.push({ role: 'user', content: text });
+      }
 
       // FIX 6 (Frontend Guard): Hard-coded question counter — if the model failed to
       // include [NEXT_TOPIC], the frontend forces the advance before calling the API.
-      const zaraQsInTopic = transcript
+      // BUG FIX #5: Exclude the opening greeting on topic 0 from the count
+      const assistantMsgsInTopic = transcript
         .slice(topicStartIndexRef.current)
         .filter(m => m.role === 'assistant' &&
                      !m.content.includes('[NEXT_TOPIC]') &&
-                     !m.content.includes('[END_INTERVIEW]'))
-        .length;
+                     !m.content.includes('[END_INTERVIEW]'));
+      const isFirstTopicGreeting = currentTopicIndex === 0 && topicStartIndexRef.current === 0 && assistantMsgsInTopic.length > 0;
+      const zaraQsInTopic = isFirstTopicGreeting
+        ? Math.max(0, assistantMsgsInTopic.length - 1)
+        : assistantMsgsInTopic.length;
 
       if (zaraQsInTopic >= maxQuestionsHardLimit) {
         console.log(`[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`);
         setIsProcessing(false);
         if (isLastTopic) {
+          // BUG FIX #3: Speak closing before ending
+          const closingMsg = language === 'es'
+            ? `Excelente, hemos cubierto todo lo que necesitaba saber sobre este tema. Muchas gracias por tu tiempo, ${candidate.name}. El equipo revisará tu entrevista y te contactarán pronto. ¡Mucho éxito!`
+            : `Excellent, we've covered everything I needed to know. Thank you for your time, ${candidate.name}. The team will review your interview and be in touch soon. Best of luck!`;
+          addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+          await speakText(closingMsg);
           endInterview();
         } else {
+          const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
+          const transitionMsg = language === 'es'
+            ? `Muy bien, con eso cubrimos este tema. Ahora hablemos sobre ${nextTopicLabel}.`
+            : `Great, that covers this topic. Now let's talk about ${nextTopicLabel}.`;
+          addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
+          await speakText(transitionMsg);
           nextTopic();
         }
         return;
@@ -350,6 +400,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           currentTopicIndex,
           topicStartIndex: topicStartIndexRef.current,
           isClosingPhase,
+          isOpeningPhase: false, // Regular turn, not the opening
           sessionId: sessionId || 'unknown-session',
         }),
       });
@@ -417,18 +468,6 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     setIsAiSpeaking(true);
     interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
 
-    // Professional greeting with interview roadmap — sets expectations like a top-tier recruiter
-    const topicNames = topics.map(t => t.label).join(', ');
-    const greeting = language === 'es'
-      ? `Hola ${candidate.name}, soy Zara, tu entrevistadora para el puesto de ${currentRole?.title}. Esta entrevista durará aproximadamente ${interviewDurationMins} minutos y evaluaremos ${topics.length} áreas clave: ${topicNames}. Comencemos con ${topics[0]?.label || 'el primer tema'}. Cuéntame sobre tu experiencia en esta área.`
-      : `Hi ${candidate.name}, I'm Zara, your interviewer for the ${currentRole?.title} position. This interview will take approximately ${interviewDurationMins} minutes and we'll cover ${topics.length} key areas: ${topicNames}. Let's start with ${topics[0]?.label || 'the first topic'}. Tell me about your experience in this area.`;
-
-    addTranscriptEntry({
-      role: 'assistant',
-      content: greeting,
-      timestamp: Date.now(),
-    });
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       streamRef.current = stream;
@@ -491,7 +530,77 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       setTimerSeconds((prev) => prev + 1);
     }, 1000);
 
-    speakText(greeting);
+    // Also ensure roleId is in the interview store for InterviewComplete
+    setStoreRoleId(roleId);
+
+    // Request AI-generated professional opening (instead of hardcoded greeting)
+    try {
+      const allTopicsPayload = topics.map((t, idx) => ({
+        label: t.label,
+        rubric: t.rubric || null,
+        status: idx === 0 ? 'current' : 'upcoming',
+      }));
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentTopic: topics[0]?.label || '',
+          allTopics: allTopicsPayload,
+          cvData: candidate?.cvData || null,
+          candidateName: candidate?.name || '',
+          language: language,
+          roleTitle: currentRole?.title || 'Candidate',
+          roleDescription: `
+            ${currentRole?.description || ''}
+            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ''}
+            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ''}
+            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ''}
+          `.trim(),
+          recentMessages: [], // No messages yet — opening phase
+          isLastTopic: topics.length <= 1,
+          interviewDuration:
+            Number(currentRole?.interviewDuration) ||
+            Number(useInterviewStore.getState().interviewDuration) ||
+            30,
+          timerSeconds: 0,
+          currentTopicIndex: 0,
+          topicStartIndex: 0,
+          isClosingPhase: false,
+          isOpeningPhase: true, // Signal the API this is the opening
+          sessionId: sessionId || 'unknown-session',
+        }),
+      });
+
+      const data = await response.json();
+      if (data.message) {
+        let aiGreeting = data.message;
+        // Clean any control tags from the opening
+        aiGreeting = aiGreeting.replace(/\[NEXT_TOPIC\]/g, '').replace(/\[END_INTERVIEW\]/g, '').trim();
+        
+        addTranscriptEntry({
+          role: 'assistant',
+          content: aiGreeting,
+          timestamp: Date.now(),
+        });
+        await speakText(aiGreeting);
+      } else {
+        // Fallback if AI fails
+        const fallbackGreeting = language === 'es'
+          ? `Hola ${candidate.name}, soy Zara, tu entrevistadora para el puesto de ${currentRole?.title}. Esta entrevista durará aproximadamente ${interviewDurationMins} minutos. Comencemos. Cuéntame sobre tu experiencia en ${topics[0]?.label || 'esta área'}.`
+          : `Hi ${candidate.name}, I'm Zara, your interviewer for the ${currentRole?.title} position. This interview will take approximately ${interviewDurationMins} minutes. Let's begin. Tell me about your experience in ${topics[0]?.label || 'this area'}.`;
+        addTranscriptEntry({ role: 'assistant', content: fallbackGreeting, timestamp: Date.now() });
+        await speakText(fallbackGreeting);
+      }
+    } catch (error) {
+      console.error('Opening greeting error:', error);
+      // Fallback greeting
+      const fallbackGreeting = language === 'es'
+        ? `Hola ${candidate.name}, soy Zara. Comencemos la entrevista para el puesto de ${currentRole?.title}. Cuéntame sobre tu experiencia en ${topics[0]?.label || 'esta área'}.`
+        : `Hi ${candidate.name}, I'm Zara. Let's begin the interview for the ${currentRole?.title} position. Tell me about your experience in ${topics[0]?.label || 'this area'}.`;
+      addTranscriptEntry({ role: 'assistant', content: fallbackGreeting, timestamp: Date.now() });
+      await speakText(fallbackGreeting);
+    }
   };
 
   // Text to Speech — returns a promise that resolves when speech finishes

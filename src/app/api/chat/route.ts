@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
+    const rawBody = await req.json();
     const {
       currentTopic,
       allTopics,
@@ -15,13 +16,12 @@ export async function POST(req: NextRequest) {
       interviewDuration,
       cvData,
       candidateName,
-      // NEW: time & position awareness from frontend
       timerSeconds = 0,
       currentTopicIndex = 0,
       topicStartIndex = 0,
       isClosingPhase = false,
       sessionId,
-    } = await req.json();
+    } = rawBody;
 
     // ─── Time calculations ───
     const totalTopics = allTopics?.length || 1;
@@ -455,6 +455,7 @@ ${mustAdvanceNow
               prompt_text: systemPrompt + '\n\n' + userMessage,
               response_text: aiMessage,
               duration_ms: durationMs,
+              raw_payload: rawBody,
             });
           }
         } catch (e) {

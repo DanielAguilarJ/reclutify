@@ -92,9 +92,23 @@ export default function TelemetryDashboard({ initialLogs }: { initialLogs: any[]
                         {/* Prompt Column */}
                         <div className="space-y-4">
                           <div>
-                            <h4 className="text-sm font-semibold flex items-center gap-2 mb-2 text-primary">
-                              <User className="h-4 w-4" /> User Prompt + Context
-                            </h4>
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="text-sm font-semibold flex items-center gap-2 text-primary">
+                                <User className="h-4 w-4" /> User Prompt + Context
+                              </h4>
+                              {log.raw_payload && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(JSON.stringify(log.raw_payload, null, 2));
+                                  }}
+                                  className="text-xs font-medium bg-primary/10 hover:bg-primary/20 text-primary px-2 py-1 rounded transition-colors"
+                                  title="Copy exact JSON payload sent to the API"
+                                >
+                                  {language === 'es' ? 'Copiar Raw JSON' : 'Copy Raw JSON'}
+                                </button>
+                              )}
+                            </div>
                             <div className="bg-background rounded-lg p-4 border border-border/50 max-h-[300px] overflow-y-auto font-mono text-xs whitespace-pre-wrap text-muted">
                               {log.prompt_text}
                             </div>

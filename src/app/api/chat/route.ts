@@ -401,11 +401,14 @@ ${mustAdvanceNow
         'X-Title': 'Reclutify AI Interviewer',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'x-ai/grok-4.20',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
+        reasoning: { enabled: true },
+        temperature: 0.7,
+        max_tokens: 300,
       }),
     });
 
@@ -442,7 +445,7 @@ ${mustAdvanceNow
             'X-Title': 'Reclutify AI Interviewer',
           },
           body: JSON.stringify({
-            model: 'google/gemini-3-flash-preview',
+            model: 'deepseek/deepseek-v4-flash',
             messages: [
               {
                 role: 'system',

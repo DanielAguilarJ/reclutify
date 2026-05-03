@@ -95,7 +95,7 @@ CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummar
         'X-Title': 'Reclutify AI Interviewer',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v4-flash:exacto',
+        model: 'x-ai/grok-4.20',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Analyze the following interview transcript and generate the evaluation JSON report:\n\n${JSON.stringify(transcript)}` }

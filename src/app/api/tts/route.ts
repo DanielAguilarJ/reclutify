@@ -15,7 +15,7 @@ export async function POST(req: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'openai/gpt-audio-mini',
+        model: 'google/gemini-3.1-flash-tts-preview',
         messages: [
           { 
             role: 'system', 

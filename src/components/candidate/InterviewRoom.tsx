@@ -70,6 +70,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const utteranceBufferRef = useRef<string>('');
   const utteranceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
+  // FIX 8: Ref to always point to the latest handleCandidateUtterance — solves stale closure
+  const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -195,18 +197,17 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             if (event.results[i].isFinal) {
               const finalText = event.results[i][0].transcript;
               // DEBOUNCE: Accumulate final fragments and wait for silence
-              // This prevents partial utterances from triggering premature API calls
               utteranceBufferRef.current += (utteranceBufferRef.current ? ' ' : '') + finalText;
               if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
               utteranceTimerRef.current = setTimeout(() => {
                 const fullUtterance = utteranceBufferRef.current.trim();
                 utteranceBufferRef.current = '';
                 if (fullUtterance) {
-                  handleCandidateUtterance(fullUtterance);
+                  // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
+                  handleUtteranceRef.current(fullUtterance);
                 }
-              }, 1500); // Wait 1.5s of silence after last fragment
+              }, 1500);
             } else {
-              // Show interim + buffered text for live preview
               interimTranscript += event.results[i][0].transcript;
               const preview = utteranceBufferRef.current
                 ? utteranceBufferRef.current + ' ' + interimTranscript
@@ -249,17 +250,32 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   }, [hasStarted]);
 
   // Handle Candidate Input
+  // CRITICAL: This function reads ALL state from useInterviewStore.getState() at call-time
+  // instead of from React closure variables. This is necessary because the speech recognition
+  // onresult handler is set in a useEffect that only runs once, so any closure-captured values
+  // would be stale (transcript: [], timerSeconds: 0, currentTopicIndex: 0, etc.).
   const handleCandidateUtterance = async (text: string) => {
     // Hard guard: block if AI is speaking, processing, or another call is in flight
     if (!text.trim() || processingLockRef.current || speakingRef.current) return;
     processingLockRef.current = true; // Acquire lock — released in finally block
 
-    // BUG FIX #2: Save transcript entry FIRST, before any early returns.
-    // Previously, dead-end detection returned before saving, losing the candidate's message.
+    // ═══ READ FRESH STATE FROM STORE (avoid stale closure) ═══
+    const store = useInterviewStore.getState();
+    const freshTranscript = store.transcript;
+    const freshTopicIndex = store.currentTopicIndex;
+    const freshTimerSeconds = store.timerSeconds;
+    const freshTopics = store.topics;
+    const freshCurrentTopic = freshTopics[freshTopicIndex];
+    const freshIsLastTopic = freshTopicIndex === freshTopics.length - 1;
+    const freshSessionId = store.sessionId;
+    const totalDurationSecs = interviewDurationMins * 60;
+    const freshIsClosingPhase = freshTimerSeconds >= totalDurationSecs * 0.90;
+    // ═══════════════════════════════════════════════════════════
+
+    // Save transcript entry FIRST, before any early returns.
     addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
 
-    // FIX 5: Client-side dead-end detection — if the candidate gives 2+ consecutive
-    // short/evasive answers, force-advance without calling the API.
+    // Dead-end detection — if the candidate gives 2+ consecutive short/evasive answers
     const isEmpty =
       text.trim().length < 12 ||
       /\b(no s[eé]|no lo sé|no sabría|tampoco sé|i don'?t know|not sure|no idea)\b/i.test(
@@ -272,8 +288,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     }
     if (consecutiveEmptyRef.current >= 2) {
       consecutiveEmptyRef.current = 0;
-      if (isLastTopic) {
-        // BUG FIX #3: Speak closing before ending
+      if (freshIsLastTopic) {
         const closingMsg = language === 'es'
           ? `Entiendo. Hemos llegado al final de la entrevista. Muchas gracias por tu participación, ${candidate.name}. El equipo te contactará pronto. ¡Éxito!`
           : `I understand. We've reached the end of the interview. Thank you for your participation, ${candidate.name}. The team will be in touch soon. Best of luck!`;
@@ -282,8 +297,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         processingLockRef.current = false;
         endInterview();
       } else {
-        // BUG FIX #3: Speak transition before advancing
-        const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
+        const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || '';
         const transitionMsg = language === 'es'
           ? `De acuerdo, pasemos al siguiente tema: ${nextTopicLabel}.`
           : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
@@ -292,9 +306,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         processingLockRef.current = false;
         nextTopic();
       }
-      return; // Skip API call entirely
+      return;
     }
-
 
     setCurrentSubtitle('');
     setIsRecording(false);
@@ -306,24 +319,23 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     }
 
     try {
-      // Send full conversation transcript for complete context
-      // Note: transcript already includes the user entry we just added above
-      const allMessages = transcript.map((m) => ({ role: m.role, content: m.content }));
-      // Add the latest entry that we just pushed (it may not be in `transcript` yet due to React state batching)
+      // Build conversation messages from FRESH transcript (not stale closure)
+      // Re-read transcript because addTranscriptEntry above may have updated it
+      const latestTranscript = useInterviewStore.getState().transcript;
+      const allMessages = latestTranscript.map((m) => ({ role: m.role, content: m.content }));
+      // Safety: ensure the user message we just added is included
       const lastEntry = allMessages[allMessages.length - 1];
       if (!lastEntry || lastEntry.content !== text || lastEntry.role !== 'user') {
         allMessages.push({ role: 'user', content: text });
       }
 
-      // FIX 6 (Frontend Guard): Hard-coded question counter — if the model failed to
-      // include [NEXT_TOPIC], the frontend forces the advance before calling the API.
-      // BUG FIX #5: Exclude the opening greeting on topic 0 from the count
-      const assistantMsgsInTopic = transcript
+      // Frontend Guard: Hard-coded question counter
+      const assistantMsgsInTopic = latestTranscript
         .slice(topicStartIndexRef.current)
         .filter(m => m.role === 'assistant' &&
                      !m.content.includes('[NEXT_TOPIC]') &&
                      !m.content.includes('[END_INTERVIEW]'));
-      const isFirstTopicGreeting = currentTopicIndex === 0 && topicStartIndexRef.current === 0 && assistantMsgsInTopic.length > 0;
+      const isFirstTopicGreeting = freshTopicIndex === 0 && topicStartIndexRef.current === 0 && assistantMsgsInTopic.length > 0;
       const zaraQsInTopic = isFirstTopicGreeting
         ? Math.max(0, assistantMsgsInTopic.length - 1)
         : assistantMsgsInTopic.length;
@@ -331,8 +343,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       if (zaraQsInTopic >= maxQuestionsHardLimit) {
         console.log(`[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`);
         setIsProcessing(false);
-        if (isLastTopic) {
-          // BUG FIX #3: Speak closing before ending
+        if (freshIsLastTopic) {
           const closingMsg = language === 'es'
             ? `Excelente, hemos cubierto todo lo que necesitaba saber sobre este tema. Muchas gracias por tu tiempo, ${candidate.name}. El equipo revisará tu entrevista y te contactarán pronto. ¡Mucho éxito!`
             : `Excellent, we've covered everything I needed to know. Thank you for your time, ${candidate.name}. The team will review your interview and be in touch soon. Best of luck!`;
@@ -340,7 +351,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           await speakText(closingMsg);
           endInterview();
         } else {
-          const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
+          const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || '';
           const transitionMsg = language === 'es'
             ? `Muy bien, con eso cubrimos este tema. Ahora hablemos sobre ${nextTopicLabel}.`
             : `Great, that covers this topic. Now let's talk about ${nextTopicLabel}.`;
@@ -352,18 +363,18 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         return;
       }
 
-      // Send all topics with completion status and rubric data
-      const allTopics = topics.map((t, idx) => ({
+      // Send all topics with completion status and rubric data (using FRESH topic index)
+      const allTopics = freshTopics.map((t, idx) => ({
         label: t.label,
         rubric: t.rubric || null,
-        status: idx < currentTopicIndex ? 'completed' : idx === currentTopicIndex ? 'current' : 'upcoming',
+        status: idx < freshTopicIndex ? 'completed' : idx === freshTopicIndex ? 'current' : 'upcoming',
       }));
 
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          currentTopic: currentTopic.label,
+          currentTopic: freshCurrentTopic?.label || '',
           allTopics,
           cvData: candidate?.cvData || null,
           candidateName: candidate?.name || '',
@@ -376,18 +387,17 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ''}
           `.trim(),
           recentMessages: allMessages,
-          isLastTopic,
+          isLastTopic: freshIsLastTopic,
           interviewDuration:
             Number(currentRole?.interviewDuration) ||
             Number(useInterviewStore.getState().interviewDuration) ||
             30,
-          // NEW: Time & position awareness for Zara v2.0
-          timerSeconds,
-          currentTopicIndex,
+          timerSeconds: freshTimerSeconds,
+          currentTopicIndex: freshTopicIndex,
           topicStartIndex: topicStartIndexRef.current,
-          isClosingPhase,
-          isOpeningPhase: false, // Regular turn, not the opening
-          sessionId: sessionId || 'unknown-session',
+          isClosingPhase: freshIsClosingPhase,
+          isOpeningPhase: false,
+          sessionId: freshSessionId || 'unknown-session',
         }),
       });
 
@@ -397,15 +407,14 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         let advanceTopic = false;
         let finishInterview = false;
 
-        // Module 5: Store sentiment data on the user's transcript entry (retroactively)
+        // Store sentiment data on the user's transcript entry
         if (data.sentiment) {
           const currentTranscript = useInterviewStore.getState().transcript;
-          const lastUserIdx = currentTranscript.length - 1; // We just added the user entry above
+          const lastUserIdx = currentTranscript.length - 1;
           if (lastUserIdx >= 0 && currentTranscript[lastUserIdx].role === 'user') {
             const updatedEntry = { ...currentTranscript[lastUserIdx], sentiment: data.sentiment };
             const newTranscript = [...currentTranscript];
             newTranscript[lastUserIdx] = updatedEntry;
-            // Direct set since there's no updateTranscriptEntry helper
             useInterviewStore.setState({ transcript: newTranscript });
           }
         }
@@ -420,20 +429,21 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
         if (aiMessage) {
           addTranscriptEntry({ role: 'assistant', content: aiMessage, timestamp: Date.now() });
-          // Speak the AI message. If we also need to advance or finish, do it AFTER speaking finishes.
           await speakText(aiMessage);
         }
+
+        // Re-read fresh isLastTopic in case topic advanced during speakText
+        const postSpeakState = useInterviewStore.getState();
+        const postSpeakIsLastTopic = postSpeakState.currentTopicIndex === postSpeakState.topics.length - 1;
 
         if (finishInterview) {
           endInterview();
         } else if (advanceTopic) {
-          // FIX 3: Guard against double-advance — timer force-advance may have already fired
-          // in the same render cycle when speakText() resolved.
           if (!topicAdvancingRef.current) {
             topicAdvancingRef.current = true;
             setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
-            if (isLastTopic) {
-              endInterview(); // Fallback: NEXT_TOPIC on last topic → end
+            if (postSpeakIsLastTopic) {
+              endInterview();
             } else {
               nextTopic();
             }
@@ -445,9 +455,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       console.error('Chat error:', error);
     } finally {
       setIsProcessing(false);
-      processingLockRef.current = false; // Release lock
+      processingLockRef.current = false;
     }
   };
+
+  // Keep the ref always pointing to the latest handler
+  handleUtteranceRef.current = handleCandidateUtterance;
 
   // Start the interview
   const startInterview = async () => {

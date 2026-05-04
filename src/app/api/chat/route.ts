@@ -91,18 +91,32 @@ export async function POST(req: NextRequest) {
       ? parseFloat((remainingSeconds / 60 / topicsRemaining).toFixed(1))
       : 0;
 
-    // ─── BUG FIX #1: Count questions ONLY from the current topic ───
-    // topicStartIndex tells us where in the conversation the current topic began
-    const messagesInCurrentTopic = recentMessages.slice(topicStartIndex);
+    // ─── QUESTION COUNTING: Find current topic boundary using [NEXT_TOPIC] markers ───
+    // Instead of relying on `topicStartIndex` from the frontend (which can desync),
+    // we scan the conversation for the last topic transition marker.
+    // Everything AFTER the last [NEXT_TOPIC] belongs to the current topic.
+    let lastTopicBoundary = 0;
+    for (let i = recentMessages.length - 1; i >= 0; i--) {
+      const msg = recentMessages[i];
+      if (msg.role === 'assistant' && (
+        msg.content.includes('[NEXT_TOPIC]') ||
+        // Also detect hardcoded transition messages from the frontend
+        /avancemos al siguiente tema|let's move on to the next topic|pasemos al siguiente tema/i.test(msg.content)
+      )) {
+        lastTopicBoundary = i + 1;
+        break;
+      }
+    }
+    const messagesInCurrentTopic = recentMessages.slice(lastTopicBoundary);
     const assistantMessagesInTopic = messagesInCurrentTopic.filter(
       (m: { role: string; content: string }) =>
         m.role === 'assistant' &&
         !m.content.includes('[NEXT_TOPIC]') &&
         !m.content.includes('[END_INTERVIEW]')
     );
-    // BUG FIX #5: Don't count the opening greeting as a question.
+    // Don't count the opening greeting as a question.
     // The first assistant message on topic 0 is the greeting, not a question.
-    const isFirstTopicWithGreeting = currentTopicIndex === 0 && assistantMessagesInTopic.length > 0 && topicStartIndex === 0;
+    const isFirstTopicWithGreeting = currentTopicIndex === 0 && assistantMessagesInTopic.length > 0 && lastTopicBoundary === 0;
     const zaraQuestionsInCurrentTopic = isFirstTopicWithGreeting
       ? Math.max(0, assistantMessagesInTopic.length - 1)
       : assistantMessagesInTopic.length;

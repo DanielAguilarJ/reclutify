@@ -66,6 +66,10 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const consecutiveEmptyRef = useRef<number>(0);
   // FIX 6: Tracks where the current topic started in the transcript (for hard-limit guard)
   const topicStartIndexRef = useRef<number>(0);
+  // FIX 7: Debounce speech recognition — accumulate fragments before processing
+  const utteranceBufferRef = useRef<string>('');
+  const utteranceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -128,61 +132,23 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcript, hasStarted]);
 
-  // Timer-based force-advance: ensures topics progress even if AI never emits [NEXT_TOPIC]
-  // Includes 20% grace margin to compensate for TTS audio playback time
+  // Timer hard-stop: ONLY ends the interview when 100% of total time elapses.
+  // Topic transitions are handled EXCLUSIVELY by the AI via [NEXT_TOPIC] tags.
+  // Previously this also force-advanced topics by time, which caused double messages.
   useEffect(() => {
     const duration = Number(currentRole?.interviewDuration) || 30;
     if (!hasStarted || topics.length === 0) return;
 
     const totalSecs = duration * 60;
-    // 1.2x margin: gives TTS time to finish before we force-advance
-    const secondsPerTopic = Math.floor((totalSecs / topics.length) * 1.2);
-    const expectedTopicIndex = Math.min(
-      Math.floor(timerSeconds / secondsPerTopic),
-      topics.length - 1
-    );
 
     // Hard stop: if we've exceeded 100% of total time, end immediately
-    if (timerSeconds >= totalSecs && !isAiSpeaking && !isProcessing) {
+    if (timerSeconds >= totalSecs && !speakingRef.current && !processingLockRef.current) {
       console.log(`[Timer Hard Stop] Total time ${duration}m exceeded — ending interview`);
-      // BUG FIX #3: Speak a closing message before ending
       const closingMsg = language === 'es'
         ? `Ha sido un placer hablar contigo. Hemos llegado al final de nuestra entrevista. El equipo de evaluación revisará tu desempeño y te contactarán pronto. ¡Mucho éxito!`
         : `It's been great speaking with you. We've reached the end of our interview. The evaluation team will review your performance and be in touch soon. Best of luck!`;
       addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
       speakText(closingMsg).then(() => endInterview());
-      return;
-    }
-
-    // If the clock says we should be on a later topic, force-advance
-    if (
-      expectedTopicIndex > currentTopicIndex &&
-      !isAiSpeaking &&
-      !isProcessing
-    ) {
-      if (topicAdvancingRef.current) return;
-      topicAdvancingRef.current = true;
-      setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
-
-      console.log(
-        `[Timer Force-Advance] Expected topic ${expectedTopicIndex}, current ${currentTopicIndex}`
-      );
-      if (expectedTopicIndex >= topics.length - 1) {
-        // BUG FIX #3: Speak closing before ending
-        const closingMsg = language === 'es'
-          ? `Perfecto, hemos cubierto todos los temas. Muchas gracias por tu tiempo y tus respuestas. ¡Te deseamos mucho éxito!`
-          : `Great, we've covered all the topics. Thank you so much for your time and answers. We wish you the best of luck!`;
-        addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
-        speakText(closingMsg).then(() => endInterview());
-      } else {
-        // BUG FIX #3: Speak transition before advancing
-        const nextTopicLabel = topics[currentTopicIndex + 1]?.label || '';
-        const transitionMsg = language === 'es'
-          ? `Muy bien, avancemos al siguiente tema: ${nextTopicLabel}.`
-          : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
-        addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
-        speakText(transitionMsg).then(() => nextTopic());
-      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerSeconds, hasStarted]);
@@ -227,11 +193,25 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           let interimTranscript = '';
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             if (event.results[i].isFinal) {
-              const finalTranscript = event.results[i][0].transcript;
-              handleCandidateUtterance(finalTranscript);
+              const finalText = event.results[i][0].transcript;
+              // DEBOUNCE: Accumulate final fragments and wait for silence
+              // This prevents partial utterances from triggering premature API calls
+              utteranceBufferRef.current += (utteranceBufferRef.current ? ' ' : '') + finalText;
+              if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
+              utteranceTimerRef.current = setTimeout(() => {
+                const fullUtterance = utteranceBufferRef.current.trim();
+                utteranceBufferRef.current = '';
+                if (fullUtterance) {
+                  handleCandidateUtterance(fullUtterance);
+                }
+              }, 1500); // Wait 1.5s of silence after last fragment
             } else {
+              // Show interim + buffered text for live preview
               interimTranscript += event.results[i][0].transcript;
-              setCurrentSubtitle(interimTranscript);
+              const preview = utteranceBufferRef.current
+                ? utteranceBufferRef.current + ' ' + interimTranscript
+                : interimTranscript;
+              setCurrentSubtitle(preview);
             }
           }
         };
@@ -270,7 +250,9 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
   // Handle Candidate Input
   const handleCandidateUtterance = async (text: string) => {
-    if (!text.trim() || isProcessing || isAiSpeaking || speakingRef.current) return;
+    // Hard guard: block if AI is speaking, processing, or another call is in flight
+    if (!text.trim() || processingLockRef.current || speakingRef.current) return;
+    processingLockRef.current = true; // Acquire lock — released in finally block
 
     // BUG FIX #2: Save transcript entry FIRST, before any early returns.
     // Previously, dead-end detection returned before saving, losing the candidate's message.
@@ -297,6 +279,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           : `I understand. We've reached the end of the interview. Thank you for your participation, ${candidate.name}. The team will be in touch soon. Best of luck!`;
         addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
         await speakText(closingMsg);
+        processingLockRef.current = false;
         endInterview();
       } else {
         // BUG FIX #3: Speak transition before advancing
@@ -306,10 +289,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
         addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
         await speakText(transitionMsg);
+        processingLockRef.current = false;
         nextTopic();
       }
       return; // Skip API call entirely
     }
+
 
     setCurrentSubtitle('');
     setIsRecording(false);
@@ -363,6 +348,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           await speakText(transitionMsg);
           nextTopic();
         }
+        processingLockRef.current = false;
         return;
       }
 
@@ -459,6 +445,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       console.error('Chat error:', error);
     } finally {
       setIsProcessing(false);
+      processingLockRef.current = false; // Release lock
     }
   };
 
@@ -728,6 +715,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
     if (timerRef.current) clearInterval(timerRef.current);
     if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
+    if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
     if (synthesisRef.current) synthesisRef.current.cancel();
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     if (recognitionRef.current) {
@@ -736,6 +724,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     
     // Force-clear stuck state
     speakingRef.current = false;
+    processingLockRef.current = false;
+    utteranceBufferRef.current = '';
     setIsAiSpeaking(false);
     setIsProcessing(false);
     setIsRecording(false);
@@ -845,6 +835,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       interviewActiveRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
+      if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
       if (synthesisRef.current) synthesisRef.current.cancel();
       if (recognitionRef.current) {
          try { recognitionRef.current.stop(); } catch(e) {}

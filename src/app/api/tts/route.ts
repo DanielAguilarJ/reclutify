@@ -4,131 +4,53 @@ export async function POST(req: Request) {
   try {
     const { text, language } = await req.json();
 
-    console.log('\n====== TTS API DEBUG ======');
-    console.log('Text to speak:', text.substring(0, 100) + '...');
-    console.log('Language:', language);
+    if (!text || typeof text !== 'string') {
+      return NextResponse.json({ error: 'Missing text' }, { status: 400 });
+    }
 
-    // Voice selection: Kore = professional female, firm & clear (best for Spanish interviewer)
-    // Available voices: Aoede, Kore, Despina, Leda, Pulcherrima, Zephyr, Puck, Fenrir, etc.
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'Kore';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
+    console.log('\n====== TTS API ======');
+    console.log('Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
+
+    // Voice selection: check model-specific voices
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'nova';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'nova';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    // Use the correct OpenRouter TTS endpoint: /api/v1/audio/speech
+    // This returns a raw audio byte stream, NOT JSON.
+    const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3.1-flash-tts-preview',
-        messages: [
-          { 
-            role: 'system', 
-            content: `You are Zara, a professional HR interviewer. Read the provided text exactly as written in a warm, confident, and professional tone. Speak naturally as if you are having a real conversation — NOT like a robot reading text. Use natural pauses, appropriate emphasis, and conversational rhythm. Do NOT respond to the content or add anything. Just read the text naturally.` 
-          },
-          { 
-            role: 'user', 
-            content: `Say the following naturally, as a professional interviewer would say it in conversation:\n\n"${text}"` 
-          }
-        ],
-        modalities: ['text', 'audio'],
-        audio: { 
-          voice: selectedVoice, 
-          format: 'pcm16' 
-        },
-        stream: true,
+        model: 'openai/gpt-4o-mini-tts-2025-12-15',
+        input: text,
+        voice: selectedVoice,
+        response_format: 'mp3',
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`OpenRouter error: ${await response.text()}`);
+      const errorText = await response.text();
+      console.error('TTS API error:', response.status, errorText);
+      throw new Error(`TTS API error ${response.status}: ${errorText}`);
     }
 
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No reader attached to response');
+    // The response is already a raw audio stream — forward it directly
+    const audioBuffer = await response.arrayBuffer();
 
-    const decoder = new TextDecoder();
-    const pcmBuffers: Buffer[] = [];
-    
-    let bufferStr = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bufferStr += decoder.decode(value, { stream: true });
-      
-      const lines = bufferStr.split('\n');
-      bufferStr = lines.pop() || ''; // keep the incomplete line
-      
-      for (let line of lines) {
-        line = line.trim();
-        if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6);
-          if (dataStr === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(dataStr);
-            const audioData = parsed.choices?.[0]?.delta?.audio?.data;
-            if (audioData) {
-              pcmBuffers.push(Buffer.from(audioData, 'base64'));
-            }
-          } catch (e) {
-            // Error parsing this specific chunk, skip
-          }
-        }
-      }
-    }
-
-    if (bufferStr.trim().startsWith('data: ')) {
-      const dataStr = bufferStr.trim().slice(6);
-      if (dataStr !== '[DONE]') {
-        try {
-          const parsed = JSON.parse(dataStr);
-          const audioData = parsed.choices?.[0]?.delta?.audio?.data;
-          if (audioData) {
-            pcmBuffers.push(Buffer.from(audioData, 'base64'));
-          }
-        } catch (e) {}
-      }
-    }
-
-    const pcmData = Buffer.concat(pcmBuffers);
-
-    // Create WAV header (24kHz, 1 channel, 16-bit typical for OpenAI audio)
-    const sampleRate = 24000;
-    const numChannels = 1;
-    const bitsPerSample = 16;
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-    const blockAlign = numChannels * (bitsPerSample / 8);
-    const dataSize = pcmData.length;
-    const chunkSize = 36 + dataSize;
-    
-    const wavHeader = Buffer.alloc(44);
-    wavHeader.write('RIFF', 0);
-    wavHeader.writeUInt32LE(chunkSize, 4);
-    wavHeader.write('WAVE', 8);
-    wavHeader.write('fmt ', 12);
-    wavHeader.writeUInt32LE(16, 16); 
-    wavHeader.writeUInt16LE(1, 20); 
-    wavHeader.writeUInt16LE(numChannels, 22);
-    wavHeader.writeUInt32LE(sampleRate, 24);
-    wavHeader.writeUInt32LE(byteRate, 28);
-    wavHeader.writeUInt16LE(blockAlign, 32);
-    wavHeader.writeUInt16LE(bitsPerSample, 34);
-    wavHeader.write('data', 36);
-    wavHeader.writeUInt32LE(dataSize, 40);
-
-    const wavBuffer = Buffer.concat([wavHeader, pcmData]);
-
-    return new NextResponse(wavBuffer, {
+    return new NextResponse(audioBuffer, {
       headers: {
-        'Content-Type': 'audio/wav',
-        'Content-Length': wavBuffer.length.toString(),
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': audioBuffer.byteLength.toString(),
       },
     });
 
   } catch (error: unknown) {
     const err = error as Error;
-    console.error('TTS Error:', err);
+    console.error('TTS Error:', err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

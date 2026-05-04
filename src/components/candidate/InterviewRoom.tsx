@@ -72,6 +72,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
   // FIX 8: Ref to always point to the latest handleCandidateUtterance — solves stale closure
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => {});
+  // FIX 9: Mutex to prevent concurrent SpeechRecognition restart attempts
+  const restartingRef = useRef<boolean>(false);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -158,25 +160,24 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   // Safe restart of SpeechRecognition — prevents silent death
   const restartRecognition = useCallback(() => {
     if (!interviewActiveRef.current || speakingRef.current) return;
+    if (restartingRef.current) return; // Prevent concurrent restarts
+    restartingRef.current = true;
     const rec = recognitionRef.current;
-    if (!rec) return;
+    if (!rec) { restartingRef.current = false; return; }
     try {
       rec.stop();
     } catch (e) { /* already stopped */ }
-    // Small delay to let the browser release resources
+    // Delay to let the browser release resources
     setTimeout(() => {
+      restartingRef.current = false;
       if (!interviewActiveRef.current || speakingRef.current) return;
       try {
         rec.start();
         setIsRecording(true);
       } catch (e) {
-        console.warn('Recognition restart failed, retrying in 1s...', e);
-        setTimeout(() => {
-          if (!interviewActiveRef.current || speakingRef.current) return;
-          try { rec.start(); setIsRecording(true); } catch(e2) {}
-        }, 1000);
+        // Already started or other error — ignore
       }
-    }, 300);
+    }, 500);
   }, []);
 
   // Initialize Speech APIs
@@ -219,11 +220,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
         // Auto-restart on recoverable errors
         recognitionRef.current.onerror = (event: any) => {
+          // no-speech is not a real error — onend will handle restart
+          if (event.error === 'no-speech') return;
           console.error('Speech recognition error:', event.error);
           const fatalErrors = ['not-allowed', 'service-not-allowed', 'language-not-supported'];
           if (!fatalErrors.includes(event.error)) {
-            // Recoverable error — auto restart after brief delay
-            setTimeout(() => restartRecognition(), 500);
+            restartRecognition();
           }
         };
 

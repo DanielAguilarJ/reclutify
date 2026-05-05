@@ -2,6 +2,7 @@
 
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
 /**
@@ -157,6 +158,11 @@ export async function setupCandidateProfile(
       error: `Error al crear tu perfil social: ${socialError.message}`,
     };
   }
+
+  // ─── 6. Revalidate cached pages ───
+  revalidatePath('/feed');
+  revalidatePath(`/profile/${parsed.data.username}`);
+  revalidatePath('/');
 
   return { success: true, redirectTo: '/feed' };
 }

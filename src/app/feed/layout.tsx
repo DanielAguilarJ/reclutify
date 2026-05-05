@@ -20,12 +20,18 @@ export default async function FeedLayout({
     redirect('/login?redirectTo=/feed');
   }
 
-  // Ensure profile exists
+  // Ensure social profile exists (created during onboarding)
   let profile = await getMyProfile();
   if (!profile) {
+    // No social profile — user may have skipped onboarding or it failed.
+    // Auto-create a minimal profile so the feed doesn't break.
     const name = user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuario';
     const result = await createProfile({ full_name: name });
-    if (result.profile) profile = result.profile;
+    if (result.profile) {
+      profile = result.profile;
+    } else {
+      redirect('/onboarding?role=candidate');
+    }
   }
 
   return (

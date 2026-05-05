@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createOrganization, setupCandidateProfile } from '@/app/actions/onboarding';
+import { createClient } from '@/utils/supabase/client';
 import Logo from '@/components/ui/Logo';
 import {
   Building2,
@@ -16,6 +17,7 @@ import {
   ToggleLeft,
   ToggleRight,
   AtSign,
+  Loader2,
 } from 'lucide-react';
 
 type OnboardingRole = 'candidate' | 'employer' | null;
@@ -60,6 +62,34 @@ function OnboardingContent() {
     username: '',
   });
   const [usernameManuallyEdited, setUsernameManuallyEdited] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Pre-populate candidate's full_name from Supabase auth user metadata
+  useEffect(() => {
+    const prefillFromAuth = async () => {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const name = user.user_metadata?.full_name || '';
+          if (name && !candidateData.full_name) {
+            const username = suggestUsername(name);
+            setCandidateData((prev) => ({
+              ...prev,
+              full_name: name,
+              username: prev.username || username,
+            }));
+          }
+        }
+      } catch {
+        // Non-critical — user can type their name manually
+      } finally {
+        setInitialLoading(false);
+      }
+    };
+    prefillFromAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-suggest username from full_name
   useEffect(() => {
@@ -338,11 +368,16 @@ function OnboardingContent() {
                 disabled={loading || !candidateData.full_name.trim() || !candidateData.username.trim()}
                 className="w-full flex items-center justify-center gap-2 group bg-[#00D3D8] hover:bg-[#00bfc4] text-white font-medium py-3.5 rounded-xl transition-all shadow-lg shadow-[#00D3D8]/20 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
               >
-                <span className="text-sm">
-                  {loading ? 'Creando perfil...' : 'Crear Perfil'}
-                </span>
-                {!loading && (
-                  <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                {loading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">Creando perfil...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm">Crear Perfil</span>
+                    <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                  </>
                 )}
               </button>
             </form>

@@ -71,15 +71,29 @@ export async function POST(req: NextRequest) {
       }
     };
 
-    // ─── Time calculations ───
+    // ─── Time calculations (powered by InterviewTimingEngine) ───
+    const { computeInterviewPlan, getQuestionBudget, getQuestionsRange, computeRealTimePacing } = await import('@/lib/interviewTimingEngine');
+
     const totalTopics = allTopics?.length || 1;
     const totalMinutes = typeof interviewDuration === 'number' && interviewDuration > 0
       ? interviewDuration
       : 30;
     const totalSeconds = totalMinutes * 60;
-    const minutesPerTopic = totalTopics > 0
-      ? parseFloat((totalMinutes / totalTopics).toFixed(2))
-      : totalMinutes;
+
+    // Build topic inputs with weights from rubric data
+    const engineTopics = (allTopics || []).map((t: { label: string; rubric?: { weight?: number } }) => ({
+      label: t.label,
+      weight: t.rubric?.weight ?? 5,
+    }));
+
+    // Compute the full interview plan using the timing engine
+    const interviewPlan = computeInterviewPlan(totalMinutes, engineTopics, {
+      hasCv: !!(cvData && typeof cvData === 'object' && (cvData.name || cvData.experience?.length || cvData.skills?.length)),
+    });
+
+    // Get budget for the current topic
+    const currentTopicBudget = getQuestionBudget(currentTopicIndex, interviewPlan);
+    const { paceConfig } = interviewPlan;
 
     // Real-time awareness
     const elapsedMinutes = (timerSeconds / 60).toFixed(1);
@@ -90,6 +104,9 @@ export async function POST(req: NextRequest) {
     const minutesPerRemainingTopic = topicsRemaining > 0
       ? parseFloat((remainingSeconds / 60 / topicsRemaining).toFixed(1))
       : 0;
+    const minutesPerTopic = totalTopics > 0
+      ? parseFloat((totalMinutes / totalTopics).toFixed(2))
+      : totalMinutes;
 
     // ─── QUESTION COUNTING: Find current topic boundary using [NEXT_TOPIC] markers ───
     // Instead of relying on `topicStartIndex` from the frontend (which can desync),
@@ -121,43 +138,36 @@ export async function POST(req: NextRequest) {
       ? Math.max(0, assistantMessagesInTopic.length - 1)
       : assistantMessagesInTopic.length;
 
-    // Adaptive question budget — tuned for real-world TTS overhead (~15-20s per question)
-    // For short interviews, each question cycle (AI speaks + candidate responds) takes ~45-60s
-    // So we calculate based on realistic throughput, not raw time division
-    const effectiveSecondsPerQuestion = totalMinutes <= 10 ? 50 : 40; // TTS is proportionally costlier in short interviews
-    const realisticQuestionsPerTopic = Math.max(1, Math.floor((minutesPerTopic * 60) / effectiveSecondsPerQuestion));
-
-    const maxQuestionsHardLimit = Math.min(
-      minutesPerTopic < 1   ? 2 :
-      minutesPerTopic < 2   ? 3 :
-      minutesPerTopic < 3   ? 4 :
-      minutesPerTopic < 5   ? 5 :
-      minutesPerTopic < 8   ? 6 : 7,
-      Math.max(2, realisticQuestionsPerTopic + 1) // never fewer than 2
-    );
-
-    const questionsRange =
-      minutesPerTopic < 1   ? '1-2'
-      : minutesPerTopic < 2 ? '2-3'
-      : minutesPerTopic < 3 ? '2-4'
-      : minutesPerTopic < 5 ? '3-5'
-      : minutesPerTopic < 8 ? '4-6'
-      : '5-7';
+    // ─── Engine-driven question budget ───
+    const maxQuestionsHardLimit = currentTopicBudget.questionBudget;
+    const questionsRange = getQuestionsRange(currentTopicBudget);
 
     const mustAdvanceNow = zaraQuestionsInCurrentTopic >= maxQuestionsHardLimit;
     const isOnLastQuestionOfTopic = zaraQuestionsInCurrentTopic === maxQuestionsHardLimit - 1;
 
-    // Interview pace label
-    const interviewPaceLabel =
-      totalMinutes <= 7
-        ? 'VERY SHORT INTERVIEW: Be ultra-concise. Ask pointed, high-signal questions. Zero small talk. Each question must extract maximum insight in minimum time.'
-        : totalMinutes <= 15
-          ? 'SHORT INTERVIEW: Be concise and direct. Minimal pleasantries. Focus on the most revealing questions for each topic.'
-          : totalMinutes <= 35
-            ? 'STANDARD INTERVIEW: Balance depth with pace. Include brief acknowledgments and natural transitions.'
-            : totalMinutes <= 55
-              ? 'LONG INTERVIEW: You have time to explore deeply. Ask follow-up questions, dig into examples, and probe edge cases.'
-              : 'VERY LONG INTERVIEW: Explore topics thoroughly. Use storytelling prompts, edge cases, and lessons learned.';
+    // Real-time pacing analysis
+    const realTimePacing = computeRealTimePacing(
+      timerSeconds,
+      currentTopicIndex,
+      zaraQuestionsInCurrentTopic,
+      interviewPlan
+    );
+
+    // Effective maxQuestionsHardLimit with real-time adjustments
+    const adjustedMaxQuestions = Math.max(
+      2,
+      maxQuestionsHardLimit + realTimePacing.suggestAddQuestions - realTimePacing.suggestSkipQuestions
+    );
+
+    // Interview pace label (from engine)
+    const interviewPaceLabel = paceConfig.label;
+
+    // Question style hint for the LLM
+    const questionStyleHint = paceConfig.questionStyle === 'concise'
+      ? '\nQUESTION STYLE: Ask SHORT, DIRECT questions. No STAR prompts. Example: "¿Cuál es tu experiencia en X?" instead of "Cuéntame sobre una situación en la que tuviste que...". Keep acknowledgments to 2-3 words max.'
+      : paceConfig.questionStyle === 'deep'
+        ? '\nQUESTION STYLE: You have time for ELABORATE questions. Use STAR prompts, ask for specific examples, probe edge cases, and explore lessons learned. Acknowledgments can be 1-2 sentences.'
+        : '';
 
     // ─── Interview phase detection ───
     const isFirstMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').length === 0;
@@ -319,7 +329,8 @@ CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consi
 📍 Current Topic: ${currentTopicIndex + 1} of ${totalTopics} ("${currentTopic}")
 📊 Topics remaining after this: ${topicsRemaining - 1}
 ⏰ Available time per remaining topic: ~${minutesPerRemainingTopic} min
-🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${maxQuestionsHardLimit} max
+🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${adjustedMaxQuestions} max (base: ${maxQuestionsHardLimit})
+📈 PACING: ${realTimePacing.message}
 ${isClosingPhase ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the interview time. You MUST wrap up now.' : ''}`;
 
     // ─── INTERVIEW PHASE INSTRUCTIONS ───
@@ -440,7 +451,7 @@ RULE 5 — DEAD END DETECTION:
 If the candidate gives 2+ consecutive empty, dismissive, or off-topic answers ("no sé", "tampoco sé", "I don't know", or responses under 5 words), 
 you MUST immediately output ONLY: ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} — no additional text.
 
-RULE 6 — PACE: ${interviewPaceLabel}
+RULE 6 — PACE: ${interviewPaceLabel}${questionStyleHint}
 Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic, ~${questionsRange} questions/topic.
 
 RULE 7 — LANGUAGE: Respond ONLY in ${lang}. No exceptions.
@@ -620,6 +631,7 @@ Return ONLY valid JSON, no markdown.`
       debugState: {
         zaraQuestionsInCurrentTopic,
         maxQuestionsHardLimit,
+        adjustedMaxQuestions,
         questionsRange,
         currentTopicIndex,
         topicStartIndex,
@@ -637,10 +649,24 @@ Return ONLY valid JSON, no markdown.`
         totalTopics,
         totalMinutes,
         minutesPerTopic,
-        effectiveSecondsPerQuestion,
-        realisticQuestionsPerTopic,
         currentTopic,
         messagesCount: recentMessages?.length || 0,
+        enginePlan: {
+          usableSeconds: interviewPlan.usableSeconds,
+          totalQuestions: interviewPlan.totalQuestions,
+          questionStyle: paceConfig.questionStyle,
+          topicBudgets: interviewPlan.topics.map(t => ({
+            label: t.label,
+            budget: t.questionBudget,
+            allocatedSec: t.allocatedSeconds,
+          })),
+        },
+        realTimePacing: {
+          onTrack: realTimePacing.onTrack,
+          urgency: realTimePacing.urgency,
+          addQ: realTimePacing.suggestAddQuestions,
+          skipQ: realTimePacing.suggestSkipQuestions,
+        },
       },
     });
     // ---------------------------------

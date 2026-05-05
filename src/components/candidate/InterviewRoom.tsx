@@ -12,6 +12,7 @@ import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 import Logo from '@/components/ui/Logo';
 import AiOrb from './AiOrb';
+import { computeInterviewPlan, getQuestionBudget } from '@/lib/interviewTimingEngine';
 
 export default function InterviewRoom({ roleId }: { roleId: string }) {
   const { roles } = useAdminStore();
@@ -78,20 +79,17 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
 
-  // Compute the hard question limit (mirrors the API logic — MUST stay in sync)
+  // Compute the hard question limit using the shared timing engine (MUST stay in sync with API)
   const interviewDurationMins = Number(currentRole?.interviewDuration) || 30;
   const totalDurationSeconds = interviewDurationMins * 60;
-  const minutesPerTopic = topics.length > 0 ? interviewDurationMins / topics.length : interviewDurationMins;
-  const effectiveSecondsPerQuestion = interviewDurationMins <= 10 ? 50 : 40;
-  const realisticQuestionsPerTopic = Math.max(1, Math.floor((minutesPerTopic * 60) / effectiveSecondsPerQuestion));
-  const maxQuestionsHardLimit = Math.min(
-    minutesPerTopic < 1   ? 2 :
-    minutesPerTopic < 2   ? 3 :
-    minutesPerTopic < 3   ? 4 :
-    minutesPerTopic < 5   ? 5 :
-    minutesPerTopic < 8   ? 6 : 7,
-    Math.max(2, realisticQuestionsPerTopic + 1)
-  );
+
+  // Lazy-import not needed — engine is a pure module with zero React dependencies
+  const interviewPlan = computeInterviewPlan(interviewDurationMins, topics.map(t => ({
+    label: t.label,
+    weight: t.rubric?.weight ?? 5,
+  })), { hasCv: !!candidate?.cvData });
+  const currentTopicBudget = getQuestionBudget(currentTopicIndex, interviewPlan);
+  const maxQuestionsHardLimit = currentTopicBudget.questionBudget;
 
   // Closing phase detection — at 90% of total duration, signal Zara to wrap up
   const isClosingPhase = hasStarted && timerSeconds >= totalDurationSeconds * 0.90;

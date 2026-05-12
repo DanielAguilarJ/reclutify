@@ -94,9 +94,20 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   // Closing phase detection — at 90% of total duration, signal Zara to wrap up
   const isClosingPhase = hasStarted && timerSeconds >= totalDurationSeconds * 0.90;
 
-  // Reset topic start index whenever the topic advances
+  // Reset topic start index whenever the topic advances.
+  // Bug 12 fix: also expose a synchronous helper for callers that need to
+  // update the boundary BEFORE React schedules the next render (otherwise
+  // the very first utterance after `nextTopic()` can be counted against the
+  // previous topic's boundary).
+  const syncAdvanceTopic = useCallback(() => {
+    const latestLength = useInterviewStore.getState().transcript.length;
+    topicStartIndexRef.current = latestLength;
+    consecutiveEmptyRef.current = 0;
+    nextTopic();
+  }, [nextTopic]);
+
   useEffect(() => {
-    topicStartIndexRef.current = transcript.length;
+    topicStartIndexRef.current = useInterviewStore.getState().transcript.length;
     consecutiveEmptyRef.current = 0;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTopicIndex]);
@@ -275,11 +286,41 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     // Save transcript entry FIRST, before any early returns.
     addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
 
+    // Bug 16 fix: confused-candidate detection.
+    // If the candidate replied with a SINGLE confused word (or a fragment under
+    // 6 words that clearly isn't an answer), don't penalize the topic budget
+    // and don't trip the dead-end counter yet — ask Zara to rephrase instead.
+    const trimmedText = text.trim();
+    const wordCount = trimmedText.split(/\s+/).filter(Boolean).length;
+    const isSingleConfusedWord = wordCount <= 1 && /^(c[oó]mo|qu[eé]|huh|what|sorry|perdón|repite|repeat|disculpa)\??$/i.test(trimmedText);
+    const isShortConfusedFragment = wordCount >= 2 && wordCount <= 5 &&
+      /^(no entend|no te ent|puedes repet|can you rep|i didn'?t catch|didn'?t understand|otra vez|again please)/i.test(trimmedText);
+
+    if (isSingleConfusedWord || isShortConfusedFragment) {
+      // Re-deliver Zara's previous question simplified, without consuming budget.
+      const lastZaraMsg = useInterviewStore.getState().transcript
+        .slice()
+        .reverse()
+        .find(m => m.role === 'assistant');
+      const lastQuestionRaw = lastZaraMsg?.content || '';
+      // Strip control tags and pull the last interrogative sentence if any
+      const lastClean = lastQuestionRaw.replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
+      const lastQuestion = lastClean.match(/[^.!?¡¿\n]*\?+/g)?.pop()?.trim() || lastClean;
+      const rephraseMsg = language === 'es'
+        ? `Claro, lo formulo más simple: ${lastQuestion}`
+        : `Of course, let me put it more simply: ${lastQuestion}`;
+      addTranscriptEntry({ role: 'assistant', content: rephraseMsg, timestamp: Date.now() });
+      await speakText(rephraseMsg);
+      processingLockRef.current = false;
+      setIsProcessing(false);
+      return;
+    }
+
     // Dead-end detection — if the candidate gives 2+ consecutive short/evasive answers
     const isEmpty =
-      text.trim().length < 12 ||
+      trimmedText.length < 12 ||
       /\b(no s[eé]|no lo sé|no sabría|tampoco sé|i don'?t know|not sure|no idea)\b/i.test(
-        text.trim()
+        trimmedText
       );
     if (isEmpty) {
       consecutiveEmptyRef.current += 1;
@@ -304,7 +345,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
         await speakText(transitionMsg);
         processingLockRef.current = false;
-        nextTopic();
+        syncAdvanceTopic();
       }
       return;
     }
@@ -329,16 +370,17 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         allMessages.push({ role: 'user', content: text });
       }
 
-      // Frontend Guard: Hard-coded question counter
+      // Frontend Guard: Hard-coded question counter — Bug 6 fix.
+      // The opening greeting DOES contain a question (the system prompt
+      // requires it), so it MUST count. Previously we subtracted 1 here,
+      // which gave topic 0 budget+1 questions while every other topic got
+      // exactly `budget`. Now the counting is symmetric across all topics.
       const assistantMsgsInTopic = latestTranscript
         .slice(topicStartIndexRef.current)
         .filter(m => m.role === 'assistant' &&
                      !m.content.includes('[NEXT_TOPIC]') &&
                      !m.content.includes('[END_INTERVIEW]'));
-      const isFirstTopicGreeting = freshTopicIndex === 0 && topicStartIndexRef.current === 0 && assistantMsgsInTopic.length > 0;
-      const zaraQsInTopic = isFirstTopicGreeting
-        ? Math.max(0, assistantMsgsInTopic.length - 1)
-        : assistantMsgsInTopic.length;
+      const zaraQsInTopic = assistantMsgsInTopic.length;
 
       if (zaraQsInTopic >= maxQuestionsHardLimit) {
         console.log(`[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`);
@@ -353,11 +395,11 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         } else {
           const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || '';
           const transitionMsg = language === 'es'
-            ? `Muy bien, con eso cubrimos este tema. Ahora hablemos sobre ${nextTopicLabel}.`
-            : `Great, that covers this topic. Now let's talk about ${nextTopicLabel}.`;
+            ? `Muy bien, con eso cubrimos este tema. Pasemos al siguiente tema: ${nextTopicLabel}.`
+            : `Great, that covers this topic. Let's move on to the next topic: ${nextTopicLabel}.`;
           addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
           await speakText(transitionMsg);
-          nextTopic();
+          syncAdvanceTopic();
         }
         processingLockRef.current = false;
         return;
@@ -445,7 +487,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             if (postSpeakIsLastTopic) {
               endInterview();
             } else {
-              nextTopic();
+              syncAdvanceTopic();
             }
           }
         }
@@ -467,6 +509,13 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     setHasStarted(true);
     setIsAiSpeaking(true);
     interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
+
+    // Bug 9 fix: generate the sessionId synchronously BEFORE the opening API
+    // call so the very first telemetry row has the real session id and is
+    // tied to the rest of the interview.
+    const existingSessionId = useInterviewStore.getState().sessionId;
+    const guaranteedSessionId = existingSessionId || `cand-${Date.now()}`;
+    if (!existingSessionId) setSessionId(guaranteedSessionId);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -568,7 +617,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           topicStartIndex: 0,
           isClosingPhase: false,
           isOpeningPhase: true, // Signal the API this is the opening
-          sessionId: sessionId || 'unknown-session',
+          sessionId: guaranteedSessionId,
         }),
       });
 

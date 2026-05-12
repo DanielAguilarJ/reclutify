@@ -33,6 +33,7 @@ export default function HardwareCheck() {
   
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const animationRef = useRef<number>(0);
 
   const startCamera = useCallback(async (deviceId?: string) => {
@@ -62,7 +63,15 @@ export default function HardwareCheck() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: deviceId ? { deviceId: { exact: deviceId } } : true,
       });
+      // Bug 25 fix: close any prior AudioContext before opening a new one and
+      // keep a ref so we can release it on unmount (preventing the leaked
+      // context from competing with the one InterviewRoom creates next).
+      if (audioCtxRef.current) {
+        try { await audioCtxRef.current.close(); } catch { /* ignore */ }
+        audioCtxRef.current = null;
+      }
       const audioCtx = new AudioContext();
+      audioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -107,6 +116,12 @@ export default function HardwareCheck() {
       }
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch(e) {}
+      }
+      // Bug 25 fix: explicitly close the audio context so InterviewRoom can
+      // open a fresh one without competing for the device on Safari/Firefox.
+      if (audioCtxRef.current) {
+        try { audioCtxRef.current.close(); } catch { /* ignore */ }
+        audioCtxRef.current = null;
       }
     };
   }, [startCamera, startMic]);

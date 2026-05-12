@@ -135,16 +135,43 @@ DESCRIPTION: ${description || 'Not provided — infer from the title'}`;
       return NextResponse.json({ criterion });
     }
 
-    // Parse the JSON array from response
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    // Bug 26 fix: when `response_format` is `json_object`, OpenAI/OpenRouter
+    // guarantees a JSON OBJECT, not a bare array. Different models wrap the
+    // array under different keys ("topics", "criteria", "items", etc.). We
+    // try several shapes before giving up.
+    let topics: unknown = null;
+    try {
+      const arrayMatch = content.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        // Some models still return a bare array despite `json_object` — accept it.
+        topics = JSON.parse(arrayMatch[0]);
+      } else {
+        const objMatch = content.match(/\{[\s\S]*\}/);
+        if (objMatch) {
+          const obj = JSON.parse(objMatch[0]);
+          // Try common wrapper keys
+          const candidate = obj.topics ?? obj.criteria ?? obj.items ?? obj.rubric ?? obj.data ?? null;
+          if (Array.isArray(candidate)) {
+            topics = candidate;
+          } else if (Array.isArray(obj)) {
+            topics = obj;
+          } else {
+            // Last resort: find the first array-valued property
+            const firstArray = Object.values(obj).find((v) => Array.isArray(v));
+            if (Array.isArray(firstArray)) topics = firstArray;
+          }
+        }
+      }
+    } catch {
+      // fall through to error response below
+    }
+
+    if (!Array.isArray(topics) || topics.length === 0) {
       return NextResponse.json(
-        { error: 'Failed to parse topics JSON' },
+        { error: 'Failed to parse topics JSON', raw: content.substring(0, 300) },
         { status: 500 }
       );
     }
-
-    const topics = JSON.parse(jsonMatch[0]);
     return NextResponse.json({ topics });
   } catch (error) {
     console.error('Generate rubric API error:', error);

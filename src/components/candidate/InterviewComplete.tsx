@@ -103,8 +103,17 @@ export default function InterviewComplete() {
 
       if (!isMounted) return;
 
-      const videoUrl = localStorage.getItem('tempVideoUrl');
-      
+      // Bug 22 fix: poll briefly for the video URL — endInterview kicks off an
+      // async R2 upload that may not be done by the time we land here. We wait
+      // up to 8s for the upload to finish before falling back to whatever URL
+      // (blob or permanent) is present in localStorage.
+      let videoUrl = localStorage.getItem('tempVideoUrl') || '';
+      const videoWaitDeadline = Date.now() + 8000;
+      while (videoUrl.startsWith('blob:') && Date.now() < videoWaitDeadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        videoUrl = localStorage.getItem('tempVideoUrl') || videoUrl;
+      }
+
       // STEP 3: Save final result — ALWAYS save, with or without evaluation
       if (evalData) {
         updateCandidate(currentSessionId, {
@@ -147,9 +156,11 @@ export default function InterviewComplete() {
           }
         }
       } else {
-        // Evaluation failed after all retries — still save as completed with transcript
+        // Bug 20 fix: evaluation failed after all retries — mark the candidate
+        // as 'pending-evaluation' (NOT 'completed') so the admin can clearly
+        // see and retry. The transcript and video are still preserved.
         updateCandidate(currentSessionId, {
-          status: 'completed',
+          status: 'pending-evaluation',
           transcript,
           duration: durationStr ? parseInt(durationStr, 10) : 0,
           videoUrl: videoUrl || undefined,

@@ -86,6 +86,37 @@ Be brutally honest, fair, and objective. Base your evaluation solely on demonstr
 Return ONLY the JSON object, no markdown formatting.
 CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummary, interviewHighlights quotes, hiringRisks, onboardingTips, biasFlags description) MUST be written in ${language === 'es' ? 'Spanish (Español)' : 'English'}. The JSON keys must remain exactly as specified in English.`;
 
+    // Bug 21 fix: format the transcript as a readable conversation rather
+    // than raw JSON. Raw JSON wastes tokens on timestamps/sentiment payloads
+    // and forces the evaluator model to reconstruct turn structure that we
+    // can just hand it directly. We also tag each entry with the topic it
+    // belongs to (best-effort) so topic-level scoring is grounded.
+    type TranscriptEntry = { role?: string; content?: string; timestamp?: number; sentiment?: unknown };
+    const transcriptArr: TranscriptEntry[] = Array.isArray(transcript) ? transcript : [];
+    const topicLabels: string[] = (topics || []).map((t: { label: string }) => t.label);
+
+    // Walk the transcript and track which topic each assistant message likely
+    // covers. We use [NEXT_TOPIC] markers (if present in the raw content) or
+    // the explicit Spanish/English transition phrases the system emits.
+    let topicCursor = 0;
+    const transitionRegex = /pasemos al siguiente tema|let's move on to the next topic|let's move on to|avancemos al siguiente tema|ahora hablemos sobre|pasemos ahora a|with that we've covered|with that we have covered/i;
+    const renderedConversation = transcriptArr.map((entry) => {
+      const role = entry.role === 'assistant' ? 'ZARA' : 'CANDIDATE';
+      const content = (entry.content || '').toString().replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
+      const currentTopic = topicLabels[topicCursor] || 'general';
+      // Advance the cursor AFTER recording this message, when transition detected
+      if (entry.role === 'assistant' && (entry.content?.includes('[NEXT_TOPIC]') || transitionRegex.test(entry.content || ''))) {
+        topicCursor = Math.min(topicLabels.length - 1, topicCursor + 1);
+      }
+      return `[topic: ${currentTopic}] ${role}: ${content}`;
+    }).join('\n\n');
+
+    const userMessage = `Below is the full interview transcript. Each turn is tagged with the topic it was discussed under.
+
+${renderedConversation || '(empty transcript)'}
+
+Now produce the evaluation JSON exactly as specified in the system message. Use ONLY evidence from the transcript above. Match topicScores keys to the topic labels exactly.`;
+
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -98,7 +129,7 @@ CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummar
         model: 'x-ai/grok-4.20',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Analyze the following interview transcript and generate the evaluation JSON report:\n\n${JSON.stringify(transcript)}` }
+          { role: 'user', content: userMessage }
         ],
         response_format: { type: 'json_object' },
         temperature: 0.2,

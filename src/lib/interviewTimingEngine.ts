@@ -106,6 +106,12 @@ export interface RealTimePacing {
   urgency: 'relaxed' | 'normal' | 'hurry' | 'critical';
   /** Descriptive message for the LLM */
   message: string;
+  /**
+   * Effective per-topic question hard limit AFTER applying real-time pacing.
+   * When urgency is 'hurry' or 'critical', this is REDUCED below the base budget
+   * so the LLM is forced to advance instead of just being "suggested" to.
+   */
+  effectiveHardLimit: number;
 }
 
 // ─── Overhead Calculators ───
@@ -390,12 +396,25 @@ export function computeRealTimePacing(
     message = `On track. ~${Math.round(secondsPerRemainingTopic)}s available per remaining topic.`;
   }
 
+  // Effective hard limit: when behind schedule, reduce the budget so the LLM is
+  // forced to advance — not just "suggested" to. When ahead, allow up to +1 extra.
+  let effectiveHardLimit = currentBudget;
+  if (urgency === 'critical' || urgency === 'hurry') {
+    effectiveHardLimit = Math.max(
+      Math.max(1, questionsAskedOnCurrentTopic + 1), // allow finishing the current question
+      currentBudget - suggestSkipQuestions
+    );
+  } else if (urgency === 'relaxed' && suggestAddQuestions > 0) {
+    effectiveHardLimit = currentBudget + Math.min(1, suggestAddQuestions);
+  }
+
   return {
     onTrack: Math.abs(progressDelta) <= 1.0 && urgency !== 'critical',
     suggestAddQuestions,
     suggestSkipQuestions,
     urgency,
     message,
+    effectiveHardLimit,
   };
 }
 

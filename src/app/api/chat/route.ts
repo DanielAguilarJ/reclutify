@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     };
 
     // ─── Time calculations (powered by InterviewTimingEngine) ───
-    const { computeInterviewPlan, getQuestionBudget, getQuestionsRange, computeRealTimePacing } = await import('@/lib/interviewTimingEngine');
+    const { computeInterviewPlan, getQuestionBudget, computeRealTimePacing } = await import('@/lib/interviewTimingEngine');
 
     const totalTopics = allTopics?.length || 1;
     const totalMinutes = typeof interviewDuration === 'number' && interviewDuration > 0
@@ -108,42 +108,27 @@ export async function POST(req: NextRequest) {
       ? parseFloat((totalMinutes / totalTopics).toFixed(2))
       : totalMinutes;
 
-    // ─── QUESTION COUNTING: Find current topic boundary using [NEXT_TOPIC] markers ───
-    // Instead of relying on `topicStartIndex` from the frontend (which can desync),
-    // we scan the conversation for the last topic transition marker.
-    // Everything AFTER the last [NEXT_TOPIC] belongs to the current topic.
-    let lastTopicBoundary = 0;
-    for (let i = recentMessages.length - 1; i >= 0; i--) {
-      const msg = recentMessages[i];
-      if (msg.role === 'assistant' && (
-        msg.content.includes('[NEXT_TOPIC]') ||
-        // Also detect hardcoded transition messages from the frontend
-        /avancemos al siguiente tema|let's move on to the next topic|pasemos al siguiente tema/i.test(msg.content)
-      )) {
-        lastTopicBoundary = i + 1;
-        break;
-      }
-    }
-    const messagesInCurrentTopic = recentMessages.slice(lastTopicBoundary);
+    // ─── QUESTION COUNTING (Bug 1 + 6 fix) ───
+    // Trust the client-provided `topicStartIndex` instead of scanning for fragile
+    // natural-language transition phrases. The client already knows when it
+    // advanced topics (it called `nextTopic()` in response to [NEXT_TOPIC] or a
+    // forced advance). Counting messages from that boundary forward is exact.
+    //
+    // The opening greeting CONTAINS a real question (we tell the model to end
+    // with one), so it MUST count as the first question of topic 0 — otherwise
+    // topic 0 ends up with budget+1 questions while every other topic gets budget.
+    const safeTopicStart = Math.max(0, Math.min(topicStartIndex || 0, recentMessages.length));
+    const messagesInCurrentTopic = recentMessages.slice(safeTopicStart);
     const assistantMessagesInTopic = messagesInCurrentTopic.filter(
       (m: { role: string; content: string }) =>
         m.role === 'assistant' &&
         !m.content.includes('[NEXT_TOPIC]') &&
         !m.content.includes('[END_INTERVIEW]')
     );
-    // Don't count the opening greeting as a question.
-    // The first assistant message on topic 0 is the greeting, not a question.
-    const isFirstTopicWithGreeting = currentTopicIndex === 0 && assistantMessagesInTopic.length > 0 && lastTopicBoundary === 0;
-    const zaraQuestionsInCurrentTopic = isFirstTopicWithGreeting
-      ? Math.max(0, assistantMessagesInTopic.length - 1)
-      : assistantMessagesInTopic.length;
+    const zaraQuestionsInCurrentTopic = assistantMessagesInTopic.length;
 
     // ─── Engine-driven question budget ───
-    const maxQuestionsHardLimit = currentTopicBudget.questionBudget;
-    const questionsRange = getQuestionsRange(currentTopicBudget);
-
-    const mustAdvanceNow = zaraQuestionsInCurrentTopic >= maxQuestionsHardLimit;
-    const isOnLastQuestionOfTopic = zaraQuestionsInCurrentTopic === maxQuestionsHardLimit - 1;
+    const baseHardLimit = currentTopicBudget.questionBudget;
 
     // Real-time pacing analysis
     const realTimePacing = computeRealTimePacing(
@@ -153,11 +138,11 @@ export async function POST(req: NextRequest) {
       interviewPlan
     );
 
-    // Effective maxQuestionsHardLimit with real-time adjustments
-    const adjustedMaxQuestions = Math.max(
-      2,
-      maxQuestionsHardLimit + realTimePacing.suggestAddQuestions - realTimePacing.suggestSkipQuestions
-    );
+    // Bug 8 fix: respect the engine's effective hard limit (which already
+    // accounts for urgency). This means when the candidate is slow, the limit
+    // is REDUCED automatically — not just "suggested" to the LLM and ignored.
+    const maxQuestionsHardLimit = Math.max(1, realTimePacing.effectiveHardLimit);
+    const mustAdvanceNow = zaraQuestionsInCurrentTopic >= maxQuestionsHardLimit;
 
     // Interview pace label (from engine)
     const interviewPaceLabel = paceConfig.label;
@@ -188,7 +173,7 @@ export async function POST(req: NextRequest) {
     console.log('Topic:', currentTopic, `(${currentTopicIndex + 1}/${totalTopics})`);
     console.log('Role:', roleTitle);
     console.log('Timer:', `${elapsedMinutes}m elapsed / ${remainingMinutes}m remaining (${percentComplete}%)`);
-    console.log('Questions in topic:', zaraQuestionsInCurrentTopic, '/', maxQuestionsHardLimit);
+    console.log('Questions in topic:', zaraQuestionsInCurrentTopic, '/', maxQuestionsHardLimit, `(base: ${baseHardLimit}, urgency: ${realTimePacing.urgency})`);
     console.log('Closing phase:', isClosingPhase);
     console.log('Messages count:', recentMessages.length, '| topicStartIndex:', topicStartIndex);
     console.log('CV Data present:', !!cvData);
@@ -247,8 +232,15 @@ export async function POST(req: NextRequest) {
     // Current topic rubric for enhanced guidance
     const currentTopicData = allTopics?.find((t: { label: string; status: string }) => t.label === currentTopic);
     const currentRubric = currentTopicData ? ensureRubric(currentTopicData) : null;
+    // Bug 3 + 14 fix: do NOT quote the "excellent" criterion as a question template
+    // — it causes the model to reformulate the same rubric sentence as every
+    // question. Instead, give meta-instructions to vary the angle of exploration.
     const rubricGuidance = currentRubric
-      ? `\nEVALUATION GUIDE FOR CURRENT TOPIC: You want to discover if the candidate demonstrates: "${currentRubric.excellent}". An acceptable candidate would show: "${currentRubric.acceptable}". A weak candidate would show: "${currentRubric.poor}". Ask questions that reveal which level the candidate is at.`
+      ? `\nEVALUATION GUIDE (internal — DO NOT quote in your questions):
+   • You are silently judging the candidate against this topic's rubric.
+   • Each question on this topic MUST probe a DIFFERENT angle (e.g. real past example, hypothetical scenario, specific technique, trade-off, failure case, edge case).
+   • NEVER ask two questions that share the same verb or framing on the same topic.
+   • Score the answer internally as excellent / acceptable / poor based on the rubric you already received in EVALUATION RUBRIC above. Do not narrate this judgment in your response.`
       : '';
 
     // Build CV profile section
@@ -316,10 +308,39 @@ CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consi
     }
 
     // ─── Build previous questions list (for anti-repetition) ───
+    // Bug 4 + 13 fix: do NOT truncate to 100 chars (kills the distinguishing
+    // tail of each question) and EXCLUDE non-question messages (greetings,
+    // pure transitions). We isolate the actual interrogative sentence(s) per
+    // assistant message so the model sees only the questions it has asked.
+    const extractQuestion = (content: string): string | null => {
+      // Strip control tags
+      const clean = content.replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
+      // Find sentences that end with '?' — those are the actual questions
+      const questionSentences = clean.match(/[^.!?¡¿\n]*\?+/g);
+      if (!questionSentences || questionSentences.length === 0) return null;
+      const joined = questionSentences.map((s) => s.trim()).join(' ').trim();
+      return joined.length >= 8 ? joined : null;
+    };
     const previousQuestions = recentMessages
       .filter((m: { role: string }) => m.role === 'assistant')
-      .map((m: { content: string }, i: number) => `  Q${i + 1}: "${m.content.substring(0, 100)}..."`)
+      .map((m: { content: string }) => extractQuestion(m.content))
+      .filter((q: string | null): q is string => !!q)
+      .map((q: string, i: number) => `  Q${i + 1}: "${q}"`)
       .join('\n') || '  (none yet)';
+
+    // ─── CANDIDATE MEMORY BLOCK (Bug 15 fix) ───
+    // Surface 1-3 short, distinctive things the candidate said in earlier topics
+    // so Zara can reference them naturally and feel coherent across the session.
+    const userTurnsSoFar = recentMessages.filter((m: { role: string; content?: string }) => m.role === 'user' && typeof m.content === 'string');
+    type UserMsg = { role: string; content: string };
+    const memorableSnippets = (userTurnsSoFar as UserMsg[])
+      .map((m) => m.content.trim())
+      .filter((t) => t.length >= 60 && t.length <= 320)
+      .slice(-4)
+      .slice(0, 3);
+    const candidateMemoryBlock = memorableSnippets.length > 0
+      ? `\n━━━ CANDIDATE MEMORY (use sparingly to reference earlier answers) ━━━\n${memorableSnippets.map((s, i) => `${i + 1}. "${s.length > 200 ? s.substring(0, 200) + '…' : s}"`).join('\n')}`
+      : '';
 
     // ─── TIME STATUS BLOCK ───
     const timeStatusBlock = `
@@ -329,7 +350,7 @@ CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consi
 📍 Current Topic: ${currentTopicIndex + 1} of ${totalTopics} ("${currentTopic}")
 📊 Topics remaining after this: ${topicsRemaining - 1}
 ⏰ Available time per remaining topic: ~${minutesPerRemainingTopic} min
-🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${adjustedMaxQuestions} max (base: ${maxQuestionsHardLimit})
+🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${maxQuestionsHardLimit} max (base budget: ${baseHardLimit}, urgency: ${realTimePacing.urgency})
 📈 PACING: ${realTimePacing.message}
 ${isClosingPhase ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the interview time. You MUST wrap up now.' : ''}`;
 
@@ -347,7 +368,13 @@ This is the START of the interview. You MUST deliver a professional opening:
 
 Keep the opening concise but warm (3-4 sentences max before your first question).
 Do NOT list all the topics — just mention you'll cover several areas.
-End with exactly ONE question about "${currentTopic}".`;
+
+Bug 5 fix — FOCUSED FIRST QUESTION:
+- Exactly ONE question, ONE clause. No "and", "y", "or" joining multiple sub-questions.
+- Do NOT enumerate multiple concepts in one sentence (e.g. AVOID "Scratch, Python AND electronics for kids 8 AND 14").
+- Pick the SINGLE most revealing angle to start. Save the rest for follow-ups.
+- Length: under 25 words.
+- This is the opening — keep it inviting, not overwhelming.`;
     } else if (isClosingPhase && isLastTopic) {
       phaseInstruction = `
 PHASE: CLOSING (MANDATORY)
@@ -358,6 +385,31 @@ You have reached the closing phase. Your response MUST:
 4. Wish them well with a warm, encouraging closing
 5. Append [END_INTERVIEW] at the end
 DO NOT ask any more questions. This is the final message.`;
+    } else if (mustAdvanceNow) {
+      // Bug 2 fix: when the budget is exhausted, Zara MUST emit ONLY an
+      // acknowledge + clean transition. NO new question on this topic. The
+      // first question of the next topic comes in the NEXT turn — after the
+      // client advances `currentTopicIndex`. This is what stops the
+      // "two-things-at-once" message the candidate sees as confusing.
+      phaseInstruction = isLastTopic
+        ? `
+PHASE: FINAL TOPIC EXHAUSTED → CLOSE
+The question budget for the final topic "${currentTopic}" is full (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit}).
+You MUST now:
+1. Acknowledge the candidate's last answer in ONE short sentence (max 12 words).
+2. Deliver a warm professional goodbye, mentioning the evaluation team will follow up.
+3. Append [END_INTERVIEW] at the very end.
+DO NOT ask any new question. This is the final message.`
+        : `
+PHASE: TOPIC EXHAUSTED → TRANSITION ONLY
+The question budget for "${currentTopic}" is full (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit}).
+You MUST now emit a clean transition — NO new question on this topic.
+Structure:
+1. ONE short sentence acknowledging the candidate's last answer (max 12 words).
+2. ONE brief transition sentence announcing the next topic by NAME.
+3. Append [NEXT_TOPIC] at the very end.
+Example: "Excelente perspectiva. Pasemos ahora a hablar de ${allTopics?.[currentTopicIndex + 1]?.label || 'el siguiente tema'}. [NEXT_TOPIC]"
+DO NOT ask any question. The first question of the new topic happens in the next turn.`;
     } else if (isClosingPhase) {
       phaseInstruction = `
 PHASE: CLOSING — ACCELERATE
@@ -365,17 +417,15 @@ Time is almost up. Skip to your final question and append [NEXT_TOPIC] to advanc
 If you're on the last topic, close the interview with [END_INTERVIEW].`;
     } else if (isTransitionToNewTopic) {
       phaseInstruction = `
-PHASE: TOPIC TRANSITION
-You are transitioning to a new topic: "${currentTopic}".
-Your response MUST:
-1. Provide a smooth transition sentence (e.g., "Muy bien, ahora pasemos a hablar sobre ${currentTopic}.")
-2. Ask your FIRST question about this new topic
-The transition should feel natural, like a professional interviewer guiding the conversation.`;
+PHASE: TOPIC TRANSITION (first question of "${currentTopic}")
+Brief acknowledgment of the previous topic (max 8 words), then ask your FIRST question about "${currentTopic}".
+ONE focused question only — do NOT chain multiple sub-questions with "and"/"y".`;
     } else {
       phaseInstruction = `
 PHASE: EXPLORATION
-Continue exploring topic "${currentTopic}". Ask probing, follow-up questions that dig deeper into the candidate's knowledge.
-${currentRubric ? `Your goal: determine if the candidate reaches EXCELLENT level ("${currentRubric.excellent}") or falls to POOR level ("${currentRubric.poor}").` : ''}`;
+Continue exploring topic "${currentTopic}" with probing follow-ups.
+This is question ${zaraQuestionsInCurrentTopic + 1} of ${maxQuestionsHardLimit} on this topic.
+${rubricGuidance ? 'Vary the angle from the previous question (see EVALUATION GUIDE above).' : ''}`;
     }
 
     // ─── SYSTEM PROMPT v2.0 ───
@@ -397,6 +447,7 @@ ${rubricBlock || '  No specific rubric — evaluate general competence.'}
 
 CURRENT TOPIC: ${currentTopic}${rubricGuidance}
 ${cvVerificationInstructions}
+${candidateMemoryBlock}
 
 ${timeStatusBlock}
 
@@ -425,90 +476,90 @@ You follow a professional interview methodology:
 ━━━ STRICT RULES (FOLLOW EXACTLY) ━━━
 
 RULE 1 — ONE QUESTION ONLY: Each response contains exactly ONE question. Never list multiple questions or sub-questions.
+   • A "question" is one interrogative clause ending in "?". No commas with "and"/"or"/"y"/"o" stacking multiple things to answer.
+   • If you find yourself writing two "?" marks, delete the second.
 
 RULE 2 — CONTEXT CONTINUITY: Your question MUST logically follow the candidate's last answer.
 Brief acknowledgment (2-8 words), then your new question.
 
-RULE 3 — QUESTION COUNTER (CRITICAL — NO EXCEPTIONS):
+RULE 3 — QUESTION COUNTER (HARD LIMIT — NO EXCEPTIONS):
 You have asked ${zaraQuestionsInCurrentTopic} questions on the CURRENT topic "${currentTopic}".
-Maximum allowed for this topic: ${maxQuestionsHardLimit} questions.
-Questions remaining for this topic: ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic}.
+Hard limit for this topic this turn: ${maxQuestionsHardLimit} questions.
 ${mustAdvanceNow
-  ? `⛔ LIMIT REACHED: You have asked the maximum ${maxQuestionsHardLimit} questions on "${currentTopic}". 
-     You MUST ${isLastTopic ? 'close the interview now with a professional goodbye and append [END_INTERVIEW]' : 'smoothly transition to the next topic and append [NEXT_TOPIC]'}. 
-     DO NOT ask another question on this topic.`
-  : isOnLastQuestionOfTopic
-    ? `⚠️ FINAL QUESTION for this topic: This is your last allowed question on "${currentTopic}". 
-       After asking it, append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.`
-    : `✅ You may ask ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic} more question(s) on this topic.`
+  ? `⛔ LIMIT REACHED: Emit ONLY the transition (or closing) per the PHASE instruction above.
+     ABSOLUTELY DO NOT include a new question for "${currentTopic}" in this response.`
+  : `✅ You may ask ${maxQuestionsHardLimit - zaraQuestionsInCurrentTopic} more question(s) on this topic.
+     When the hard limit is reached on a future turn, the system will tell you to transition — DO NOT pre-emptively transition while you still have budget.`
 }
 
-RULE 4 — NEVER REPEAT QUESTIONS: 
-The following questions have ALREADY been asked — DO NOT ask about them again in any form:
+RULE 4 — NEVER REPEAT QUESTIONS:
+Below is the FULL TEXT of every question you have ALREADY asked in this interview. Do NOT ask any of them again — not a rephrased version, not a synonym, not the "same thing from a different angle".
 ${previousQuestions}
 
 RULE 5 — DEAD END DETECTION:
-If the candidate gives 2+ consecutive empty, dismissive, or off-topic answers ("no sé", "tampoco sé", "I don't know", or responses under 5 words), 
+If the candidate gives 2+ consecutive empty, dismissive, or off-topic answers ("no sé", "tampoco sé", "I don't know", or responses under 5 words),
 you MUST immediately output ONLY: ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} — no additional text.
 
+RULE 5b — CONFUSED CANDIDATE:
+If the candidate's last message is a single confused word (e.g. "Cómo", "What", "Qué", "huh?") OR a fragment under 6 words that does not answer your last question, you MUST briefly rephrase your previous question more simply BEFORE asking anything new. Do NOT count this turn against the topic budget.
+
 RULE 6 — PACE: ${interviewPaceLabel}${questionStyleHint}
-Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic, ~${questionsRange} questions/topic.
+Total: ${totalMinutes} min, ${totalTopics} topics, ~${minutesPerTopic.toFixed(1)} min/topic. Adapt to the candidate's actual response pace.
 
 RULE 7 — LANGUAGE: Respond ONLY in ${lang}. No exceptions.
 
-RULE 8 — TRANSITIONS: When you include [NEXT_TOPIC], you MUST say a brief transition sentence BEFORE the tag. Example: "Gracias por compartir eso. Pasemos al siguiente tema. [NEXT_TOPIC]"
+RULE 8 — TRANSITIONS: [NEXT_TOPIC] is emitted ONLY when the system signals mustAdvanceNow=true (see RULE 3). A transition message is acknowledgment + one transition sentence + [NEXT_TOPIC] — NEVER mixed with a new question.
 
-RULE 9 — PROFESSIONAL CLOSING: When you include [END_INTERVIEW], end with a warm, professional goodbye. Thank the candidate for their time and mention that the team will be in touch.`;
+RULE 9 — PROFESSIONAL CLOSING: When you include [END_INTERVIEW], end with a warm, professional goodbye. Thank the candidate for their time and mention that the team will be in touch.
+
+RULE 10 — VARIETY OF QUESTION ANGLES:
+Within the same topic, every question MUST attack a DIFFERENT angle. Rotate through:
+   • A concrete past example (STAR)
+   • A hypothetical / situational ("what would you do if…")
+   • A specific technique or method ("how exactly do you implement X")
+   • A trade-off / decision ("when would you choose A over B")
+   • A failure case ("describe a time it went wrong")
+Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?") twice on the same topic.`;
 
     // ─── BUILD INSTRUCTION MESSAGE ───
     const instructionContent = isOpeningPhase
-      ? `This is the start of the interview. Deliver your professional opening greeting and first question as described in the OPENING phase instructions.`
+      ? `Deliver the opening greeting and your FIRST question per the OPENING phase instructions above. One focused question only — no multi-part chains.`
       : mustAdvanceNow
-        ? `You have reached the question limit for topic "${currentTopic}" (${zaraQuestionsInCurrentTopic}/${maxQuestionsHardLimit} questions asked). 
-     ${isLastTopic 
-       ? 'Deliver a professional closing: thank the candidate, mention next steps, and append [END_INTERVIEW].' 
-       : 'Write a smooth transition sentence acknowledging the topic, then append [NEXT_TOPIC].'}`
+        ? (isLastTopic
+            ? `The final topic budget is exhausted. Deliver the closing message per RULE 9 and append [END_INTERVIEW]. NO new question.`
+            : `The current topic budget is exhausted. Emit ONLY the acknowledge + transition + [NEXT_TOPIC] per the PHASE instruction. NO new question on "${currentTopic}".`)
         : isClosingPhase && isLastTopic
-          ? `TIME IS UP. Deliver your professional closing message. Thank the candidate for their time and append [END_INTERVIEW].`
+          ? `TIME IS UP. Deliver the closing message and append [END_INTERVIEW].`
           : isClosingPhase
             ? `TIME IS RUNNING OUT (${remainingMinutes} min left). Ask one final quick question and append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'}.`
-            : `Ask question #${zaraQuestionsInCurrentTopic + 1} of max ${maxQuestionsHardLimit} about "${currentTopic}". 
-     DO NOT repeat any question already asked (see Rule 4). 
-     ${isOnLastQuestionOfTopic ? `This is your LAST question for this topic — after asking it, append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'} at the end.` : ''}
-     ${isTransitionToNewTopic ? `This is a NEW TOPIC — start with a smooth transition from the previous topic.` : 'Base your question on the candidate\'s last answer.'}
-     One question only.`;
+            : isTransitionToNewTopic
+              ? `Start the new topic "${currentTopic}" with a brief acknowledgment of the previous topic, then ONE focused first question. Do NOT repeat any prior question.`
+              : `Ask question #${zaraQuestionsInCurrentTopic + 1} on "${currentTopic}" (max ${maxQuestionsHardLimit} for this topic). One focused question, different angle from prior questions (see RULE 10). Build on the candidate's last answer.`;
 
     // ─── BUILD MESSAGES ARRAY (Conversational Structure) ───
-    // Instead of sending everything as flat text, we send proper role-based messages.
-    // This lets the model understand the real conversation flow and maintain context.
+    // Bug 11 fix: the instruction is sent as a SEPARATE final user message
+    // (clearly demarcated) instead of being concatenated onto the candidate's
+    // own reply. Two consecutive user messages are accepted by OpenRouter for
+    // tool-use-style providers; for strict-alternation models we insert a tiny
+    // assistant ack between them so the role sequence stays valid.
     const modelMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
       { role: 'system', content: systemPrompt },
     ];
 
-    // Add the conversation history as proper alternating messages
-    // BUG FIX #1: Merge instruction INTO the last user message to avoid
-    // two consecutive 'user' roles which break LLM role alternation.
     if (isOpeningPhase && conversationMessages.length === 0) {
       // No conversation yet — add a single user message with the instruction
-      modelMessages.push({ role: 'user', content: `[SYSTEM INSTRUCTION — not from the candidate]\n${instructionContent}` });
+      modelMessages.push({ role: 'user', content: `[SYSTEM TURN-DIRECTIVE]\n${instructionContent}` });
     } else if (conversationMessages.length > 0) {
-      // Add all messages EXCEPT the last one
-      for (let i = 0; i < conversationMessages.length - 1; i++) {
-        modelMessages.push({ role: conversationMessages[i].role, content: conversationMessages[i].content });
+      // Push the full prior conversation verbatim
+      for (const m of conversationMessages) {
+        modelMessages.push({ role: m.role, content: m.content });
       }
-      // Merge the last message (candidate's reply) WITH the instruction
-      const lastMsg = conversationMessages[conversationMessages.length - 1];
-      if (lastMsg.role === 'user') {
-        // Append instruction to the candidate's message (most common case)
-        modelMessages.push({
-          role: 'user',
-          content: `${lastMsg.content}\n\n---\n[INSTRUCTION FOR ZARA — respond to the candidate's message above]\n${instructionContent}`,
-        });
-      } else {
-        // Edge case: last message is from assistant (shouldn't happen, but be safe)
-        modelMessages.push({ role: lastMsg.role, content: lastMsg.content });
-        modelMessages.push({ role: 'user', content: `[INSTRUCTION FOR ZARA]\n${instructionContent}` });
+      const last = modelMessages[modelMessages.length - 1];
+      if (last.role === 'user') {
+        // Insert a neutral assistant pivot, then the system directive as user
+        modelMessages.push({ role: 'assistant', content: '(processing)' });
       }
+      modelMessages.push({ role: 'user', content: `[SYSTEM TURN-DIRECTIVE — this is not from the candidate; act on it now and reply to the candidate]\n${instructionContent}` });
     }
 
 
@@ -597,11 +648,11 @@ Return ONLY valid JSON, no markdown.`
         debugState: {
           zaraQuestionsInCurrentTopic,
           maxQuestionsHardLimit,
+          baseHardLimit,
           currentTopicIndex,
           timerSeconds,
           isClosingPhase,
           mustAdvanceNow,
-          isOnLastQuestionOfTopic,
           isLastTopic,
           percentComplete,
           httpStatus: response.status,
@@ -631,10 +682,10 @@ Return ONLY valid JSON, no markdown.`
       debugState: {
         zaraQuestionsInCurrentTopic,
         maxQuestionsHardLimit,
-        adjustedMaxQuestions,
-        questionsRange,
+        baseHardLimit,
         currentTopicIndex,
         topicStartIndex,
+        safeTopicStart,
         timerSeconds,
         elapsedMinutes,
         remainingMinutes,
@@ -644,7 +695,6 @@ Return ONLY valid JSON, no markdown.`
         isOpeningPhase,
         isTransitionToNewTopic,
         mustAdvanceNow,
-        isOnLastQuestionOfTopic,
         interviewPaceLabel,
         totalTopics,
         totalMinutes,

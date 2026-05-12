@@ -115,7 +115,7 @@ export interface CandidateResult {
   roleId: string;
   roleTitle: string;
   date: number;
-  status: 'completed' | 'in-progress' | 'pending';
+  status: 'completed' | 'in-progress' | 'pending' | 'pending-evaluation';
   duration?: number;
   videoUrl?: string;
   evaluation?: Evaluation;

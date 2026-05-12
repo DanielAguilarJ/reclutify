@@ -66,6 +66,24 @@ export async function POST(request: Request) {
       );
     }
 
+    // Bug 23 fix: scanned PDFs and corrupted exports sometimes return tiny
+    // amounts of garbage (binary residue, PDF stream headers, etc.) that the
+    // empty-text check misses. We require a minimum amount of real alphabetic
+    // content before sending it to the LLM — otherwise the AI returns a
+    // completely empty CV object and the candidate thinks their CV uploaded
+    // correctly when it didn't.
+    const alphaChars = (text.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+    const totalChars = text.length;
+    const alphaRatio = totalChars > 0 ? alphaChars / totalChars : 0;
+    if (alphaChars < 80 || alphaRatio < 0.35) {
+      return NextResponse.json(
+        {
+          error: 'The CV appears to be a scanned image or contains very little readable text. Please upload a text-based PDF/DOCX (re-export from Word, Google Docs, or similar).',
+        },
+        { status: 400 }
+      );
+    }
+
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
     if (!OPENROUTER_API_KEY) {
       // If no key, return raw text with basic structure so the frontend doesn't break

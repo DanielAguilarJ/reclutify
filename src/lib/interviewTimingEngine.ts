@@ -336,15 +336,36 @@ export function getInterviewPaceConfig(totalMinutes: number): PaceConfig {
  *
  * Call this on each turn to determine if the interview is ahead/behind schedule
  * and whether to add or skip questions for the current topic.
+ *
+ * When `options.isGracePeriod` is true, the interview has exceeded its planned
+ * duration but still has uncovered topics. In that mode we suppress all
+ * time-based urgency so the LLM can finish remaining topics at a natural pace
+ * instead of being told to rush or skip.
  */
 export function computeRealTimePacing(
   elapsedSeconds: number,
   currentTopicIndex: number,
   questionsAskedOnCurrentTopic: number,
-  plan: InterviewPlan
+  plan: InterviewPlan,
+  options?: { isGracePeriod?: boolean }
 ): RealTimePacing {
   const totalSeconds = plan.totalMinutes * 60;
   const percentElapsed = totalSeconds > 0 ? elapsedSeconds / totalSeconds : 0;
+
+  // ─── Grace period short-circuit ───
+  // Time-based urgency no longer applies — the candidate has been granted
+  // extended time to cover remaining topics. Pacing returns to baseline.
+  if (options?.isGracePeriod) {
+    const currentBudget = plan.topics[currentTopicIndex]?.questionBudget ?? 2;
+    return {
+      onTrack: true,
+      suggestAddQuestions: 0,
+      suggestSkipQuestions: 0,
+      urgency: 'normal',
+      message: 'Grace period — pace is no longer time-constrained. Complete remaining topics naturally.',
+      effectiveHardLimit: currentBudget,
+    };
+  }
 
   // Expected progress: what fraction of topics should be done by now
   const numTopics = plan.topics.length;

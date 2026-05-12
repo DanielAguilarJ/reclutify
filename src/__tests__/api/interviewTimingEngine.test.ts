@@ -284,6 +284,33 @@ describe('InterviewTimingEngine', () => {
       expect(pacing.message).toBeTruthy();
       expect(typeof pacing.message).toBe('string');
     });
+
+    describe('grace period', () => {
+      it('suppresses critical urgency when isGracePeriod=true', () => {
+        const plan = computeInterviewPlan(5, makeTopics(7));
+        // At 150% elapsed time, still mid-interview → without grace this would be 'critical'.
+        const withoutGrace = computeRealTimePacing(450, 3, 0, plan);
+        expect(withoutGrace.urgency).toBe('critical');
+
+        const withGrace = computeRealTimePacing(450, 3, 0, plan, { isGracePeriod: true });
+        expect(withGrace.urgency).toBe('normal');
+        expect(withGrace.onTrack).toBe(true);
+      });
+
+      it('does not suggest skipping questions in grace period', () => {
+        const plan = computeInterviewPlan(5, makeTopics(7));
+        const pacing = computeRealTimePacing(450, 3, 0, plan, { isGracePeriod: true });
+        expect(pacing.suggestSkipQuestions).toBe(0);
+        expect(pacing.suggestAddQuestions).toBe(0);
+      });
+
+      it('keeps effectiveHardLimit equal to base budget in grace period', () => {
+        const plan = computeInterviewPlan(5, makeTopics(7));
+        const baseBudget = plan.topics[3].questionBudget;
+        const pacing = computeRealTimePacing(600, 3, 0, plan, { isGracePeriod: true });
+        expect(pacing.effectiveHardLimit).toBe(baseBudget);
+      });
+    });
   });
 
   // ══════════════════════════════════════════════════════════════

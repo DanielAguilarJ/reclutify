@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
       currentTopicIndex = 0,
       topicStartIndex = 0,
       isClosingPhase = false,
+      isGracePeriod = false,
       sessionId,
       isOpeningPhase: clientOpeningPhase = false,
     } = rawBody;
@@ -130,12 +131,15 @@ export async function POST(req: NextRequest) {
     // ─── Engine-driven question budget ───
     const baseHardLimit = currentTopicBudget.questionBudget;
 
-    // Real-time pacing analysis
+    // Real-time pacing analysis. Grace-period mode suppresses time-based urgency
+    // so the LLM finishes remaining topics at a natural pace instead of being
+    // told to rush or skip questions.
     const realTimePacing = computeRealTimePacing(
       timerSeconds,
       currentTopicIndex,
       zaraQuestionsInCurrentTopic,
-      interviewPlan
+      interviewPlan,
+      { isGracePeriod }
     );
 
     // Bug 8 fix: respect the engine's effective hard limit (which already
@@ -343,16 +347,24 @@ CONSISTENCY TRACKING: Mentally track if the candidate's verbal answers are consi
       : '';
 
     // ─── TIME STATUS BLOCK ───
+    // In grace period, displayed metrics are anchored so the LLM stops seeing
+    // alarming "100%+ elapsed / 0 min remaining" signals that previously pushed
+    // it to skip questions or close prematurely.
+    const displayedPercent = isGracePeriod ? Math.min(85, percentComplete) : percentComplete;
+    const displayedRemainingMin = isGracePeriod ? '∞ (grace)' : remainingMinutes;
+    const displayedPerTopicMin = isGracePeriod ? '∞ (grace)' : String(minutesPerRemainingTopic);
+
     const timeStatusBlock = `
 ━━━ TIME STATUS (REAL-TIME — USE THIS TO PACE YOURSELF) ━━━
-⏱ Elapsed: ${elapsedMinutes} min of ${totalMinutes} min total (${percentComplete}% complete)
-⏳ Remaining: ${remainingMinutes} min
+⏱ Elapsed: ${elapsedMinutes} min of ${totalMinutes} min planned (${displayedPercent}% of plan)
+⏳ Remaining: ${displayedRemainingMin} min
 📍 Current Topic: ${currentTopicIndex + 1} of ${totalTopics} ("${currentTopic}")
 📊 Topics remaining after this: ${topicsRemaining - 1}
-⏰ Available time per remaining topic: ~${minutesPerRemainingTopic} min
+⏰ Available time per remaining topic: ~${displayedPerTopicMin} min
 🔢 Questions asked on this topic: ${zaraQuestionsInCurrentTopic} of ${maxQuestionsHardLimit} max (base budget: ${baseHardLimit}, urgency: ${realTimePacing.urgency})
 📈 PACING: ${realTimePacing.message}
-${isClosingPhase ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the interview time. You MUST wrap up now.' : ''}`;
+${isGracePeriod ? '\n🟢 GRACE PERIOD: The interview has exceeded its planned duration but uncovered topics remain. Continue at a natural, unhurried pace — finish the remaining topics with proper questions. Do NOT close the interview yet. Do NOT rush or skip.' : ''}
+${isClosingPhase && !isGracePeriod ? '\n🔴 CLOSING PHASE ACTIVE — You are at 90%+ of the interview time AND on the last topic. You MUST wrap up now.' : ''}`;
 
     // ─── INTERVIEW PHASE INSTRUCTIONS ───
     let phaseInstruction = '';
@@ -411,10 +423,12 @@ Structure:
 Example: "Excelente perspectiva. Pasemos ahora a hablar de ${allTopics?.[currentTopicIndex + 1]?.label || 'el siguiente tema'}. [NEXT_TOPIC]"
 DO NOT ask any question. The first question of the new topic happens in the next turn.`;
     } else if (isClosingPhase) {
+      // Safety fallback — with the new grace-period semantics the client only
+      // sets isClosingPhase=true on the last topic. If we somehow land here
+      // mid-interview, prefer continuing naturally over forcing a skip.
       phaseInstruction = `
-PHASE: CLOSING — ACCELERATE
-Time is almost up. Skip to your final question and append [NEXT_TOPIC] to advance quickly.
-If you're on the last topic, close the interview with [END_INTERVIEW].`;
+PHASE: CLOSING — STAY THE COURSE
+Continue at the planned pace. Ask one focused question on the current topic. Do NOT prematurely transition or close — the timing system will tell you when to wrap up via mustAdvanceNow or the CLOSING phase on the final topic.`;
     } else if (isTransitionToNewTopic) {
       phaseInstruction = `
 PHASE: TOPIC TRANSITION (first question of "${currentTopic}")
@@ -531,7 +545,7 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
         : isClosingPhase && isLastTopic
           ? `TIME IS UP. Deliver the closing message and append [END_INTERVIEW].`
           : isClosingPhase
-            ? `TIME IS RUNNING OUT (${remainingMinutes} min left). Ask one final quick question and append ${isLastTopic ? '[END_INTERVIEW]' : '[NEXT_TOPIC]'}.`
+            ? `Continue at the planned pace on "${currentTopic}". The system will tell you when to transition or close — do not pre-empt it.`
             : isTransitionToNewTopic
               ? `Start the new topic "${currentTopic}" with a brief acknowledgment of the previous topic, then ONE focused first question. Do NOT repeat any prior question.`
               : `Ask question #${zaraQuestionsInCurrentTopic + 1} on "${currentTopic}" (max ${maxQuestionsHardLimit} for this topic). One focused question, different angle from prior questions (see RULE 10). Build on the candidate's last answer.`;
@@ -652,6 +666,7 @@ Return ONLY valid JSON, no markdown.`
           currentTopicIndex,
           timerSeconds,
           isClosingPhase,
+          isGracePeriod,
           mustAdvanceNow,
           isLastTopic,
           percentComplete,
@@ -691,6 +706,7 @@ Return ONLY valid JSON, no markdown.`
         remainingMinutes,
         percentComplete,
         isClosingPhase,
+        isGracePeriod,
         isLastTopic,
         isOpeningPhase,
         isTransitionToNewTopic,

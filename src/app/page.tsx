@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import Link from 'next/link';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useScroll, useTransform } from 'framer-motion';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -43,6 +43,10 @@ export default function LandingPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const es = language === 'es';
+
+  const heroRef = useRef<HTMLElement>(null);
+  const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
+  const videoY = useTransform(scrollYProgress, [0, 1], ['0%', '25%']);
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#fafafa] font-sans selection:bg-[#D3FB52] selection:text-black antialiased overflow-x-hidden">
@@ -94,8 +98,28 @@ export default function LandingPage() {
         {/* ───────────────────────────────────────────────────────────
             HERO — editorial, restrained, type-driven
            ─────────────────────────────────────────────────────────── */}
-        <section className="relative pt-40 lg:pt-48 pb-28 lg:pb-36 px-6 lg:px-8">
-          <div className="max-w-[1320px] mx-auto">
+        <section ref={heroRef} className="relative overflow-hidden pt-40 lg:pt-48 pb-28 lg:pb-36 px-6 lg:px-8">
+          {/* Video background with parallax */}
+          <motion.div
+            style={{ y: videoY }}
+            className="absolute inset-0 -top-[10%] -bottom-[10%] z-0 pointer-events-none"
+          >
+            <video
+              autoPlay
+              muted
+              loop
+              playsInline
+              className="absolute inset-0 w-full h-full object-cover"
+              src="/hero.mp4"
+            />
+            {/* Multi-layer overlay for text contrast */}
+            <div className="absolute inset-0 bg-[#0a0a0a]/60" />
+            <div className="absolute inset-0 backdrop-blur-[2px]" />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#0a0a0a]/30 via-transparent to-[#0a0a0a]/70" />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#0a0a0a]/50 via-transparent to-[#0a0a0a]/20" />
+          </motion.div>
+
+          <div className="relative z-10 max-w-[1320px] mx-auto">
             <motion.div
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}

@@ -91,8 +91,35 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   const currentTopicBudget = getQuestionBudget(currentTopicIndex, interviewPlan);
   const maxQuestionsHardLimit = currentTopicBudget.questionBudget;
 
-  // Closing phase detection — at 90% of total duration, signal Zara to wrap up
-  const isClosingPhase = hasStarted && timerSeconds >= totalDurationSeconds * 0.90;
+  // Grace period: when time runs out but not all planned topics are covered yet,
+  // we extend the interview until the AI naturally finishes (or a safety cap fires).
+  // The original duration still drives PACING (budgets, urgency suggestions to the LLM),
+  // but it no longer terminates the interview prematurely.
+  const GRACE_CAP_MULT = 2; // safety net: never exceed 2× the planned duration
+  const absoluteMaxSecs = totalDurationSeconds * GRACE_CAP_MULT;
+
+  // Has at least one real (non-control) assistant message been delivered on the last topic?
+  const lastTopicHasQuestion = isLastTopic && (() => {
+    const start = topicStartIndexRef.current;
+    for (let i = start; i < transcript.length; i++) {
+      const m = transcript[i];
+      if (
+        m.role === 'assistant' &&
+        !m.content.includes('[NEXT_TOPIC]') &&
+        !m.content.includes('[END_INTERVIEW]')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  })();
+  const allTopicsCovered = isLastTopic && lastTopicHasQuestion;
+  const isGracePeriod = hasStarted && timerSeconds >= totalDurationSeconds && !allTopicsCovered;
+
+  // Closing phase: only fire at 90%+ AND when we're already on the last topic.
+  // Previously this fired regardless of topic, telling the AI to wrap up prematurely.
+  const isClosingPhase =
+    hasStarted && timerSeconds >= totalDurationSeconds * 0.90 && isLastTopic;
 
   // Reset topic start index whenever the topic advances.
   // Bug 12 fix: also expose a synchronous helper for callers that need to
@@ -145,18 +172,26 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcript, hasStarted]);
 
-  // Timer hard-stop: ONLY ends the interview when 100% of total time elapses.
-  // Topic transitions are handled EXCLUSIVELY by the AI via [NEXT_TOPIC] tags.
-  // Previously this also force-advanced topics by time, which caused double messages.
+  // Timer hard-stop: only fires when EITHER
+  //   (a) the planned time elapsed AND all topics have been covered (natural end), or
+  //   (b) we exceeded the safety cap (2× planned duration) — prevents runaway sessions.
+  // Otherwise the interview enters "grace period": the timer keeps running but the AI
+  // continues asking the planned questions naturally. Topic transitions remain driven
+  // by the AI via [NEXT_TOPIC]/[END_INTERVIEW] tags.
   useEffect(() => {
     const duration = Number(currentRole?.interviewDuration) || 30;
     if (!hasStarted || topics.length === 0) return;
 
     const totalSecs = duration * 60;
+    const maxSecs = totalSecs * GRACE_CAP_MULT;
 
-    // Hard stop: if we've exceeded 100% of total time, end immediately
-    if (timerSeconds >= totalSecs && !speakingRef.current && !processingLockRef.current) {
-      console.log(`[Timer Hard Stop] Total time ${duration}m exceeded — ending interview`);
+    const naturalEnd = timerSeconds >= totalSecs && allTopicsCovered;
+    const safetyCap = timerSeconds >= maxSecs;
+
+    if ((naturalEnd || safetyCap) && !speakingRef.current && !processingLockRef.current) {
+      console.log(
+        `[Timer Hard Stop] ${safetyCap ? 'Safety cap (2×)' : 'All topics covered'} — ending interview`
+      );
       const closingMsg = language === 'es'
         ? `Ha sido un placer hablar contigo. Hemos llegado al final de nuestra entrevista. El equipo de evaluación revisará tu desempeño y te contactarán pronto. ¡Mucho éxito!`
         : `It's been great speaking with you. We've reached the end of our interview. The evaluation team will review your performance and be in touch soon. Best of luck!`;
@@ -164,7 +199,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       speakText(closingMsg).then(() => endInterview());
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerSeconds, hasStarted]);
+  }, [timerSeconds, hasStarted, allTopicsCovered]);
 
   // Safe restart of SpeechRecognition — prevents silent death
   const restartRecognition = useCallback(() => {
@@ -280,7 +315,27 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     const freshIsLastTopic = freshTopicIndex === freshTopics.length - 1;
     const freshSessionId = store.sessionId;
     const totalDurationSecs = interviewDurationMins * 60;
-    const freshIsClosingPhase = freshTimerSeconds >= totalDurationSecs * 0.90;
+    // Grace-period-aware closing detection. Closing phase only fires when we're
+    // on the last topic AND ≥90% elapsed. Grace period engages when the planned
+    // duration is exceeded but the last topic hasn't been delivered yet.
+    const freshLastTopicHasQuestion = freshIsLastTopic && (() => {
+      const start = topicStartIndexRef.current;
+      for (let i = start; i < freshTranscript.length; i++) {
+        const m = freshTranscript[i];
+        if (
+          m.role === 'assistant' &&
+          !m.content.includes('[NEXT_TOPIC]') &&
+          !m.content.includes('[END_INTERVIEW]')
+        ) {
+          return true;
+        }
+      }
+      return false;
+    })();
+    const freshAllTopicsCovered = freshIsLastTopic && freshLastTopicHasQuestion;
+    const freshIsGracePeriod = freshTimerSeconds >= totalDurationSecs && !freshAllTopicsCovered;
+    const freshIsClosingPhase =
+      freshTimerSeconds >= totalDurationSecs * 0.90 && freshIsLastTopic;
     // ═══════════════════════════════════════════════════════════
 
     // Save transcript entry FIRST, before any early returns.
@@ -438,6 +493,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           currentTopicIndex: freshTopicIndex,
           topicStartIndex: topicStartIndexRef.current,
           isClosingPhase: freshIsClosingPhase,
+          isGracePeriod: freshIsGracePeriod,
           isOpeningPhase: false,
           sessionId: freshSessionId || 'unknown-session',
         }),
@@ -962,20 +1018,43 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             {(() => {
               const remaining = Math.max(0, totalDurationSeconds - timerSeconds);
               const remainPct = totalDurationSeconds > 0 ? remaining / totalDurationSeconds : 1;
-              const isUrgent = remainPct <= 0.10; // last 10%
-              const isWarning = remainPct <= 0.25; // last 25%
-              const timerColor = isUrgent ? 'text-danger' : isWarning ? 'text-warning' : 'text-primary';
-              const borderColor = isUrgent ? 'border-danger/30' : isWarning ? 'border-warning/30' : 'border-black/[0.04]';
-              const iconColor = isUrgent ? 'text-danger' : isWarning ? 'text-warning' : 'text-primary';
+              const isUrgent = !isGracePeriod && remainPct <= 0.10; // last 10%
+              const isWarning = !isGracePeriod && remainPct <= 0.25; // last 25%
+              const timerColor = isGracePeriod
+                ? 'text-warning'
+                : isUrgent
+                  ? 'text-danger'
+                  : isWarning
+                    ? 'text-warning'
+                    : 'text-primary';
+              const borderColor = isGracePeriod
+                ? 'border-warning/30'
+                : isUrgent
+                  ? 'border-danger/30'
+                  : isWarning
+                    ? 'border-warning/30'
+                    : 'border-black/[0.04]';
+              const iconColor = isGracePeriod
+                ? 'text-warning'
+                : isUrgent
+                  ? 'text-danger'
+                  : isWarning
+                    ? 'text-warning'
+                    : 'text-primary';
+              // In grace mode, show how much extra time has been spent rather than
+              // a negative countdown.
+              const extraSeconds = Math.max(0, timerSeconds - totalDurationSeconds);
               return (
                 <div className={`flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow-sm border ${borderColor} transition-colors`}>
                   <Clock className={`h-4 w-4 ${iconColor} ${isUrgent ? 'animate-pulse' : ''}`} />
                   <div className="flex flex-col items-end">
                     <span className={`text-sm font-semibold ${timerColor} tracking-tight tabular-nums`}>
-                      {formatTime(remaining)}
+                      {isGracePeriod ? `+${formatTime(extraSeconds)}` : formatTime(remaining)}
                     </span>
                     <span className="text-[10px] text-muted/50 leading-none">
-                      {formatTime(timerSeconds)} / {formatTime(totalDurationSeconds)}
+                      {isGracePeriod
+                        ? (language === 'es' ? 'Tiempo extendido' : 'Extended time')
+                        : `${formatTime(timerSeconds)} / ${formatTime(totalDurationSeconds)}`}
                     </span>
                   </div>
                 </div>

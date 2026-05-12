@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
-
-// pdf-parse v2.x uses named export
-import { PDFParse } from 'pdf-parse';
 import * as mammoth from 'mammoth';
+
+// pdf-parse uses Node-only deps (file IO, native PDF parsing). Force the Node
+// runtime so Next.js doesn't try to bundle it for the Edge runtime, which
+// silently fails and surfaces as a 500 at request time.
+export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -28,11 +31,26 @@ export async function POST(request: Request) {
 
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
-        const parser = new PDFParse({ data: buffer });
-        const data = await parser.getText();
+        // Dynamic import isolates pdf-parse's side-effect-heavy module init to
+        // request time and lets us pick up the correct default export across
+        // both CJS-published versions (1.x) and the dual export shape used by
+        // newer builds.
+        const mod = (await import('pdf-parse')) as unknown as
+          | { default?: (buf: Buffer) => Promise<{ text: string }> }
+          | ((buf: Buffer) => Promise<{ text: string }>);
+        const pdfParse = typeof mod === 'function' ? mod : mod.default;
+        if (typeof pdfParse !== 'function') {
+          throw new Error('pdf-parse module did not expose a callable parser');
+        }
+        const data = await pdfParse(buffer);
         text = data.text;
       } catch (pdfError) {
-        console.error('PDF parsing error:', pdfError);
+        const err = pdfError as Error;
+        console.error('[parse-resume] PDF parsing error:', {
+          name: err?.name,
+          message: err?.message,
+          stack: err?.stack,
+        });
         return NextResponse.json(
           { error: 'Could not read PDF. The file may be corrupted or password-protected.' },
           { status: 400 }
@@ -212,7 +230,15 @@ ${text}`;
 
     return NextResponse.json({ success: true, data: safeData, rawText: text });
   } catch (error) {
-    console.error('Parse resume error:', error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    const err = error as Error;
+    console.error('[parse-resume] failure:', {
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack,
+    });
+    return NextResponse.json(
+      { error: 'Internal error parsing CV. Please try a different file.' },
+      { status: 500 }
+    );
   }
 }

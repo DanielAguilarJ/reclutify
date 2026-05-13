@@ -4,12 +4,8 @@ import { createClient } from '@/utils/supabase/server';
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
-// Nombre de la cookie para la organización activa
 const ACTIVE_ORG_COOKIE = 'reclutify_active_org_id';
 
-/**
- * Tipo para la información de una organización del usuario
- */
 interface UserOrganization {
   id: string;
   name: string;
@@ -17,12 +13,31 @@ interface UserOrganization {
   role: string;
 }
 
-/**
- * Resultado tipado para las acciones de organizaciones
- */
 interface OrgActionResult {
   success: boolean;
   error?: string;
+}
+
+interface AddWorkspaceResult {
+  success: boolean;
+  error?: string;
+  redirectTo?: string;
+}
+
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function randomSuffix(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 4; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+  return result;
 }
 
 /**
@@ -177,4 +192,81 @@ export async function switchOrganization(orgId: string): Promise<OrgActionResult
   revalidatePath('/admin');
 
   return { success: true };
+}
+
+/**
+ * Crea un workspace adicional para un usuario que ya completó el onboarding.
+ * A diferencia de createOrganization (onboarding inicial), esta acción:
+ * - No bloquea si el usuario ya tiene una org
+ * - Agrega la nueva org a org_members para soporte multi-org
+ * - Activa la nueva org via cookie
+ */
+export async function addWorkspace(formData: {
+  name: string;
+  size: string;
+  industry: string;
+}): Promise<AddWorkspaceResult> {
+  const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: 'No se pudo verificar tu sesión. Por favor, inicia sesión nuevamente.' };
+  }
+
+  const trimmedName = formData.name?.trim() || '';
+  if (trimmedName.length < 2) {
+    return { success: false, error: 'El nombre de la empresa debe tener al menos 2 caracteres.' };
+  }
+
+  // Generar slug único
+  let slug = generateSlug(trimmedName);
+  if (!slug) slug = `org-${randomSuffix()}`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const candidateSlug = attempt === 0 ? slug : `${slug}-${randomSuffix()}`;
+    const { data: existing } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('slug', candidateSlug)
+      .maybeSingle();
+
+    if (!existing) { slug = candidateSlug; break; }
+    if (attempt === 2) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+  }
+
+  // Crear organización con UUID pre-generado (evita problemas de RLS en SELECT post-insert)
+  const orgId = crypto.randomUUID();
+
+  const { error: orgError } = await supabase
+    .from('organizations')
+    .insert([{ id: orgId, name: trimmedName, slug }]);
+
+  if (orgError) {
+    return { success: false, error: `Error al crear la organización: ${orgError.message}` };
+  }
+
+  // Vincular al usuario como owner en org_members
+  const { error: memberError } = await supabase
+    .from('org_members')
+    .insert([{ user_id: user.id, org_id: orgId, role: 'owner' }]);
+
+  if (memberError) {
+    // Rollback de la organización creada
+    await supabase.from('organizations').delete().eq('id', orgId);
+    return { success: false, error: `Error al vincular la organización: ${memberError.message}` };
+  }
+
+  // Activar la nueva org via cookie
+  const cookieStore = await cookies();
+  cookieStore.set(ACTIVE_ORG_COOKIE, orgId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 365,
+  });
+
+  revalidatePath('/admin');
+
+  return { success: true, redirectTo: '/admin' };
 }

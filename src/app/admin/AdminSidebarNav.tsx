@@ -91,7 +91,7 @@ export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSid
               </button>
             ))}
             <div className="h-px bg-border/50 my-1 mx-2" />
-            <Link href="/onboarding" className="w-full flex items-center gap-2 px-2 py-2 hover:bg-background rounded-lg transition-colors text-sm text-muted hover:text-foreground">
+            <Link href="/admin/create-workspace" className="w-full flex items-center gap-2 px-2 py-2 hover:bg-background rounded-lg transition-colors text-sm text-muted hover:text-foreground">
               <PlusCircle className="h-4 w-4" />
               {language === 'es' ? 'Crear Workspace' : 'Create Workspace'}
             </Link>

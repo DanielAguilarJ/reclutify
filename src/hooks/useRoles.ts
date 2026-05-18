@@ -94,8 +94,11 @@ function roleFromPayload(row: Record<string, unknown>): Role {
     location: (row.location as string) || undefined,
     salary: (row.salary as string) || undefined,
     jobType: (row.job_type as string) || undefined,
+    interviewDuration: (row.interview_duration as number) ?? 30,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     topics: (row.topics as any) || [],
     createdAt: new Date(row.created_at as string).getTime(),
+    isPublished: (row.is_published as boolean) ?? false,
+    publishedAt: row.published_at ? new Date(row.published_at as string).getTime() : undefined,
   };
 }

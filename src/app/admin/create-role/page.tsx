@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe } from 'lucide-react';
+import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useRoles } from '@/hooks/useRoles';
@@ -143,6 +143,55 @@ function TopicCard({ topic, index, onRemove, onUpdateWeight, expanded, onToggle 
   );
 }
 
+// ─── Coherence validation utility ───
+function getCoherenceStatus(durationMinutes: number, topicCount: number, lang: string): { level: 'ok' | 'warning' | 'error'; message: string; color: string } {
+  if (topicCount === 0) return { level: 'ok', message: '', color: '' };
+  const usableMinutes = durationMinutes * 0.8; // ~80% after greeting/closing/transitions
+  const minutesPerTopic = usableMinutes / topicCount;
+
+  if (minutesPerTopic < 1.5) {
+    return {
+      level: 'error',
+      message: lang === 'es'
+        ? `Demasiados temas (${topicCount}) para ${durationMinutes} min. Solo ~${minutesPerTopic.toFixed(1)} min/tema. Reduce a ${Math.max(2, Math.floor(usableMinutes / 3))} temas o aumenta la duracion.`
+        : `Too many topics (${topicCount}) for ${durationMinutes} min. Only ~${minutesPerTopic.toFixed(1)} min/topic. Reduce to ${Math.max(2, Math.floor(usableMinutes / 3))} topics or increase duration.`,
+      color: 'text-danger bg-danger/10 border-danger/20',
+    };
+  }
+  if (minutesPerTopic < 3) {
+    return {
+      level: 'warning',
+      message: lang === 'es'
+        ? `${topicCount} temas en ${durationMinutes} min = ~${minutesPerTopic.toFixed(1)} min/tema. Las preguntas seran muy breves.`
+        : `${topicCount} topics in ${durationMinutes} min = ~${minutesPerTopic.toFixed(1)} min/topic. Questions will be very brief.`,
+      color: 'text-warning bg-warning/10 border-warning/20',
+    };
+  }
+  if (minutesPerTopic > 15) {
+    return {
+      level: 'warning',
+      message: lang === 'es'
+        ? `Pocos temas (${topicCount}) para ${durationMinutes} min. ~${minutesPerTopic.toFixed(1)} min/tema puede sentirse repetitivo. Considera agregar temas.`
+        : `Few topics (${topicCount}) for ${durationMinutes} min. ~${minutesPerTopic.toFixed(1)} min/topic may feel repetitive. Consider adding topics.`,
+      color: 'text-warning bg-warning/10 border-warning/20',
+    };
+  }
+  return { level: 'ok', message: '', color: '' };
+}
+
+// ─── Duration change significance check ───
+function isDurationChangeSignificant(oldDuration: number, newDuration: number): boolean {
+  if (oldDuration === newDuration) return false;
+  const ratio = Math.max(oldDuration, newDuration) / Math.min(oldDuration, newDuration);
+  if (ratio >= 1.5) return true; // 50%+ change
+  // Cross threshold boundaries: 15, 30, 60
+  const thresholds = [15, 30, 60];
+  for (const t of thresholds) {
+    if ((oldDuration <= t && newDuration > t) || (oldDuration > t && newDuration <= t)) return true;
+  }
+  return false;
+}
+
 // ─── Role Editor (for existing roles) ───
 function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
   const { updateRole } = useAdminStore();
@@ -155,12 +204,36 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     description: role.description || '',
     interviewDuration: role.interviewDuration ?? 30,
   });
+  const [editedTopics, setEditedTopics] = useState<Topic[]>([...role.topics]);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isPublished, setIsPublished] = useState(role.isPublished ?? false);
   const [publishLoading, setPublishLoading] = useState(false);
 
+  // Topic editing UI state
+  const [expandedTopicId, setExpandedTopicId] = useState<string | null>(null);
+  const [newTopicLabel, setNewTopicLabel] = useState('');
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
+  // Duration change detection
+  const previousDuration = useRef(role.interviewDuration ?? 30);
+  const [showRegeneratePrompt, setShowRegeneratePrompt] = useState(false);
+
+  // Detect significant duration changes
+  useEffect(() => {
+    if (isDurationChangeSignificant(previousDuration.current, editedRole.interviewDuration)) {
+      setShowRegeneratePrompt(true);
+    } else {
+      setShowRegeneratePrompt(false);
+    }
+  }, [editedRole.interviewDuration]);
+
+  // Coherence validation
+  const coherence = getCoherenceStatus(editedRole.interviewDuration, editedTopics.length, language);
+
   const handleSave = () => {
-    updateRole(role.id, editedRole);
+    updateRole(role.id, { ...editedRole, topics: editedTopics });
+    previousDuration.current = editedRole.interviewDuration;
+    setShowRegeneratePrompt(false);
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 2000);
   };
@@ -171,12 +244,136 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     editedRole.salary !== (role.salary || '') ||
     editedRole.location !== (role.location || '') ||
     editedRole.description !== (role.description || '') ||
-    editedRole.interviewDuration !== (role.interviewDuration ?? 30);
+    editedRole.interviewDuration !== (role.interviewDuration ?? 30) ||
+    JSON.stringify(editedTopics) !== JSON.stringify(role.topics);
+
+  // ─── Topic editing handlers ───
+  const handleUpdateTopicLabel = (topicId: string, label: string) => {
+    setEditedTopics(prev => prev.map(t => t.id === topicId ? { ...t, label } : t));
+  };
+
+  const handleUpdateTopicWeight = (topicId: string, weight: number) => {
+    setEditedTopics(prev => prev.map(t => {
+      if (t.id !== topicId) return t;
+      return {
+        ...t,
+        rubric: t.rubric
+          ? { ...t.rubric, weight }
+          : { excellent: '', acceptable: '', poor: '', weight },
+      };
+    }));
+  };
+
+  const handleUpdateTopicRubric = (topicId: string, field: 'excellent' | 'acceptable' | 'poor', value: string) => {
+    setEditedTopics(prev => prev.map(t => {
+      if (t.id !== topicId) return t;
+      return {
+        ...t,
+        rubric: t.rubric
+          ? { ...t.rubric, [field]: value }
+          : { excellent: '', acceptable: '', poor: '', weight: 5, [field]: value },
+      };
+    }));
+  };
+
+  const handleRemoveTopic = (topicId: string) => {
+    setEditedTopics(prev => prev.filter(t => t.id !== topicId));
+    if (expandedTopicId === topicId) setExpandedTopicId(null);
+  };
+
+  const handleMoveTopic = (index: number, direction: 'up' | 'down') => {
+    const newTopics = [...editedTopics];
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= newTopics.length) return;
+    [newTopics[index], newTopics[targetIdx]] = [newTopics[targetIdx], newTopics[index]];
+    setEditedTopics(newTopics);
+  };
+
+  const handleAddTopic = () => {
+    if (!newTopicLabel.trim()) return;
+    if (editedTopics.some(t => t.label.toLowerCase() === newTopicLabel.trim().toLowerCase())) return;
+    const newTopic: Topic = {
+      id: `t-${Date.now()}-${editedTopics.length}`,
+      label: newTopicLabel.trim(),
+      rubric: { excellent: '', acceptable: '', poor: '', weight: 5 },
+    };
+    setEditedTopics(prev => [...prev, newTopic]);
+    setNewTopicLabel('');
+  };
+
+  // ─── AI Regeneration ───
+  const handleRegenerateTopics = useCallback(async (mode: 'replace' | 'add') => {
+    setIsRegenerating(true);
+    try {
+      const response = await fetch('/api/generate-rubric', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobTitle: editedRole.title,
+          description: editedRole.description,
+          jobType: editedRole.jobType,
+          language,
+          interviewDuration: editedRole.interviewDuration,
+        }),
+      });
+      const data = await response.json();
+      if (data.topics && Array.isArray(data.topics)) {
+        const newTopics: Topic[] = data.topics.map((t: { label: string; rubric?: TopicRubric }, i: number) => ({
+          id: `t-${Date.now()}-${i}`,
+          label: t.label,
+          rubric: t.rubric,
+        }));
+
+        if (mode === 'replace') {
+          setEditedTopics(newTopics);
+        } else {
+          // Add mode: only add topics that don't already exist
+          const existingLabels = new Set(editedTopics.map(t => t.label.toLowerCase()));
+          const toAdd = newTopics.filter(t => !existingLabels.has(t.label.toLowerCase()));
+          setEditedTopics(prev => [...prev, ...toAdd]);
+        }
+        setShowRegeneratePrompt(false);
+      }
+    } catch (error) {
+      console.error('Failed to regenerate topics:', error);
+    } finally {
+      setIsRegenerating(false);
+    }
+  }, [editedRole, editedTopics, language]);
+
+  // ─── Enrich single topic with AI ───
+  const handleEnrichSingleTopic = async (topicId: string) => {
+    const topic = editedTopics.find(t => t.id === topicId);
+    if (!topic) return;
+    try {
+      const response = await fetch('/api/generate-rubric', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobTitle: editedRole.title,
+          description: editedRole.description,
+          jobType: editedRole.jobType,
+          language,
+          interviewDuration: editedRole.interviewDuration,
+          singleCriterion: { name: topic.label, weight: topic.rubric?.weight || 5 },
+        }),
+      });
+      const data = await response.json();
+      if (data.criterion?.rubric) {
+        setEditedTopics(prev => prev.map(t => {
+          if (t.id !== topicId) return t;
+          return { ...t, rubric: data.criterion.rubric };
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to enrich topic:', error);
+    }
+  };
 
   return (
     <div className="border-t border-border/50 p-4 bg-muted/5 space-y-4">
       <div>
-        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Título' : 'Title'}</label>
+        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Titulo' : 'Title'}</label>
         <input 
           value={editedRole.title} 
           onChange={(e) => setEditedRole({ ...editedRole, title: e.target.value })}
@@ -206,7 +403,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Ubicación' : 'Location'}</label>
+        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Ubicacion' : 'Location'}</label>
         <input 
           value={editedRole.location} 
           placeholder={language === 'es' ? 'ej. Remoto' : 'e.g. Remote'}
@@ -216,20 +413,20 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Descripción' : 'Description'}</label>
+        <label className="block text-xs font-medium text-muted mb-1">{language === 'es' ? 'Descripcion' : 'Description'}</label>
         <textarea 
           value={editedRole.description} 
           onChange={(e) => setEditedRole({ ...editedRole, description: e.target.value })}
           className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm min-h-[100px] resize-y"
-          placeholder={language === 'es' ? 'Descripción del puesto...' : 'Job description...'}
+          placeholder={language === 'es' ? 'Descripcion del puesto...' : 'Job description...'}
         />
       </div>
 
-      {/* ─── Duración de la Entrevista ─── */}
+      {/* ─── Duracion de la Entrevista ─── */}
       <div>
         <label className="block text-xs font-medium text-muted mb-1 flex items-center gap-1">
           <Clock className="h-3 w-3" />
-          {language === 'es' ? 'Duración de Entrevista' : 'Interview Duration'}
+          {language === 'es' ? 'Duracion de Entrevista' : 'Interview Duration'}
         </label>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {[15, 30, 45, 60, 90].map((mins) => (
@@ -266,21 +463,250 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
         </div>
       </div>
 
+      {/* ─── Duration Change Banner ─── */}
+      <AnimatePresence>
+        {showRegeneratePrompt && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 rounded-lg border border-primary/30 bg-primary/5">
+              <div className="flex items-start gap-2 mb-2">
+                <RefreshCw className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-medium text-foreground">
+                    {language === 'es'
+                      ? `La duracion cambio de ${previousDuration.current} a ${editedRole.interviewDuration} min. Los temas actuales (${editedTopics.length}) pueden no ser optimos.`
+                      : `Duration changed from ${previousDuration.current} to ${editedRole.interviewDuration} min. Current topics (${editedTopics.length}) may not be optimal.`}
+                  </p>
+                  <p className="text-[10px] text-muted mt-0.5">
+                    {language === 'es'
+                      ? 'La IA puede regenerar los temas para adaptarse a la nueva duracion.'
+                      : 'AI can regenerate topics to match the new duration.'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2 ml-6">
+                <button
+                  onClick={() => handleRegenerateTopics('replace')}
+                  disabled={isRegenerating}
+                  className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50"
+                >
+                  {isRegenerating ? (
+                    <Loader2 className="h-3 w-3 animate-spin inline mr-1" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3 inline mr-1" />
+                  )}
+                  {language === 'es' ? 'Regenerar todos' : 'Regenerate all'}
+                </button>
+                <button
+                  onClick={() => handleRegenerateTopics('add')}
+                  disabled={isRegenerating}
+                  className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-background border border-border text-foreground hover:bg-muted/10 transition-colors disabled:opacity-50"
+                >
+                  <Plus className="h-3 w-3 inline mr-1" />
+                  {language === 'es' ? 'Agregar sugeridos' : 'Add suggested'}
+                </button>
+                <button
+                  onClick={() => setShowRegeneratePrompt(false)}
+                  className="px-2.5 py-1 rounded-md text-[10px] font-medium text-muted hover:text-foreground transition-colors"
+                >
+                  {language === 'es' ? 'Mantener actuales' : 'Keep current'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── Coherence Validation Alert ─── */}
+      {coherence.level !== 'ok' && (
+        <div className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs ${coherence.color}`}>
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>{coherence.message}</span>
+        </div>
+      )}
+
+      {/* ─── Editable Topics Section ─── */}
       <div>
-        <label className="block text-xs font-medium text-muted mb-1">
-          {language === 'es' ? 'Temas de Evaluación' : 'Evaluation Topics'}
-        </label>
-        <div className="space-y-1.5 mt-1">
-          {role.topics.map((t) => (
-            <div key={t.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/5 border border-primary/10">
-              <span className="text-xs font-medium text-foreground flex-1">{t.label}</span>
-              {t.rubric && (
-                <span className="text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">
-                  {t.rubric.weight}/10
-                </span>
-              )}
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-xs font-medium text-muted">
+            {language === 'es' ? 'Temas de Evaluacion' : 'Evaluation Topics'} ({editedTopics.length})
+          </label>
+          <button
+            onClick={() => handleRegenerateTopics('replace')}
+            disabled={isRegenerating || !editedRole.title.trim()}
+            className="flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary-hover transition-colors disabled:opacity-50"
+          >
+            {isRegenerating ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Sparkles className="h-3 w-3" />
+            )}
+            {language === 'es' ? 'Regenerar con IA' : 'Regenerate with AI'}
+          </button>
+        </div>
+
+        <div className="space-y-2">
+          {editedTopics.map((topic, index) => (
+            <div key={topic.id} className="rounded-lg border border-border/50 bg-background overflow-hidden">
+              {/* Topic Header Row */}
+              <div className="flex items-center gap-2 px-3 py-2">
+                {/* Reorder buttons */}
+                <div className="flex flex-col gap-0.5">
+                  <button
+                    onClick={() => handleMoveTopic(index, 'up')}
+                    disabled={index === 0}
+                    className="p-0.5 text-muted hover:text-foreground disabled:opacity-20 transition-colors"
+                  >
+                    <ArrowUp className="h-3 w-3" />
+                  </button>
+                  <button
+                    onClick={() => handleMoveTopic(index, 'down')}
+                    disabled={index === editedTopics.length - 1}
+                    className="p-0.5 text-muted hover:text-foreground disabled:opacity-20 transition-colors"
+                  >
+                    <ArrowDown className="h-3 w-3" />
+                  </button>
+                </div>
+
+                {/* Editable label */}
+                <input
+                  value={topic.label}
+                  onChange={(e) => handleUpdateTopicLabel(topic.id, e.target.value)}
+                  className="flex-1 text-xs font-medium bg-transparent border-none outline-none text-foreground placeholder:text-muted/60"
+                  placeholder={language === 'es' ? 'Nombre del tema...' : 'Topic name...'}
+                />
+
+                {/* Weight slider */}
+                <div className="flex items-center gap-1.5 min-w-[120px]">
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    value={topic.rubric?.weight ?? 5}
+                    onChange={(e) => handleUpdateTopicWeight(topic.id, Number(e.target.value))}
+                    className="w-16 h-1 rounded-full appearance-none cursor-pointer accent-primary
+                      [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 
+                      [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
+                    style={{
+                      background: `linear-gradient(to right, var(--color-primary) 0%, var(--color-primary) ${((topic.rubric?.weight ?? 5) / 10) * 100}%, #e2e8f0 ${((topic.rubric?.weight ?? 5) / 10) * 100}%, #e2e8f0 100%)`
+                    }}
+                  />
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                    (topic.rubric?.weight ?? 5) >= 8 ? 'text-danger bg-danger/10' :
+                    (topic.rubric?.weight ?? 5) >= 5 ? 'text-warning bg-warning/10' :
+                    'text-success bg-success/10'
+                  }`}>
+                    {topic.rubric?.weight ?? 5}/10
+                  </span>
+                </div>
+
+                {/* Expand/collapse rubric */}
+                <button
+                  onClick={() => setExpandedTopicId(expandedTopicId === topic.id ? null : topic.id)}
+                  className="p-1 rounded hover:bg-muted/10 text-muted transition-colors"
+                >
+                  {expandedTopicId === topic.id ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+
+                {/* Delete */}
+                <button
+                  onClick={() => handleRemoveTopic(topic.id)}
+                  className="p-1 rounded hover:bg-danger/10 text-muted hover:text-danger transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {/* Expanded Rubric Editor */}
+              <AnimatePresence>
+                {expandedTopicId === topic.id && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-3 pb-3 pt-2 border-t border-border/30 space-y-2">
+                      {/* Excellent */}
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-success flex items-center gap-1 mb-0.5">
+                          <span className="bg-success/10 px-1 py-0.5 rounded">9-10</span>
+                          {language === 'es' ? 'Excelente' : 'Excellent'}
+                        </label>
+                        <textarea
+                          value={topic.rubric?.excellent || ''}
+                          onChange={(e) => handleUpdateTopicRubric(topic.id, 'excellent', e.target.value)}
+                          placeholder={language === 'es' ? 'Que demuestra un candidato sobresaliente...' : 'What a top candidate demonstrates...'}
+                          className="w-full px-2 py-1.5 rounded border border-border bg-muted/5 text-xs resize-none min-h-[48px] focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        />
+                      </div>
+                      {/* Acceptable */}
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-warning flex items-center gap-1 mb-0.5">
+                          <span className="bg-warning/10 px-1 py-0.5 rounded">6-8</span>
+                          {language === 'es' ? 'Aceptable' : 'Acceptable'}
+                        </label>
+                        <textarea
+                          value={topic.rubric?.acceptable || ''}
+                          onChange={(e) => handleUpdateTopicRubric(topic.id, 'acceptable', e.target.value)}
+                          placeholder={language === 'es' ? 'Que demuestra un candidato adecuado...' : 'What an adequate candidate demonstrates...'}
+                          className="w-full px-2 py-1.5 rounded border border-border bg-muted/5 text-xs resize-none min-h-[48px] focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        />
+                      </div>
+                      {/* Poor */}
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-danger flex items-center gap-1 mb-0.5">
+                          <span className="bg-danger/10 px-1 py-0.5 rounded">0-5</span>
+                          {language === 'es' ? 'Deficiente' : 'Poor'}
+                        </label>
+                        <textarea
+                          value={topic.rubric?.poor || ''}
+                          onChange={(e) => handleUpdateTopicRubric(topic.id, 'poor', e.target.value)}
+                          placeholder={language === 'es' ? 'Que indica un candidato debil...' : 'What indicates a weak candidate...'}
+                          className="w-full px-2 py-1.5 rounded border border-border bg-muted/5 text-xs resize-none min-h-[48px] focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        />
+                      </div>
+                      {/* Enrich single topic button */}
+                      {(!topic.rubric?.excellent || !topic.rubric?.acceptable || !topic.rubric?.poor) && (
+                        <button
+                          onClick={() => handleEnrichSingleTopic(topic.id)}
+                          className="flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary-hover transition-colors mt-1"
+                        >
+                          <Wand2 className="h-3 w-3" />
+                          {language === 'es' ? 'Generar criterios con IA' : 'Generate criteria with AI'}
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           ))}
+        </div>
+
+        {/* Add new topic */}
+        <div className="flex gap-2 mt-2">
+          <input
+            type="text"
+            value={newTopicLabel}
+            onChange={(e) => setNewTopicLabel(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddTopic()}
+            placeholder={language === 'es' ? 'Agregar tema...' : 'Add topic...'}
+            className="flex-1 px-3 py-1.5 rounded-lg border border-border bg-background text-xs
+              placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-primary/30"
+          />
+          <button
+            onClick={handleAddTopic}
+            disabled={!newTopicLabel.trim()}
+            className="px-3 py-1.5 rounded-lg bg-background border border-border text-foreground text-xs
+              hover:bg-primary-light hover:text-primary hover:border-primary/20 transition-all disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
 
@@ -344,7 +770,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
         </div>
         <p className="text-[10px] text-muted mt-1 ml-5">
           {language === 'es'
-            ? 'Los candidatos podrán ver y aplicar a esta vacante desde /career-fair'
+            ? 'Los candidatos podran ver y aplicar a esta vacante desde /career-fair'
             : 'Candidates will be able to view and apply to this role from /career-fair'}
         </p>
       </div>
@@ -359,14 +785,18 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
         <div className="flex gap-2">
            {hasChanges && (
              <button
-               onClick={() => setEditedRole({
-                 title: role.title,
-                 jobType: role.jobType || '',
-                 salary: role.salary || '',
-                 location: role.location || '',
-                 description: role.description || '',
-                 interviewDuration: role.interviewDuration ?? 30,
-               })}
+               onClick={() => {
+                 setEditedRole({
+                   title: role.title,
+                   jobType: role.jobType || '',
+                   salary: role.salary || '',
+                   location: role.location || '',
+                   description: role.description || '',
+                   interviewDuration: role.interviewDuration ?? 30,
+                 });
+                 setEditedTopics([...role.topics]);
+                 setShowRegeneratePrompt(false);
+               }}
                className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted hover:bg-muted/10 transition-colors"
              >
                {language === 'es' ? 'Cancelar' : 'Cancel'}
@@ -437,7 +867,8 @@ export default function CreateRolePage() {
           jobTitle, 
           description: jobDescription,
           jobType,
-          language: generationLanguage 
+          language: generationLanguage,
+          interviewDuration,
         }),
       });
       const data = await response.json();
@@ -478,6 +909,7 @@ export default function CreateRolePage() {
           description: jobDescription,
           jobType,
           language: generationLanguage,
+          interviewDuration,
           customTopics: topics.map(t => ({ label: t.label, weight: t.rubric?.weight })),
         }),
       });

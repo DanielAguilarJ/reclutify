@@ -135,7 +135,12 @@ export async function createPost(payload: {
 
   // If sharing, increment shares_count on original post
   if (payload.shared_from_id) {
-    await supabase.rpc('increment_shares_count', { post_id: payload.shared_from_id }).catch(() => {});
+    try {
+      const { data: origPost } = await supabase.from('posts').select('shares_count').eq('id', payload.shared_from_id).single();
+      if (origPost) {
+        await supabase.from('posts').update({ shares_count: (origPost.shares_count || 0) + 1 }).eq('id', payload.shared_from_id);
+      }
+    } catch { /* ignore */ }
   }
 
   revalidatePath('/feed');

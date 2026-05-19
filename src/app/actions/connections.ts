@@ -31,7 +31,8 @@ export async function getConnectionStatus(
 // ─── Send connection request ───
 
 export async function sendConnectionRequest(
-  addresseeId: string
+  addresseeId: string,
+  note?: string
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -44,9 +45,12 @@ export async function sendConnectionRequest(
     return { success: false, error: 'Ya existe una solicitud de conexión' };
   }
 
+  const insertData: Record<string, unknown> = { requester_id: user.id, addressee_id: addresseeId };
+  if (note?.trim()) insertData.note = note.trim().slice(0, 300);
+
   const { error } = await supabase
     .from('connections')
-    .insert({ requester_id: user.id, addressee_id: addresseeId });
+    .insert(insertData);
 
   if (error) return { success: false, error: error.message };
 

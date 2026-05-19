@@ -92,6 +92,13 @@ export async function getFeedPosts(cursor?: string | null): Promise<FeedResult> 
 export async function createPost(payload: {
   content: string;
   post_type?: string;
+  media_urls?: string[];
+  poll_options?: { text: string; votes: number }[];
+  poll_ends_at?: string;
+  shared_from_id?: string;
+  article_title?: string;
+  article_content?: string;
+  article_cover_url?: string;
 }): Promise<{ success: boolean; post?: Post; error?: string }> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -102,18 +109,33 @@ export async function createPost(payload: {
 
   const postType = payload.post_type || 'update';
 
+  const insertData: Record<string, unknown> = {
+    user_id: user.id,
+    content,
+    post_type: postType,
+  };
+
+  if (payload.media_urls && payload.media_urls.length > 0) insertData.media_urls = payload.media_urls;
+  if (payload.poll_options) insertData.poll_options = payload.poll_options;
+  if (payload.poll_ends_at) insertData.poll_ends_at = payload.poll_ends_at;
+  if (payload.shared_from_id) insertData.shared_from_id = payload.shared_from_id;
+  if (payload.article_title) insertData.article_title = payload.article_title;
+  if (payload.article_content) insertData.article_content = payload.article_content;
+  if (payload.article_cover_url) insertData.article_cover_url = payload.article_cover_url;
+
   const { data, error } = await supabase
     .from('posts')
-    .insert({
-      user_id: user.id,
-      content,
-      post_type: postType,
-    })
+    .insert(insertData)
     .select()
     .single();
 
   if (error) {
     return { success: false, error: error.message };
+  }
+
+  // If sharing, increment shares_count on original post
+  if (payload.shared_from_id) {
+    await supabase.rpc('increment_shares_count', { post_id: payload.shared_from_id }).catch(() => {});
   }
 
   revalidatePath('/feed');
@@ -264,4 +286,71 @@ export async function deletePost(postId: string): Promise<{ success: boolean; er
 
   revalidatePath('/feed');
   return { success: true };
+}
+
+// ─── Share Post ───
+
+export async function sharePost(postId: string, comment?: string): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: 'No autenticado' };
+
+  // Get original post
+  const { data: original } = await supabase.from('posts').select('id, content, user_id').eq('id', postId).single();
+  if (!original) return { success: false, error: 'Post not found' };
+
+  const content = comment?.trim() || `Shared a post`;
+
+  const { error } = await supabase.from('posts').insert({
+    user_id: user.id,
+    content,
+    post_type: 'update',
+    shared_from_id: postId,
+  });
+
+  if (!error) {
+    // Increment shares count
+    await supabase.from('posts').update({ shares_count: (original as any).shares_count + 1 || 1 }).eq('id', postId);
+  }
+
+  revalidatePath('/feed');
+  return { success: !error };
+}
+
+// ─── Vote on Poll ───
+
+export async function votePoll(postId: string, optionIndex: number): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: 'No autenticado' };
+
+  // Check if already voted
+  const { data: existing } = await supabase.from('poll_votes').select('id').eq('post_id', postId).eq('user_id', user.id).single();
+  if (existing) return { success: false, error: 'Ya votaste en esta encuesta' };
+
+  const { error } = await supabase.from('poll_votes').insert({
+    post_id: postId, user_id: user.id, option_index: optionIndex,
+  });
+
+  if (!error) {
+    // Update poll_options vote count in post
+    const { data: post } = await supabase.from('posts').select('poll_options').eq('id', postId).single();
+    if (post?.poll_options && Array.isArray(post.poll_options)) {
+      const options = [...post.poll_options];
+      if (options[optionIndex]) {
+        options[optionIndex] = { ...options[optionIndex], votes: (options[optionIndex].votes || 0) + 1 };
+        await supabase.from('posts').update({ poll_options: options }).eq('id', postId);
+      }
+    }
+  }
+
+  return { success: !error };
+}
+
+// ─── Get Trending Hashtags ───
+
+export async function getTrendingHashtags(limit = 10) {
+  const supabase = await createClient();
+  const { data } = await supabase.from('hashtags').select('tag, post_count').order('post_count', { ascending: false }).limit(limit);
+  return data || [];
 }

@@ -149,3 +149,47 @@ export async function sendMessage(payload: {
     message: { ...(data as unknown as Message), is_own: true },
   };
 }
+
+// ─── Mark messages as read ───
+
+export async function markMessagesAsRead(conversationId: string): Promise<{ success: boolean }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false };
+
+  await supabase
+    .from('messages')
+    .update({ read_at: new Date().toISOString() })
+    .eq('conversation_id', conversationId)
+    .neq('sender_id', user.id)
+    .is('read_at', null);
+
+  return { success: true };
+}
+
+// ─── Get total unread message count ───
+
+export async function getUnreadMessageCount(): Promise<number> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return 0;
+
+  // Get conversations the user is in
+  const { data: conversations } = await supabase
+    .from('conversations')
+    .select('id')
+    .contains('participant_ids', [user.id]);
+
+  if (!conversations || conversations.length === 0) return 0;
+
+  const convIds = conversations.map((c: any) => c.id);
+
+  const { count } = await supabase
+    .from('messages')
+    .select('*', { count: 'exact', head: true })
+    .in('conversation_id', convIds)
+    .neq('sender_id', user.id)
+    .is('read_at', null);
+
+  return count || 0;
+}

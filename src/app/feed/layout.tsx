@@ -39,7 +39,7 @@ export default async function FeedLayout({
     <div className="min-h-screen bg-background">
       <CandidateTopNav
         user={{ id: user.id, email: user.email || undefined }}
-        profile={profile ? { username: profile.username, avatar_url: profile.avatar_url, full_name: profile.full_name } : null}
+        profile={profile ? { username: profile.username, avatar_url: profile.avatar_url || undefined, full_name: profile.full_name } : null}
       />
       {children}
     </div>

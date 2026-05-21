@@ -8,6 +8,14 @@ import AppNavbar from '@/components/ui/AppNavbar';
 export const metadata: Metadata = {
   title: 'Mensajes — Reclutify',
   description: 'Mensajes directos en Reclutify.',
+  openGraph: {
+    title: 'Mensajes | Reclutify',
+    description: 'Envía y recibe mensajes directos con tus conexiones en Reclutify.',
+    url: '/messages',
+    type: 'website',
+  },
+  twitter: { card: 'summary', title: 'Mensajes | Reclutify' },
+  robots: { index: false, follow: true },
 };
 
 export default async function MessagesPage() {

@@ -4,9 +4,6 @@ import { createClient } from '@/utils/supabase/middleware'
 // Rutas que requieren autenticación
 const PROTECTED_PREFIXES = ['/admin', '/onboarding', '/profile/edit', '/feed', '/messages', '/network'];
 
-// Rutas públicas específicas (no requieren autenticación)
-const PUBLIC_PREFIXES = ['/interview', '/practice', '/career-fair', '/pricing', '/api', '/profile', '/privacy', '/terms'];
-
 /**
  * Determina si una ruta es protegida (requiere autenticación)
  */
@@ -14,14 +11,6 @@ function isProtectedRoute(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
-/**
- * Determina si una ruta es pública (no requiere autenticación)
- */
-function isPublicRoute(pathname: string): boolean {
-  if (pathname === '/') return true;
-  if (pathname === '/login') return true;
-  return PUBLIC_PREFIXES.some(prefix => pathname.startsWith(prefix));
-}
 
 export async function middleware(request: NextRequest) {
   // Enforce www.reclutify.com in production
@@ -75,11 +64,17 @@ export async function middleware(request: NextRequest) {
       const onboardingDone = !!profile?.onboarding_completed;
 
       // ─── CASO 2: Autenticado pero NO completó onboarding ───
-      // Solo redirigir si NO está ya en /onboarding
-      if (!onboardingDone && !pathname.startsWith('/onboarding')) {
+      // Solo redirigir si NO está ya en /onboarding y NO en /profile/edit (needed to complete profile)
+      if (!onboardingDone && !pathname.startsWith('/onboarding') && !pathname.startsWith('/profile/edit')) {
         const onboardingUrl = request.nextUrl.clone();
         onboardingUrl.pathname = '/onboarding';
-        onboardingUrl.search = '';
+        // Preserve role param from registration if present
+        const roleParam = request.nextUrl.searchParams.get('role');
+        if (roleParam) {
+          onboardingUrl.searchParams.set('role', roleParam);
+        } else {
+          onboardingUrl.search = '';
+        }
         return NextResponse.redirect(onboardingUrl);
       }
 

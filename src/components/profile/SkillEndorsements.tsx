@@ -20,7 +20,7 @@ export function SkillEndorsements({ userId, skills, isOwnProfile }: Props) {
       const { data } = await supabase.from('endorsements').select('skill, endorser_id').eq('endorsee_id', userId);
       const map: Record<string, { count: number; endorsed: boolean }> = {};
       skills.forEach(s => { map[s] = { count: 0, endorsed: false }; });
-      data?.forEach((e: any) => {
+      data?.forEach((e: { skill: string; endorser_id: string }) => {
         if (!map[e.skill]) map[e.skill] = { count: 0, endorsed: false };
         map[e.skill].count++;
         if (user && e.endorser_id === user.id) map[e.skill].endorsed = true;

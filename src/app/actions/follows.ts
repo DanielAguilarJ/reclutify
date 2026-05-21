@@ -32,7 +32,7 @@ export async function getFollowers(userId: string) {
   const supabase = await createClient();
   const { data } = await supabase.from('follows').select('follower_id, created_at').eq('following_id', userId);
   if (!data || data.length === 0) return { followers: [] };
-  const ids = data.map((f: any) => f.follower_id);
+  const ids = data.map((f: { follower_id: string; created_at: string }) => f.follower_id);
   const { data: profiles } = await supabase.from('profiles').select('user_id, username, full_name, headline, avatar_url').in('user_id', ids);
   return { followers: profiles || [] };
 }
@@ -41,7 +41,7 @@ export async function getFollowing(userId: string) {
   const supabase = await createClient();
   const { data } = await supabase.from('follows').select('following_id, created_at').eq('follower_id', userId);
   if (!data || data.length === 0) return { following: [] };
-  const ids = data.map((f: any) => f.following_id);
+  const ids = data.map((f: { following_id: string; created_at: string }) => f.following_id);
   const { data: profiles } = await supabase.from('profiles').select('user_id, username, full_name, headline, avatar_url').in('user_id', ids);
   return { following: profiles || [] };
 }

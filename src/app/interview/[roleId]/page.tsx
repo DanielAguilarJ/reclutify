@@ -1,7 +1,6 @@
 'use client';
 
-import { use } from 'react';
-import { useEffect } from 'react';
+import { use, useEffect } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import Logo from '@/components/ui/Logo';
 import DetailsForm from '@/components/candidate/DetailsForm';

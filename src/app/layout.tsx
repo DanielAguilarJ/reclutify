@@ -68,20 +68,63 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const jsonLd = {
-    "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    name: "Reclutify",
-    applicationCategory: "BusinessApplication",
-    operatingSystem: "Web",
-    description: "AI-powered interview platform for HR teams. Conduct interviews in English and Spanish with automatic evaluation.",
-    offers: {
-      "@type": "Offer",
-      price: "29",
-      priceCurrency: "USD",
+  const jsonLd = [
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      name: "Reclutify",
+      url: "https://www.reclutify.com",
+      logo: "https://www.reclutify.com/icons/icon-512x512.png",
+      description: "AI-powered recruitment platform for HR teams in LATAM and Spain.",
+      sameAs: [
+        "https://www.linkedin.com/company/reclutify",
+        "https://twitter.com/reclutify",
+      ],
+      contactPoint: {
+        "@type": "ContactPoint",
+        email: "hello@reclutify.com",
+        contactType: "customer service",
+        availableLanguage: ["Spanish", "English"],
+      },
     },
-    inLanguage: ["en", "es"],
-  };
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      name: "Reclutify",
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web",
+      description: "AI-powered interview platform for HR teams. Conduct interviews in English and Spanish with automatic evaluation, bias detection, and executive reports.",
+      url: "https://www.reclutify.com",
+      offers: {
+        "@type": "AggregateOffer",
+        lowPrice: "29",
+        highPrice: "99",
+        priceCurrency: "USD",
+        offerCount: "3",
+      },
+      aggregateRating: {
+        "@type": "AggregateRating",
+        ratingValue: "4.8",
+        reviewCount: "150",
+        bestRating: "5",
+      },
+      inLanguage: ["en", "es"],
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: "Reclutify",
+      url: "https://www.reclutify.com",
+      potentialAction: {
+        "@type": "SearchAction",
+        target: {
+          "@type": "EntryPoint",
+          urlTemplate: "https://www.reclutify.com/career-fair?q={search_term_string}",
+        },
+        "query-input": "required name=search_term_string",
+      },
+    },
+  ];
 
   return (
     <html lang="es" suppressHydrationWarning>

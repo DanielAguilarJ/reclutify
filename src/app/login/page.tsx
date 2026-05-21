@@ -32,7 +32,7 @@ function PasswordStrength({ password }: { password: string }) {
 
   const colors = ['bg-red-500', 'bg-orange-400', 'bg-yellow-400', 'bg-[#D3FB52]'];
   const labels = ['Muy débil', 'Débil', 'Buena', 'Fuerte'];
-  const labelsEn = ['Very weak', 'Weak', 'Good', 'Strong'];
+
 
   if (!password) return null;
 

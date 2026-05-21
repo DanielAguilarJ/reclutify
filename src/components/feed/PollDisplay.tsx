@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import { BarChart3, Check } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
+import { useToast } from '@/components/ui/Toast';
+import { useAppStore } from '@/store/appStore';
 
 interface PollOption { text: string; votes: number; }
 
@@ -9,17 +11,25 @@ export function PollDisplay({ postId, options, endsAt }: { postId: string; optio
   const [pollOptions, setPollOptions] = useState<PollOption[]>(options);
   const [myVote, setMyVote] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const { showToast } = useToast();
+  const language = useAppStore((s) => s.language);
+  const t = (en: string, es: string) => language === 'es' ? es : en;
   const totalVotes = pollOptions.reduce((sum, o) => sum + o.votes, 0);
   const isExpired = endsAt ? new Date(endsAt) < new Date() : false;
   const hasVoted = myVote !== null;
 
   useEffect(() => {
     const check = async () => {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase.from('poll_votes').select('option_index').eq('post_id', postId).eq('user_id', user.id).single();
-      if (data) setMyVote(data.option_index);
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data, error } = await supabase.from('poll_votes').select('option_index').eq('post_id', postId).eq('user_id', user.id).single();
+        if (error && error.code !== 'PGRST116') throw error;
+        if (data) setMyVote(data.option_index);
+      } catch {
+        // Silently fail on initial vote check
+      }
     };
     check();
   }, [postId]);
@@ -27,13 +37,16 @@ export function PollDisplay({ postId, options, endsAt }: { postId: string; optio
   const vote = async (idx: number) => {
     if (hasVoted || isExpired || loading) return;
     setLoading(true);
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setLoading(false); return; }
-    const { error } = await supabase.from('poll_votes').insert({ post_id: postId, user_id: user.id, option_index: idx });
-    if (!error) {
+    try {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setLoading(false); return; }
+      const { error } = await supabase.from('poll_votes').insert({ post_id: postId, user_id: user.id, option_index: idx });
+      if (error) throw error;
       setMyVote(idx);
       setPollOptions(prev => prev.map((o, i) => i === idx ? { ...o, votes: o.votes + 1 } : o));
+    } catch {
+      showToast('error', t('Failed to submit vote', 'Error al enviar el voto'));
     }
     setLoading(false);
   };
@@ -61,8 +74,8 @@ export function PollDisplay({ postId, options, endsAt }: { postId: string; optio
         );
       })}
       <p className="text-xs text-muted flex items-center gap-1.5">
-        <BarChart3 className="h-3 w-3" />{totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
-        {isExpired && <span className="ml-2 text-danger font-medium">Ended</span>}
+        <BarChart3 className="h-3 w-3" />{totalVotes} {totalVotes === 1 ? t('vote', 'voto') : t('votes', 'votos')}
+        {isExpired && <span className="ml-2 text-danger font-medium">{t('Ended', 'Finalizada')}</span>}
       </p>
     </div>
   );

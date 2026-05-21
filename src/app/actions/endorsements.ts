@@ -30,7 +30,7 @@ export async function getEndorsementsForUser(userId: string) {
     .eq('endorsee_id', userId);
   // Group by skill
   const grouped: Record<string, { count: number; endorsers: string[] }> = {};
-  data?.forEach((e: any) => {
+  data?.forEach((e: { skill: string; endorser_id: string; created_at: string }) => {
     if (!grouped[e.skill]) grouped[e.skill] = { count: 0, endorsers: [] };
     grouped[e.skill].count++;
     grouped[e.skill].endorsers.push(e.endorser_id);

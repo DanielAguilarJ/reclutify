@@ -4,7 +4,9 @@ import { useState } from 'react';
 import { pdf, Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
 import type { Profile } from '@/types/profile';
 import { useAppStore } from '@/store/appStore';
+import { useToast } from '@/components/ui/Toast';
 import { Download } from 'lucide-react';
+import type { Language } from '@/store/appStore';
 
 const styles = StyleSheet.create({
   page: { padding: 40, fontFamily: 'Helvetica', fontSize: 10, color: '#1f202c' },
@@ -24,7 +26,25 @@ const styles = StyleSheet.create({
   bio: { fontSize: 10, color: '#464862', lineHeight: 1.6, marginBottom: 16 },
 });
 
-function CVDocument({ profile }: { profile: Profile }) {
+function formatDate(dateStr: string | undefined | null, language: Language): string {
+  if (!dateStr) return '';
+  // Handle YYYY-MM format
+  const parts = dateStr.split('-');
+  if (parts.length >= 2) {
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    if (!isNaN(year) && !isNaN(month) && month >= 1 && month <= 12) {
+      const date = new Date(year, month - 1);
+      return date.toLocaleDateString(language === 'es' ? 'es-ES' : 'en-US', { month: 'short', year: 'numeric' });
+    }
+  }
+  // Fallback: return as-is
+  return dateStr;
+}
+
+function CVDocument({ profile, language }: { profile: Profile; language: Language }) {
+  const t = (en: string, es: string) => language === 'es' ? es : en;
+
   return (
     <Document>
       <Page size="A4" style={styles.page}>
@@ -48,13 +68,13 @@ function CVDocument({ profile }: { profile: Profile }) {
         {/* Experience */}
         {profile.experience?.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Experience</Text>
+            <Text style={styles.sectionTitle}>{t('Experience', 'Experiencia')}</Text>
             {profile.experience.map((exp) => (
               <View key={exp.id} style={{ marginBottom: 10 }}>
                 <Text style={styles.entryTitle}>{exp.title}</Text>
                 <Text style={styles.entrySubtitle}>{exp.company}</Text>
                 <Text style={styles.entryDate}>
-                  {exp.start_date} — {exp.is_current ? 'Present' : exp.end_date || ''}
+                  {formatDate(exp.start_date, language)} — {exp.is_current ? t('Present', 'Presente') : formatDate(exp.end_date, language)}
                 </Text>
                 {exp.description && <Text style={styles.entryDesc}>{exp.description}</Text>}
               </View>
@@ -65,13 +85,13 @@ function CVDocument({ profile }: { profile: Profile }) {
         {/* Education */}
         {profile.education?.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Education</Text>
+            <Text style={styles.sectionTitle}>{t('Education', 'Educación')}</Text>
             {profile.education.map((edu) => (
               <View key={edu.id} style={{ marginBottom: 8 }}>
                 <Text style={styles.entryTitle}>{edu.degree}</Text>
                 <Text style={styles.entrySubtitle}>{edu.institution} — {edu.field}</Text>
                 <Text style={styles.entryDate}>
-                  {edu.start_year} — {edu.end_year || 'Present'}
+                  {edu.start_year} — {edu.end_year || t('Present', 'Presente')}
                 </Text>
               </View>
             ))}
@@ -81,7 +101,7 @@ function CVDocument({ profile }: { profile: Profile }) {
         {/* Skills */}
         {profile.skills?.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Skills</Text>
+            <Text style={styles.sectionTitle}>{t('Skills', 'Habilidades')}</Text>
             <View style={styles.skillsRow}>
               {profile.skills.map((skill, i) => (
                 <Text key={i} style={styles.skillPill}>{skill}</Text>
@@ -93,12 +113,12 @@ function CVDocument({ profile }: { profile: Profile }) {
         {/* Certifications */}
         {profile.certifications?.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Certifications</Text>
+            <Text style={styles.sectionTitle}>{t('Certifications', 'Certificaciones')}</Text>
             {profile.certifications.map((cert) => (
               <View key={cert.id} style={{ marginBottom: 6 }}>
                 <Text style={styles.entryTitle}>{cert.name}</Text>
                 <Text style={styles.entrySubtitle}>{cert.issuer}</Text>
-                {cert.issue_date && <Text style={styles.entryDate}>{cert.issue_date}</Text>}
+                {cert.issue_date && <Text style={styles.entryDate}>{formatDate(cert.issue_date, language)}</Text>}
               </View>
             ))}
           </View>
@@ -107,7 +127,7 @@ function CVDocument({ profile }: { profile: Profile }) {
         {/* Languages */}
         {profile.languages?.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Languages</Text>
+            <Text style={styles.sectionTitle}>{t('Languages', 'Idiomas')}</Text>
             {profile.languages.map((lang) => (
               <View key={lang.id} style={styles.langRow}>
                 <Text style={{ fontSize: 10 }}>{lang.language}</Text>
@@ -128,11 +148,13 @@ interface ProfileCVExportProps {
 export default function ProfileCVExport({ profile }: ProfileCVExportProps) {
   const [generating, setGenerating] = useState(false);
   const language = useAppStore((s) => s.language);
+  const { showToast } = useToast();
+  const t = (en: string, es: string) => language === 'es' ? es : en;
 
   const handleDownload = async () => {
     setGenerating(true);
     try {
-      const blob = await pdf(<CVDocument profile={profile} />).toBlob();
+      const blob = await pdf(<CVDocument profile={profile} language={language} />).toBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -143,6 +165,7 @@ export default function ProfileCVExport({ profile }: ProfileCVExportProps) {
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error('PDF generation failed:', error);
+      showToast('error', t('Failed to generate PDF', 'Error al generar el PDF'));
     }
     setGenerating(false);
   };
@@ -158,8 +181,8 @@ export default function ProfileCVExport({ profile }: ProfileCVExportProps) {
     >
       <Download className="w-4 h-4" />
       {generating
-        ? (language === 'es' ? 'Generando...' : 'Generating...')
-        : (language === 'es' ? 'Descargar CV' : 'Download CV')}
+        ? t('Generating...', 'Generando...')
+        : t('Download CV', 'Descargar CV')}
     </button>
   );
 }

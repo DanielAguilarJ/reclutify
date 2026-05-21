@@ -9,6 +9,14 @@ import AppNavbar from '@/components/ui/AppNavbar';
 export const metadata: Metadata = {
   title: 'Mi Red — Reclutify',
   description: 'Gestiona tus conexiones profesionales en Reclutify.',
+  openGraph: {
+    title: 'Mi Red | Reclutify',
+    description: 'Gestiona y amplía tu red de conexiones profesionales en Reclutify.',
+    url: '/network',
+    type: 'website',
+  },
+  twitter: { card: 'summary', title: 'Mi Red | Reclutify' },
+  robots: { index: false, follow: true },
 };
 
 export default async function NetworkPage() {
@@ -46,7 +54,7 @@ export default async function NetworkPage() {
                     {req.profile.avatar_url ? (
                       <img src={req.profile.avatar_url} alt="" className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-xl font-bold text-muted bg-gradient-to-br from-blue-10 to-purple-10">
+                      <div className="w-full h-full flex items-center justify-center text-xl font-bold text-white bg-primary">
                         {req.profile.full_name.charAt(0)}
                       </div>
                     )}
@@ -97,7 +105,7 @@ export default async function NetworkPage() {
                       {conn.profile.avatar_url ? (
                         <img src={conn.profile.avatar_url} alt="" className="w-full h-full object-cover" />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center text-lg font-bold text-muted bg-gradient-to-br from-blue-10 to-purple-10">
+                        <div className="w-full h-full flex items-center justify-center text-lg font-bold text-white bg-primary">
                           {conn.profile.full_name.charAt(0)}
                         </div>
                       )}

@@ -15,30 +15,36 @@ interface AppState {
   toggleTheme: () => void;
 }
 
+function applyThemeToDOM(theme: Theme) {
+  if (typeof window !== 'undefined') {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      language: 'en', // default language
+      language: 'es', // default language
       planTier: 'starter', // default tier
       theme: 'light', // default theme
       setLanguage: (language) => set({ language }),
       setPlanTier: (planTier) => set({ planTier }),
       setTheme: (theme) => {
-        document.documentElement.setAttribute('data-theme', theme);
+        applyThemeToDOM(theme);
         set({ theme });
       },
       toggleTheme: () => {
         const newTheme = get().theme === 'light' ? 'dark' : 'light';
-        document.documentElement.setAttribute('data-theme', newTheme);
+        applyThemeToDOM(newTheme);
         set({ theme: newTheme });
       },
     }),
     {
       name: 'reclutify-app-store',
       onRehydrateStorage: () => (state) => {
-        // Apply theme on hydration
+        // Apply theme on hydration (only client-side)
         if (state?.theme) {
-          document.documentElement.setAttribute('data-theme', state.theme);
+          applyThemeToDOM(state.theme);
         }
       },
     }

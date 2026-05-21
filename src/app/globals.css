@@ -188,3 +188,27 @@
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Landing page — font-serif and mask utilities */
+.font-serif {
+  font-family: var(--font-instrument-serif), 'Iowan Old Style', 'Apple Garamond',
+    'Palatino Linotype', 'Times New Roman', Georgia, serif;
+  font-feature-settings: 'liga' 1, 'kern' 1;
+}
+
+.mask-fade-x {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 6%,
+    black 94%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 6%,
+    black 94%,
+    transparent
+  );
+}

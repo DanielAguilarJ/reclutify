@@ -376,10 +376,10 @@ export default function PricingPage() {
                         </div>
                       ) : (
                         <div className="w-5 h-5 rounded-full bg-white/5 flex items-center justify-center shrink-0">
-                          <X className="w-3 h-3 text-neutral-600" />
+                          <X className="w-3 h-3 text-neutral-400" />
                         </div>
                       )}
-                      <span className={`text-sm ${f.included ? 'text-neutral-300' : 'text-neutral-600'}`}>
+                      <span className={`text-sm ${f.included ? 'text-neutral-300' : 'text-neutral-400'}`}>
                         {f.text}
                       </span>
                     </div>
@@ -439,12 +439,11 @@ export default function PricingPage() {
 
       {/* Footer */}
       <footer className="bg-[#0b0c10] border-t border-white/5 py-10">
-        <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between text-xs text-neutral-500">
-          <p>© {new Date().getFullYear()} WorldBrain EdTech. {language === 'es' ? 'Todos los derechos reservados.' : 'All rights reserved.'}</p>
+        <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between text-xs text-neutral-400">
+          <p>&copy; {new Date().getFullYear()} Reclutify. {language === 'es' ? 'Todos los derechos reservados.' : 'All rights reserved.'}</p>
           <div className="flex items-center gap-6 mt-4 md:mt-0">
-            <a href="#" className="hover:text-white transition-colors">Twitter</a>
-            <a href="#" className="hover:text-white transition-colors">LinkedIn</a>
-            <a href="#" className="hover:text-white transition-colors">GitHub</a>
+            <Link href="/terms" className="hover:text-white transition-colors">{language === 'es' ? 'T\u00e9rminos' : 'Terms'}</Link>
+            <Link href="/privacy" className="hover:text-white transition-colors">{language === 'es' ? 'Privacidad' : 'Privacy'}</Link>
           </div>
         </div>
       </footer>

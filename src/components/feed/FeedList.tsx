@@ -4,6 +4,8 @@ import { useEffect, useCallback, useRef } from 'react';
 import { useFeedStore } from '@/store/feedStore';
 import { getFeedPosts } from '@/app/actions/feed';
 import { PostCard } from './PostCard';
+import { useToast } from '@/components/ui/Toast';
+import { useAppStore } from '@/store/appStore';
 import type { PostAuthor } from '@/types/feed';
 
 interface FeedListProps {
@@ -12,6 +14,9 @@ interface FeedListProps {
 
 export function FeedList({ currentUser }: FeedListProps) {
   const { posts, hasMore, nextCursor, loading, setPosts, appendPosts, setLoading } = useFeedStore();
+  const { showToast } = useToast();
+  const language = useAppStore((s) => s.language);
+  const t = (en: string, es: string) => language === 'es' ? es : en;
   const observerRef = useRef<HTMLDivElement>(null);
   const initialLoad = useRef(false);
 
@@ -20,18 +25,27 @@ export function FeedList({ currentUser }: FeedListProps) {
     if (initialLoad.current) return;
     initialLoad.current = true;
     setLoading(true);
-    getFeedPosts(null).then((result) => {
-      setPosts(result.posts, result.hasMore, result.nextCursor);
-      setLoading(false);
-    });
+    getFeedPosts(null)
+      .then((result) => {
+        setPosts(result.posts, result.hasMore, result.nextCursor);
+        setLoading(false);
+      })
+      .catch(() => {
+        showToast('error', t('Failed to load feed', 'Error al cargar el feed'));
+        setLoading(false);
+      });
   }, [setPosts, setLoading]);
 
   // Load more
   const loadMore = useCallback(async () => {
     if (loading || !hasMore || !nextCursor) return;
     setLoading(true);
-    const result = await getFeedPosts(nextCursor);
-    appendPosts(result.posts, result.hasMore, result.nextCursor);
+    try {
+      const result = await getFeedPosts(nextCursor);
+      appendPosts(result.posts, result.hasMore, result.nextCursor);
+    } catch {
+      showToast('error', t('Failed to load more posts', 'Error al cargar más publicaciones'));
+    }
     setLoading(false);
   }, [loading, hasMore, nextCursor, appendPosts, setLoading]);
 
@@ -80,9 +94,14 @@ export function FeedList({ currentUser }: FeedListProps) {
     return (
       <div className="bg-card rounded-2xl p-10 shadow-sm border border-border text-center">
         <div className="text-4xl mb-3">📝</div>
-        <h3 className="text-lg font-bold text-foreground mb-1">Tu feed está vacío</h3>
+        <h3 className="text-lg font-bold text-foreground mb-1">
+          {t('Your feed is empty', 'Tu feed está vacío')}
+        </h3>
         <p className="text-sm text-muted">
-          ¡Sé el primero en publicar algo! Comparte una actualización profesional.
+          {t(
+            'Be the first to post something! Share a professional update.',
+            '¡Sé el primero en publicar algo! Comparte una actualización profesional.'
+          )}
         </p>
       </div>
     );
@@ -105,7 +124,7 @@ export function FeedList({ currentUser }: FeedListProps) {
 
       {!hasMore && posts.length > 0 && (
         <p className="text-center text-sm text-muted/70 py-4">
-          Has visto todas las publicaciones
+          {t('You have seen all posts', 'Has visto todas las publicaciones')}
         </p>
       )}
     </div>

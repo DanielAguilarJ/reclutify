@@ -7,6 +7,14 @@ import AppNavbar from '@/components/ui/AppNavbar';
 export const metadata: Metadata = {
   title: 'Feed — Reclutify',
   description: 'Tu feed de contenido profesional en Reclutify.',
+  openGraph: {
+    title: 'Feed | Reclutify',
+    description: 'Descubre contenido profesional relevante en tu feed de Reclutify.',
+    url: '/feed',
+    type: 'website',
+  },
+  twitter: { card: 'summary', title: 'Feed | Reclutify' },
+  robots: { index: false, follow: true },
 };
 
 export default async function FeedLayout({

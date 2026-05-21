@@ -46,9 +46,9 @@ export default async function ProfileEditPage() {
 
       <main className="max-w-4xl mx-auto px-4 py-8">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-neutral-80">Editar perfil</h1>
-          <p className="text-neutral-40 mt-1">
-            Tu perfil público en <span className="font-medium text-neutral-60">reclutify.com/profile/{profile.username}</span>
+          <h1 className="text-2xl font-bold text-foreground">Editar perfil</h1>
+          <p className="text-muted mt-1">
+            Tu perfil p\u00fablico en <span className="font-medium text-foreground/80">reclutify.com/profile/{profile.username}</span>
           </p>
         </div>
 

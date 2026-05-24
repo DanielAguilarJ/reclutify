@@ -308,3 +308,130 @@ export async function createOrganization(formData: {
 
   return { success: true, redirectTo: '/admin' };
 }
+
+// ─── COACH ONBOARDING ───
+
+/**
+ * Server Action: Crea una organización para un Coach y vincula al usuario.
+ *
+ * Similar al employer onboarding pero con user_type = 'coach'.
+ * Los coaches gestionan cursos/productos y brindan informes a clientes.
+ */
+export async function createCoachOrganization(formData: {
+  name: string;
+  size: string;
+  industry: string;
+}): Promise<OnboardingResult> {
+  const supabase = await createClient();
+
+  // ─── 1. Obtener usuario autenticado ───
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return {
+      success: false,
+      error: 'No se pudo verificar tu sesión. Por favor, inicia sesión nuevamente.',
+    };
+  }
+
+  // ─── 2. Verificar que el usuario no tenga ya una organización ───
+  const { data: existingProfile } = await supabase
+    .from('user_profiles')
+    .select('org_id')
+    .eq('user_id', user.id)
+    .single();
+
+  if (existingProfile?.org_id) {
+    redirect('/coach');
+  }
+
+  // ─── 3. Validar datos del formulario ───
+  const parsed = employerSchema.safeParse(formData);
+  if (!parsed.success) {
+    const firstError = parsed.error.issues[0]?.message || 'Datos inválidos';
+    return { success: false, error: firstError };
+  }
+
+  const trimmedName = parsed.data.name.trim();
+
+  // ─── 4. Generar slug único ───
+  let slug = generateSlug(trimmedName);
+  if (!slug) {
+    slug = `org-${randomSuffix()}`;
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const candidateSlug = attempt === 0 ? slug : `${slug}-${randomSuffix()}`;
+    const { data: existing } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('slug', candidateSlug)
+      .single();
+
+    if (!existing) {
+      slug = candidateSlug;
+      break;
+    }
+
+    if (attempt === 2) {
+      slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+    }
+  }
+
+  // ─── 5. Crear la organización ───
+  const orgId = crypto.randomUUID();
+
+  const { error: orgError } = await supabase
+    .from('organizations')
+    .insert([{
+      id: orgId,
+      name: trimmedName,
+      slug,
+    }]);
+
+  if (orgError) {
+    return {
+      success: false,
+      error: `Error al crear la organización: ${orgError?.message || 'Error desconocido'}`,
+    };
+  }
+
+  // ─── 6. Crear/actualizar perfil de usuario (tipo coach) ───
+  const fullName = user.user_metadata?.full_name || user.email?.split('@')[0] || 'Coach';
+
+  const { error: profileError } = await supabase
+    .from('user_profiles')
+    .upsert([{
+      user_id: user.id,
+      org_id: orgId,
+      full_name: fullName,
+      role: 'owner',
+      user_type: 'coach',
+      onboarding_completed: true,
+    }], { onConflict: 'user_id' });
+
+  if (profileError) {
+    await supabase.from('organizations').delete().eq('id', orgId);
+    return {
+      success: false,
+      error: `Error al crear tu perfil: ${profileError.message}. La organización fue revertida.`,
+    };
+  }
+
+  // ─── 7. Crear membresía en org_members ───
+  try {
+    await supabase
+      .from('org_members')
+      .insert([{
+        user_id: user.id,
+        org_id: orgId,
+        role: 'owner',
+      }]);
+  } catch {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[Onboarding] org_members insert failed — skipping');
+    }
+  }
+
+  return { success: true, redirectTo: '/coach' };
+}

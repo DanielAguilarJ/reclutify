@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { createOrganization, setupCandidateProfile } from '@/app/actions/onboarding';
+import { createOrganization, setupCandidateProfile, createCoachOrganization } from '@/app/actions/onboarding';
 import { createClient } from '@/utils/supabase/client';
 import Logo from '@/components/ui/Logo';
 import {
@@ -18,9 +18,10 @@ import {
   ToggleRight,
   AtSign,
   Loader2,
+  GraduationCap,
 } from 'lucide-react';
 
-type OnboardingRole = 'candidate' | 'employer' | null;
+type OnboardingRole = 'candidate' | 'employer' | 'coach' | null;
 
 /**
  * Generates a URL-friendly username from a full name.
@@ -41,7 +42,7 @@ function OnboardingContent() {
   const roleParam = searchParams.get('role') as OnboardingRole;
 
   const [selectedRole, setSelectedRole] = useState<OnboardingRole>(
-    roleParam === 'candidate' || roleParam === 'employer' ? roleParam : null
+    roleParam === 'candidate' || roleParam === 'employer' || roleParam === 'coach' ? roleParam : null
   );
 
   // Employer form state
@@ -157,6 +158,39 @@ function OnboardingContent() {
     }
   };
 
+  // Coach form state
+  const [coachData, setCoachData] = useState({
+    name: '',
+    size: '1-10',
+    industry: 'Education',
+  });
+
+  const handleCoachSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await createCoachOrganization({
+        name: coachData.name,
+        size: coachData.size,
+        industry: coachData.industry,
+      });
+
+      if (!result.success) {
+        setError(result.error || 'Error desconocido al crear la organización.');
+        return;
+      }
+
+      router.push(result.redirectTo || '/coach');
+      router.refresh();
+    } catch {
+      setError('Ocurrió un error inesperado. Por favor, intenta de nuevo.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ─── STEP 0: ROLE SELECTOR ───
   if (!selectedRole) {
     return (
@@ -178,7 +212,7 @@ function OnboardingContent() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {/* Candidate Card */}
             <button
               onClick={() => {
@@ -212,9 +246,29 @@ function OnboardingContent() {
               </div>
               <h2 className="text-xl font-bold text-foreground mb-2">Soy empleador</h2>
               <p className="text-sm text-muted leading-relaxed">
-                Publica vacantes y evalúa candidatos con inteligencia artificial
+                Publica vacantes y evalua candidatos con inteligencia artificial
               </p>
               <div className="mt-5 flex items-center gap-2 text-primary text-sm font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+                Comenzar <ArrowRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            {/* Coach Card */}
+            <button
+              onClick={() => {
+                setSelectedRole('coach');
+                router.replace('/onboarding?role=coach');
+              }}
+              className="group bg-card border border-border/50 rounded-3xl p-8 shadow-xl shadow-black/5 hover:border-[#D3FB52]/40 hover:shadow-[#D3FB52]/10 transition-all text-left cursor-pointer"
+            >
+              <div className="w-14 h-14 bg-[#D3FB52]/10 rounded-2xl flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+                <GraduationCap className="h-7 w-7 text-[#D3FB52]" />
+              </div>
+              <h2 className="text-xl font-bold text-foreground mb-2">Soy Coach</h2>
+              <p className="text-sm text-muted leading-relaxed">
+                Crea cursos y deja que la IA informe a tus clientes de forma interactiva
+              </p>
+              <div className="mt-5 flex items-center gap-2 text-[#D3FB52] text-sm font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
                 Comenzar <ArrowRight className="w-4 h-4" />
               </div>
             </button>
@@ -404,6 +458,7 @@ function OnboardingContent() {
   }
 
   // ─── STEP 1: EMPLOYER FORM (existing form preserved) ───
+  if (selectedRole === 'employer') {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative overflow-hidden">
       <div className="absolute top-0 right-0 w-[50vh] h-[50vh] bg-primary/20 blur-[100px] rounded-full translate-x-1/2 -translate-y-1/2" />
@@ -421,7 +476,7 @@ function OnboardingContent() {
             </div>
             <h1 className="text-2xl font-bold text-foreground">Configura tu espacio</h1>
             <p className="text-sm text-muted mt-2">
-              Crea tu organización para empezar a evaluar candidatos de forma inteligente.
+              Crea tu organizacion para empezar a evaluar candidatos de forma inteligente.
             </p>
           </div>
 
@@ -457,7 +512,7 @@ function OnboardingContent() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
-                  <Users className="h-3 w-3" /> Tamaño
+                  <Users className="h-3 w-3" /> Tamano
                 </label>
                 <select
                   value={employerData.size}
@@ -482,7 +537,7 @@ function OnboardingContent() {
                   }
                   className="w-full px-4 py-3 rounded-xl border border-border bg-background outline-none text-sm focus:ring-2 focus:border-primary opacity-90"
                 >
-                  <option value="Technology">Tecnología</option>
+                  <option value="Technology">Tecnologia</option>
                   <option value="Finance">Finanzas</option>
                   <option value="Retail">Retail</option>
                   <option value="Healthcare">Salud</option>
@@ -517,7 +572,129 @@ function OnboardingContent() {
         </div>
 
         <p className="text-center text-xs text-muted mt-6">
-          Al crear el workspace, aceptas nuestros Términos de Servicio.
+          Al crear el workspace, aceptas nuestros Terminos de Servicio.
+        </p>
+      </div>
+    </div>
+  );
+  }
+
+  // ─── STEP 1: COACH FORM ───
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-4 relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-[50vh] h-[50vh] bg-[#D3FB52]/20 blur-[100px] rounded-full translate-x-1/2 -translate-y-1/2" />
+      <div className="absolute bottom-0 left-0 w-[50vh] h-[50vh] bg-[#3b4cca]/20 blur-[100px] rounded-full -translate-x-1/2 translate-y-1/2" />
+
+      <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700">
+        <div className="mb-8 flex justify-center">
+          <Logo size="large" />
+        </div>
+
+        <div className="bg-card border border-border/50 rounded-3xl p-8 shadow-xl shadow-black/5">
+          <div className="mb-6">
+            <div className="w-12 h-12 bg-[#D3FB52]/10 rounded-2xl flex items-center justify-center mb-4">
+              <GraduationCap className="h-6 w-6 text-[#D3FB52]" />
+            </div>
+            <h1 className="text-2xl font-bold text-foreground">Configura tu espacio de Coach</h1>
+            <p className="text-sm text-muted mt-2">
+              Crea tu organizacion para empezar a dar informes de cursos y productos con IA.
+            </p>
+          </div>
+
+          {/* Error display */}
+          {error && (
+            <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <p className="text-sm text-red-500">{error}</p>
+            </div>
+          )}
+
+          <form onSubmit={handleCoachSubmit} className="space-y-5">
+            <div>
+              <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-2">
+                Nombre de tu Organizacion / Escuela
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="Ej. Academia Brain Power"
+                  value={coachData.name}
+                  onChange={(e) => {
+                    setCoachData({ ...coachData, name: e.target.value });
+                    if (error) setError(null);
+                  }}
+                  className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:ring-2 focus:ring-[#D3FB52]/20 focus:border-[#D3FB52] outline-none transition-all placeholder:text-muted/50 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
+                  <Users className="h-3 w-3" /> Tamano
+                </label>
+                <select
+                  value={coachData.size}
+                  onChange={(e) => setCoachData({ ...coachData, size: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-border bg-background outline-none text-sm focus:ring-2 focus:border-[#D3FB52] opacity-90"
+                >
+                  <option value="1-10">1 - 10 personas</option>
+                  <option value="11-50">11 - 50 personas</option>
+                  <option value="51-200">51 - 200 personas</option>
+                  <option value="200+">200+ personas</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
+                  <Briefcase className="h-3 w-3" /> Sector
+                </label>
+                <select
+                  value={coachData.industry}
+                  onChange={(e) =>
+                    setCoachData({ ...coachData, industry: e.target.value })
+                  }
+                  className="w-full px-4 py-3 rounded-xl border border-border bg-background outline-none text-sm focus:ring-2 focus:border-[#D3FB52] opacity-90"
+                >
+                  <option value="Education">Educacion</option>
+                  <option value="Coaching">Coaching / Mentorias</option>
+                  <option value="Training">Capacitacion</option>
+                  <option value="Wellness">Bienestar / Salud</option>
+                  <option value="Technology">Tecnologia</option>
+                  <option value="Other">Otro</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading || !coachData.name.trim()}
+              className="w-full flex items-center justify-center gap-2 group bg-[#D3FB52] hover:bg-[#c4ec43] text-black font-medium py-3.5 rounded-xl transition-all shadow-lg shadow-[#D3FB52]/20 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+            >
+              <span className="text-sm">{loading ? 'Creando...' : 'Crear Workspace de Coach'}</span>
+              {!loading && (
+                <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+              )}
+            </button>
+          </form>
+
+          {/* Back to role selector */}
+          <button
+            onClick={() => {
+              setSelectedRole(null);
+              setError(null);
+              router.replace('/onboarding');
+            }}
+            className="w-full text-center text-xs text-muted mt-4 hover:text-foreground transition-colors cursor-pointer"
+          >
+            ← Cambiar tipo de cuenta
+          </button>
+        </div>
+
+        <p className="text-center text-xs text-muted mt-6">
+          Al crear el workspace, aceptas nuestros Terminos de Servicio.
         </p>
       </div>
     </div>

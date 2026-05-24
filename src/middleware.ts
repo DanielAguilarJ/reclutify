@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/utils/supabase/middleware'
 
 // Rutas que requieren autenticación
-const PROTECTED_PREFIXES = ['/admin', '/onboarding', '/profile/edit', '/feed', '/messages', '/network'];
+const PROTECTED_PREFIXES = ['/admin', '/coach', '/onboarding', '/profile/edit', '/feed', '/messages', '/network'];
 
 /**
  * Determina si una ruta es protegida (requiere autenticación)
@@ -52,7 +52,8 @@ export async function middleware(request: NextRequest) {
       pathname.startsWith('/messages') ||
       pathname.startsWith('/network');
 
-    if (needsProfileCheck) {
+    const needsCoachCheck = pathname.startsWith('/coach');
+    if (needsProfileCheck || needsCoachCheck) {
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('org_id, user_type, onboarding_completed')
@@ -81,7 +82,7 @@ export async function middleware(request: NextRequest) {
       // ─── CASO 3: Autenticado + /login → dashboard por rol ───
       if (pathname === '/login') {
         const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = userType === 'candidate' ? '/feed' : (hasOrg ? '/admin' : '/onboarding');
+        redirectUrl.pathname = userType === 'candidate' ? '/feed' : userType === 'coach' ? '/coach' : (hasOrg ? '/admin' : '/onboarding');
         redirectUrl.search = '';
         return NextResponse.redirect(redirectUrl);
       }
@@ -89,29 +90,45 @@ export async function middleware(request: NextRequest) {
       // ─── CASO 4: Autenticado + / (root) → dashboard por rol ───
       if (pathname === '/') {
         const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = userType === 'candidate' ? '/feed' : (hasOrg ? '/admin' : '/onboarding');
+        redirectUrl.pathname = userType === 'candidate' ? '/feed' : userType === 'coach' ? '/coach' : (hasOrg ? '/admin' : '/onboarding');
         redirectUrl.search = '';
         return NextResponse.redirect(redirectUrl);
       }
 
-      // ─── CASO 5: Candidato intentando acceder a /admin → /feed ───
-      if (userType === 'candidate' && pathname.startsWith('/admin')) {
+      // ─── CASO 5: Candidato intentando acceder a /admin o /coach → /feed ───
+      if (userType === 'candidate' && (pathname.startsWith('/admin') || pathname.startsWith('/coach'))) {
         const feedUrl = request.nextUrl.clone();
         feedUrl.pathname = '/feed';
         feedUrl.search = '';
         return NextResponse.redirect(feedUrl);
       }
 
-      // ─── CASO 6: Employer intentando acceder a /feed → /admin ───
-      if (userType === 'employer' && pathname.startsWith('/feed')) {
+      // ─── CASO 5b: Coach intentando acceder a /admin → /coach ───
+      if (userType === 'coach' && pathname.startsWith('/admin')) {
+        const coachUrl = request.nextUrl.clone();
+        coachUrl.pathname = '/coach';
+        coachUrl.search = '';
+        return NextResponse.redirect(coachUrl);
+      }
+
+      // ─── CASO 5c: Coach intentando acceder a /feed → /coach ───
+      if (userType === 'coach' && pathname.startsWith('/feed')) {
+        const coachUrl = request.nextUrl.clone();
+        coachUrl.pathname = '/coach';
+        coachUrl.search = '';
+        return NextResponse.redirect(coachUrl);
+      }
+
+      // ─── CASO 6: Employer intentando acceder a /feed o /coach → /admin ───
+      if (userType === 'employer' && (pathname.startsWith('/feed') || pathname.startsWith('/coach'))) {
         const adminUrl = request.nextUrl.clone();
         adminUrl.pathname = '/admin';
         adminUrl.search = '';
         return NextResponse.redirect(adminUrl);
       }
 
-      // ─── CASO 7: Autenticado + /admin/* pero SIN org → /onboarding ───
-      if (pathname.startsWith('/admin') && !hasOrg) {
+      // ─── CASO 7: Autenticado + /admin/* o /coach/* pero SIN org → /onboarding ───
+      if ((pathname.startsWith('/admin') || pathname.startsWith('/coach')) && !hasOrg) {
         const onboardingUrl = request.nextUrl.clone();
         onboardingUrl.pathname = '/onboarding';
         onboardingUrl.search = '';
@@ -121,7 +138,7 @@ export async function middleware(request: NextRequest) {
       // ─── CASO 8: Autenticado + /onboarding pero YA completó → dashboard ───
       if (pathname.startsWith('/onboarding') && onboardingDone) {
         const dashUrl = request.nextUrl.clone();
-        dashUrl.pathname = userType === 'candidate' ? '/feed' : '/admin';
+        dashUrl.pathname = userType === 'candidate' ? '/feed' : userType === 'coach' ? '/coach' : '/admin';
         dashUrl.search = '';
         return NextResponse.redirect(dashUrl);
       }

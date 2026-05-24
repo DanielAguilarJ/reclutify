@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useState, useTransition, useEffect } from 'react';
-import { PlusCircle, BookOpen, Users, Bell, PieChart, ChevronDown, Building2, Check, Loader2, Radio } from 'lucide-react';
+import { PlusCircle, BookOpen, Users, Bell, PieChart, ChevronDown, Building2, Check, Loader2, Radio, ArrowLeft } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { useCoachStore } from '@/store/coachStore';
 import { switchOrganization } from '@/app/actions/organizations';
@@ -110,6 +110,15 @@ export default function CoachSidebarNav({ organizations, activeOrgId }: CoachSid
           {language === 'es' ? 'Informes' : 'Reports'}
         </span>
       </div>
+
+      {/* Back to Recruitment */}
+      <Link
+        href="/admin"
+        className="flex items-center gap-3 px-3 py-2.5 mb-3 rounded-xl text-sm font-medium text-muted hover:text-foreground hover:bg-background transition-all border border-border/30 hover:border-border/50"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        {language === 'es' ? 'Volver a Reclutamiento' : 'Back to Recruitment'}
+      </Link>
 
       {navItems.map((item) => {
         const isActive = pathname === item.href;

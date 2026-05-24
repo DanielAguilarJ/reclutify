@@ -119,8 +119,9 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(coachUrl);
       }
 
-      // ─── CASO 6: Employer intentando acceder a /feed o /coach → /admin ───
-      if (userType === 'employer' && (pathname.startsWith('/feed') || pathname.startsWith('/coach'))) {
+      // ─── CASO 6: Employer intentando acceder a /feed → /admin ───
+      // Nota: employers PUEDEN acceder a /coach (módulo informes)
+      if (userType === 'employer' && pathname.startsWith('/feed')) {
         const adminUrl = request.nextUrl.clone();
         adminUrl.pathname = '/admin';
         adminUrl.search = '';

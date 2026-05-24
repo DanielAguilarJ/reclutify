@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
-import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert, Loader2 } from 'lucide-react';
+import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert, Loader2, GraduationCap } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { switchOrganization } from '@/app/actions/organizations';
 
@@ -51,6 +51,7 @@ export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSid
     { label: language === 'es' ? 'Equidad (Sesgo)' : 'AI Fairness', href: '/admin/analytics/bias', icon: ShieldAlert },
     { label: language === 'es' ? 'Telemetría AI' : 'AI Telemetry', href: '/admin/telemetry', icon: PieChart },
     { label: 'Tickets', href: '/admin/tickets', icon: Ticket },
+    { label: language === 'es' ? 'Informes (Cursos)' : 'Info Sessions', href: '/coach', icon: GraduationCap },
   ];
 
   return (

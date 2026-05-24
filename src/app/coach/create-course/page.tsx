@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sparkles, X, Plus, Loader2, GraduationCap, BookOpen,
   ArrowUp, ArrowDown, DollarSign, Users, Clock, Star,
-  Target, MessageSquare, Shield, Zap,
+  Target, MessageSquare, Shield, Zap, Upload, FileText, CheckCircle2,
 } from 'lucide-react';
 import { useCoachStore } from '@/store/coachStore';
 import { useAppStore } from '@/store/appStore';
@@ -80,6 +80,109 @@ export default function CreateCoursePage() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [success, setSuccess] = useState(false);
+
+  // ─── File Upload states ───
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSummary, setUploadSummary] = useState<Record<string, number> | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── File Upload Handler ───
+  const handleFileUpload = useCallback(async (file: File) => {
+    setUploadLoading(true);
+    setUploadError(null);
+    setUploadSuccess(false);
+    setUploadSummary(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/parse-course-document', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        setUploadError(result.error || 'Error al procesar el documento');
+        return;
+      }
+
+      const data = result.data;
+
+      // Auto-fill all form fields with extracted data
+      if (data.name) setName(data.name);
+      if (data.description) setDescription(data.description);
+      if (data.targetAudience) setTargetAudience(data.targetAudience);
+      if (data.durationInfo) setDurationInfo(data.durationInfo);
+      if (data.modality) setModality(data.modality);
+      if (data.sessionDuration) setSessionDuration(data.sessionDuration);
+      if (data.objectives?.length) setObjectives(data.objectives);
+      if (data.benefits?.length) setBenefits(data.benefits);
+      if (data.testimonials?.length) setTestimonials(data.testimonials);
+      if (data.urgencyHooks?.length) setUrgencyHooks(data.urgencyHooks);
+
+      // Modules
+      if (data.modules?.length) {
+        setModules(data.modules.map((m: { title: string; description: string }) => ({
+          id: crypto.randomUUID(),
+          title: m.title,
+          description: m.description || '',
+        })));
+      }
+
+      // Plans
+      if (data.plans?.length) {
+        setPlans(data.plans.map((p: { name: string; price: number; currency: string; features: string[]; isRecommended: boolean }) => ({
+          id: crypto.randomUUID(),
+          name: p.name,
+          price: p.price,
+          currency: p.currency || 'MXN',
+          features: p.features || [],
+          isRecommended: p.isRecommended || false,
+        })));
+      }
+
+      // Objection responses
+      if (data.objectionResponses && Object.keys(data.objectionResponses).length > 0) {
+        setObjections(
+          Object.entries(data.objectionResponses).map(([trigger, response]) => ({
+            trigger,
+            response: response as string,
+          }))
+        );
+      }
+
+      setUploadSuccess(true);
+      setUploadSummary(result.summary);
+    } catch (err) {
+      setUploadError('Error de conexión. Intenta de nuevo.');
+      console.error('[upload]', err);
+    } finally {
+      setUploadLoading(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileUpload(file);
+  }, [handleFileUpload]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
 
   // ─── Helpers: Arrays ───
   const addToArray = (arr: string[], setter: (v: string[]) => void, value: string, inputSetter: (v: string) => void) => {
@@ -286,6 +389,101 @@ export default function CreateCoursePage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* ─── Main Form ─── */}
         <div className="lg:col-span-2 space-y-6">
+
+          {/* ─── Document Upload Card ─── */}
+          <div className="bg-card rounded-2xl shadow-sm border border-border/50 p-6">
+            <h2 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
+              <FileText className="h-4 w-4 text-[#D3FB52]" />
+              {language === 'es' ? 'Rellena con IA desde un documento' : 'Auto-fill with AI from a document'}
+            </h2>
+            <p className="text-xs text-muted mb-4">
+              {language === 'es'
+                ? 'Sube un PDF, Word o TXT con la informacion del curso y la IA extraera todos los datos automaticamente.'
+                : 'Upload a PDF, Word or TXT with course information and AI will extract all data automatically.'}
+            </p>
+
+            {/* Dropzone */}
+            <div
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onClick={() => !uploadLoading && fileInputRef.current?.click()}
+              className={`relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+                isDragging
+                  ? 'border-[#D3FB52] bg-[#D3FB52]/5 scale-[1.01]'
+                  : uploadLoading
+                  ? 'border-border/50 bg-background/50 cursor-wait'
+                  : 'border-border/50 hover:border-[#D3FB52]/50 hover:bg-[#D3FB52]/5'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileUpload(file);
+                  e.target.value = '';
+                }}
+                disabled={uploadLoading}
+              />
+
+              {uploadLoading ? (
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="h-8 w-8 text-[#D3FB52] animate-spin" />
+                  <p className="text-sm font-medium text-foreground">Procesando documento con IA...</p>
+                  <p className="text-xs text-muted">Esto puede tomar unos segundos</p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-3">
+                  <div className="h-12 w-12 rounded-xl bg-[#D3FB52]/10 flex items-center justify-center">
+                    <Upload className="h-6 w-6 text-[#D3FB52]" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      {isDragging
+                        ? (language === 'es' ? 'Suelta el archivo aqui' : 'Drop file here')
+                        : (language === 'es' ? 'Arrastra un archivo aqui o haz click para seleccionar' : 'Drag a file here or click to select')}
+                    </p>
+                    <p className="text-xs text-muted mt-1">PDF, Word (.docx) o texto plano (.txt) — Max 15 MB</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Upload Error */}
+            {uploadError && (
+              <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-2">
+                <X className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-red-500">{uploadError}</p>
+              </div>
+            )}
+
+            {/* Upload Success */}
+            {uploadSuccess && uploadSummary && (
+              <div className="mt-3 p-4 bg-[#D3FB52]/10 border border-[#D3FB52]/20 rounded-xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <CheckCircle2 className="h-4 w-4 text-[#D3FB52]" />
+                  <p className="text-sm font-medium text-foreground">
+                    {language === 'es' ? 'Documento procesado exitosamente' : 'Document processed successfully'}
+                  </p>
+                </div>
+                <p className="text-xs text-muted">
+                  {language === 'es' ? 'Se extrajeron: ' : 'Extracted: '}
+                  {uploadSummary.objectives > 0 && `${uploadSummary.objectives} objetivos, `}
+                  {uploadSummary.benefits > 0 && `${uploadSummary.benefits} beneficios, `}
+                  {uploadSummary.modules > 0 && `${uploadSummary.modules} modulos, `}
+                  {uploadSummary.plans > 0 && `${uploadSummary.plans} planes, `}
+                  {uploadSummary.testimonials > 0 && `${uploadSummary.testimonials} testimonios, `}
+                  {uploadSummary.objectionResponses > 0 && `${uploadSummary.objectionResponses} objeciones`}
+                  {'. '}
+                  {language === 'es' ? 'Revisa y ajusta los datos antes de guardar.' : 'Review and adjust data before saving.'}
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Basic Info Card */}
           <div className="bg-card rounded-2xl shadow-sm border border-border/50 p-6">
             <h2 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">

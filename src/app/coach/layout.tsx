@@ -54,7 +54,7 @@ export default async function CoachLayout({
       <div className="p-3 border-t border-border/30 flex flex-col gap-2">
         <LanguageToggle />
         <Link
-          href="/coach/notifications"
+          href="/coach/settings"
           className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted
             hover:text-foreground hover:bg-background transition-all"
         >

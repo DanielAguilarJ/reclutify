@@ -1,6 +1,84 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { InfoChatRequest, InfoChatResponse, DetectedObjection, ClosingMode } from '@/types/informes';
 
+// ─── Helper: Load coach settings + course overrides ───
+async function loadAIConfig(orgId: string, courseId: string) {
+  const defaults = {
+    assistantName: 'Asistente Virtual',
+    conversationTone: 'amigable',
+    salesPersistence: 2,
+    welcomeMessage: '',
+    customInstructions: '',
+    sessionLanguage: 'es',
+  };
+
+  try {
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseKey) return defaults;
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // 1. Load global org settings
+    const { data: settings } = await supabase
+      .from('coach_settings')
+      .select('assistant_name, conversation_tone, sales_persistence, welcome_message, custom_instructions, session_language')
+      .eq('org_id', orgId)
+      .single();
+
+    if (settings) {
+      defaults.assistantName = settings.assistant_name || defaults.assistantName;
+      defaults.conversationTone = settings.conversation_tone || defaults.conversationTone;
+      defaults.salesPersistence = settings.sales_persistence ?? defaults.salesPersistence;
+      defaults.welcomeMessage = settings.welcome_message || '';
+      defaults.customInstructions = settings.custom_instructions || '';
+      defaults.sessionLanguage = settings.session_language || 'es';
+    }
+
+    // 2. Load course-level overrides (if any)
+    const { data: course } = await supabase
+      .from('courses')
+      .select('ai_overrides')
+      .eq('id', courseId)
+      .single();
+
+    if (course?.ai_overrides && typeof course.ai_overrides === 'object') {
+      const ov = course.ai_overrides as Record<string, unknown>;
+      if (ov.assistant_name) defaults.assistantName = ov.assistant_name as string;
+      if (ov.conversation_tone) defaults.conversationTone = ov.conversation_tone as string;
+      if (ov.sales_persistence) defaults.salesPersistence = ov.sales_persistence as number;
+      if (ov.welcome_message) defaults.welcomeMessage = ov.welcome_message as string;
+      if (ov.custom_instructions) defaults.customInstructions = ov.custom_instructions as string;
+    }
+  } catch {
+    // Silent fail — use defaults
+  }
+
+  return defaults;
+}
+
+// ─── Helper: Get org_id for a course ───
+async function getOrgIdForCourse(courseId: string): Promise<string | null> {
+  try {
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseKey) return null;
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const { data } = await supabase
+      .from('courses')
+      .select('org_id')
+      .eq('id', courseId)
+      .single();
+
+    return data?.org_id || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body: InfoChatRequest = await req.json();
@@ -38,6 +116,26 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+
+    // ─── Load AI configuration (global + course overrides) ───
+    const orgId = body.courseId ? await getOrgIdForCourse(body.courseId) : null;
+    const aiConfig = await loadAIConfig(orgId || '', courseId);
+
+    // Map tone to personality descriptors
+    const toneDescriptors: Record<string, string> = {
+      formal: 'profesional, serio/a, respetuoso/a y conciso/a. Usas un lenguaje formal y evitas coloquialismos.',
+      amigable: 'calido/a, cercano/a, empático/a y conversacional. Usas un tono amigable pero profesional.',
+      entusiasta: 'energético/a, apasionado/a, motivador/a y dinámico/a. Transmites emoción genuina por el programa.',
+    };
+    const toneDescription = toneDescriptors[aiConfig.conversationTone] || toneDescriptors.amigable;
+
+    // Map persistence to behavior
+    const persistenceRules: Record<number, string> = {
+      1: 'Si el cliente muestra resistencia, acepta con amabilidad y ofrece el modo remoto inmediatamente. NO insistas mas de 1 vez.',
+      2: 'Si el cliente muestra resistencia, intenta resolver la objecion con 1-2 intentos. Si no funciona, ofrece amablemente el modo remoto.',
+      3: 'Si el cliente muestra resistencia, usa multiples estrategias de persuasion (reencuadre, urgencia, prueba social, contraste). Intenta 3+ veces antes de ofrecer el modo remoto. Se persistente pero nunca agresivo.',
+    };
+    const persistenceRule = persistenceRules[aiConfig.salesPersistence] || persistenceRules[2];
 
     // ─── Build structured course data for the system prompt ───
     const modulesBlock = courseModules.length > 0
@@ -120,14 +218,20 @@ PERFIL DEL CLIENTE:
     // ─── SYSTEM PROMPT ───
     const lang = language === 'es' ? 'Spanish (Espanol)' : 'English';
 
-    const systemPrompt = `Eres un COACH VIRTUAL especializado en ventas consultivas. Tu mision es INFORMAR y VENDER el programa "${courseName}" a potenciales clientes durante una sesion de informes personalizada.
+    const customInstructionsBlock = aiConfig.customInstructions
+      ? `\n\nINSTRUCCIONES ADICIONALES DEL COACH:\n${aiConfig.customInstructions}`
+      : '';
 
-TU IDENTIDAD:
-- Eres calido/a, profesional, y genuinamente apasionado/a por el programa
-- Hablas como un consultor de confianza, no como un vendedor agresivo
+    const systemPrompt = `Eres "${aiConfig.assistantName}", un COACH VIRTUAL especializado en ventas consultivas. Tu mision es INFORMAR y VENDER el programa "${courseName}" a potenciales clientes durante una sesion de informes personalizada.
+
+TU IDENTIDAD Y TONO:
+- Tu nombre es ${aiConfig.assistantName}
+- Eres ${toneDescription}
 - Personalizas cada interaccion basandote en los datos del cliente
-- Eres empático/a pero tambien persuasivo/a con tacto
 - Tu objetivo final es CERRAR la venta o al menos captar un lead calificado
+
+REGLA DE PERSISTENCIA:
+${persistenceRule}
 
 ═══════════════════════════════════════════
 DATOS DEL PROGRAMA
@@ -240,12 +344,16 @@ REGLAS ESTRICTAS
 7. SEÑALES: Las señales [NOTIFY_COACH], [OBJECTION_DETECTED:x], [CLOSING_REMOTE] van AL FINAL del mensaje, despues de todo el texto visible para el cliente.
 8. ADAPTATE: Si el cliente habla poco, haz preguntas mas especificas. Si habla mucho, escucha y profundiza.
 9. CIERRE PRESENCIAL: Cuando detectas interes alto, sugiere una llamada/reunion con el coach antes de usar [NOTIFY_COACH].
-10. CIERRE REMOTO: Cuando cambias a modo remoto, pide email/telefono para seguimiento y se gracioso/amable al despedirte.`;
+10. CIERRE REMOTO: Cuando cambias a modo remoto, pide email/telefono para seguimiento y se gracioso/amable al despedirte.
+${customInstructionsBlock}`;
 
     // ─── Phase-specific instruction ───
     let phaseInstruction = '';
     if (isFirstMessage) {
-      phaseInstruction = `INSTRUCCION: Esta es la PRIMERA interaccion. Saluda calidamente a ${clientName || 'el cliente'}, preséntate brevemente como consultor del programa "${courseName}", y haz UNA pregunta para descubrir que les motivo a interesarse. Se breve y calido (2-3 oraciones max antes de tu pregunta).`;
+      const welcomeOverride = aiConfig.welcomeMessage
+        ? `Usa este saludo personalizado como base: "${aiConfig.welcomeMessage}". Adaptalo al nombre del cliente.`
+        : '';
+      phaseInstruction = `INSTRUCCION: Esta es la PRIMERA interaccion. Saluda calidamente a ${clientName || 'el cliente'}, preséntate como "${aiConfig.assistantName}", consultor del programa "${courseName}", y haz UNA pregunta para descubrir que les motivo a interesarse. Se breve y calido (2-3 oraciones max antes de tu pregunta). ${welcomeOverride}`;
     } else if (isClosingPhase) {
       phaseInstruction = `INSTRUCCION: Estamos en FASE DE CIERRE. Resume brevemente los beneficios clave que resonaron con el cliente, presenta el plan recomendado, y haz un call to action claro. Si ya intentaste cerrar y no funciono, ofrece el cierre remoto.`;
     } else {

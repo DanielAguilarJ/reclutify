@@ -134,6 +134,14 @@ export async function POST(req: NextRequest) {
       if (!resendApiKey) console.warn('RESEND_API_KEY not configured');
     }
 
+    // ─── 5. Trigger CRM integrations asynchronously ───
+    triggerCRMIntegrations(supabase, orgId, {
+      clientName: clientName || 'Cliente',
+      courseName: courseName || 'Programa',
+      sessionId,
+      type,
+    }).catch(err => console.error('[CRM integrations error]', err));
+
     return NextResponse.json({
       success: true,
       notificationCreated: true,
@@ -231,4 +239,230 @@ function buildNotificationEmail(params: {
   </div>
 </body>
 </html>`;
+}
+
+// ─── CRM Integrations Trigger ───
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function triggerCRMIntegrations(supabase: any, orgId: string, leadData: {
+  clientName: string;
+  courseName: string;
+  sessionId: string;
+  type: string;
+}) {
+  // Load coach_settings to get integrations config
+  const { data: settings } = await supabase
+    .from('coach_settings')
+    .select('integrations, additional_emails, email_on_new_lead, email_on_closing')
+    .eq('org_id', orgId)
+    .single();
+
+  if (!settings?.integrations) return;
+
+  const integrations = settings.integrations as {
+    webhook?: { enabled: boolean; url: string; secret: string; events: string[] };
+    google_sheets?: { enabled: boolean; spreadsheet_id: string; credentials: string; sheet_name: string };
+    hubspot?: { enabled: boolean; api_key: string; pipeline_id: string };
+    notion?: { enabled: boolean; token: string; database_id: string };
+  };
+
+  // Get full session data for CRM
+  const { data: session } = await supabase
+    .from('info_sessions')
+    .select('*')
+    .eq('id', leadData.sessionId)
+    .single();
+
+  const eventType = leadData.type === 'closing_ready' ? 'closing_ready' : 'new_lead';
+
+  // ─── Webhook ───
+  if (integrations.webhook?.enabled && integrations.webhook.url) {
+    const events = integrations.webhook.events || [];
+    if (events.includes(eventType)) {
+      try {
+        const payload = JSON.stringify({
+          event: eventType,
+          timestamp: new Date().toISOString(),
+          data: {
+            clientName: leadData.clientName,
+            clientEmail: session?.client_email || '',
+            clientPhone: session?.client_phone || '',
+            clientAge: session?.client_age,
+            clientOccupation: session?.client_occupation || '',
+            courseFor: session?.course_for || '',
+            courseName: leadData.courseName,
+            sessionId: leadData.sessionId,
+            closingMode: session?.closing_mode,
+            conversionResult: session?.conversion_result,
+          },
+        });
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (integrations.webhook.secret) {
+          const crypto = await import('crypto');
+          const signature = crypto.createHmac('sha256', integrations.webhook.secret)
+            .update(payload)
+            .digest('hex');
+          headers['X-Webhook-Signature'] = `sha256=${signature}`;
+        }
+
+        await fetch(integrations.webhook.url, {
+          method: 'POST',
+          headers,
+          body: payload,
+          signal: AbortSignal.timeout(10000),
+        });
+      } catch (err) {
+        console.error('[Webhook integration error]', err);
+      }
+    }
+  }
+
+  // ─── HubSpot ───
+  if (integrations.hubspot?.enabled && integrations.hubspot.api_key) {
+    try {
+      await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${integrations.hubspot.api_key}`,
+        },
+        body: JSON.stringify({
+          properties: {
+            email: session?.client_email || `lead-${Date.now()}@placeholder.com`,
+            firstname: leadData.clientName.split(' ')[0] || '',
+            lastname: leadData.clientName.split(' ').slice(1).join(' ') || '',
+            phone: session?.client_phone || '',
+            jobtitle: session?.client_occupation || '',
+            hs_lead_status: eventType === 'closing_ready' ? 'OPEN_DEAL' : 'NEW',
+            company: leadData.courseName,
+          },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (err) {
+      console.error('[HubSpot integration error]', err);
+    }
+  }
+
+  // ─── Notion ───
+  if (integrations.notion?.enabled && integrations.notion.token && integrations.notion.database_id) {
+    try {
+      await fetch('https://api.notion.com/v1/pages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${integrations.notion.token}`,
+          'Notion-Version': '2022-06-28',
+        },
+        body: JSON.stringify({
+          parent: { database_id: integrations.notion.database_id },
+          properties: {
+            'Nombre': { title: [{ text: { content: leadData.clientName } }] },
+            'Email': { email: session?.client_email || null },
+            'Telefono': { phone_number: session?.client_phone || null },
+            'Curso': { rich_text: [{ text: { content: leadData.courseName } }] },
+            'Estado': { select: { name: eventType === 'closing_ready' ? 'Listo para cerrar' : 'Nuevo lead' } },
+            'Fecha': { date: { start: new Date().toISOString() } },
+          },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (err) {
+      console.error('[Notion integration error]', err);
+    }
+  }
+
+  // ─── Google Sheets ───
+  if (integrations.google_sheets?.enabled && integrations.google_sheets.spreadsheet_id && integrations.google_sheets.credentials) {
+    try {
+      // Parse service account credentials
+      const creds = JSON.parse(integrations.google_sheets.credentials);
+      const now = Math.floor(Date.now() / 1000);
+
+      // Create JWT for Google API
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+      const claimSet = Buffer.from(JSON.stringify({
+        iss: creds.client_email,
+        scope: 'https://www.googleapis.com/auth/spreadsheets',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: now + 3600,
+        iat: now,
+      })).toString('base64url');
+
+      const crypto = await import('crypto');
+      const signInput = `${header}.${claimSet}`;
+      const signature = crypto.createSign('RSA-SHA256')
+        .update(signInput)
+        .sign(creds.private_key, 'base64url');
+
+      const jwt = `${signInput}.${signature}`;
+
+      // Exchange JWT for access token
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        const accessToken = tokenData.access_token;
+        const sheetName = integrations.google_sheets.sheet_name || 'Leads';
+        const spreadsheetId = integrations.google_sheets.spreadsheet_id;
+
+        // Append row to sheet
+        await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!A:I:append?valueInputOption=USER_ENTERED`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              values: [[
+                new Date().toISOString(),
+                leadData.clientName,
+                session?.client_email || '',
+                session?.client_phone || '',
+                session?.client_age || '',
+                session?.client_occupation || '',
+                session?.course_for || '',
+                leadData.courseName,
+                eventType === 'closing_ready' ? 'Listo para cerrar' : 'Nuevo lead',
+              ]],
+            }),
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+      }
+    } catch (err) {
+      console.error('[Google Sheets integration error]', err);
+    }
+  }
+
+  // ─── Send to additional emails if configured ───
+  if (settings.additional_emails?.length > 0) {
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (resendApiKey) {
+      const shouldSend = (eventType === 'new_lead' && settings.email_on_new_lead) ||
+                         (eventType === 'closing_ready' && settings.email_on_closing);
+      if (shouldSend) {
+        try {
+          const resend = new Resend(resendApiKey);
+          for (const email of settings.additional_emails) {
+            await resend.emails.send({
+              from: 'Reclutify <notificaciones@reclutify.com>',
+              to: email,
+              subject: `[Reclutify] ${eventType === 'closing_ready' ? 'Cliente listo para cierre' : 'Nuevo lead'}: ${leadData.clientName}`,
+              html: `<p><strong>${leadData.clientName}</strong> - ${leadData.courseName}</p><p>Tipo: ${eventType === 'closing_ready' ? 'Cierre presencial' : 'Nuevo lead'}</p><p><a href="https://app.reclutify.com/coach/leads">Ver en Reclutify</a></p>`,
+            });
+          }
+        } catch (err) {
+          console.error('[Additional emails error]', err);
+        }
+      }
+    }
+  }
 }

@@ -31,7 +31,7 @@ export default function TicketInterviewPage({
   const { getTicketByToken, markTicketUsed, fetchTicketByToken, syncMarkUsed } = useTicketStore();
   const { roles } = useAdminStore();
   const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration } = useInterviewStore();
-  const { language, setLanguage, planTier } = useAppStore();
+  const { language, setLanguage } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
 
@@ -42,6 +42,8 @@ export default function TicketInterviewPage({
   // and only after the candidate actually enters the InterviewRoom.
   const [ticketMarked, setTicketMarked] = useState(false);
   const [pendingToken, setPendingToken] = useState('');
+  // White-label: org plan fetched from DB (not localStorage)
+  const [orgPlanTier, setOrgPlanTier] = useState<string>('starter');
 
   useEffect(() => {
     const checkTicket = async () => {
@@ -141,6 +143,24 @@ export default function TicketInterviewPage({
         setRoleId(role.id);
         setInterviewDuration(role.interviewDuration ?? 30);
         setCandidateName(currentTicket.candidateName);
+
+        // Fetch the org's plan_tier for white-label branding
+        try {
+          const supabase = createClient();
+          const { data: roleRow } = await supabase
+            .from('roles')
+            .select('org_id')
+            .eq('id', role.id)
+            .single();
+          if (roleRow?.org_id) {
+            const { data: orgRow } = await supabase
+              .from('organizations')
+              .select('plan_tier')
+              .eq('id', roleRow.org_id)
+              .single();
+            if (orgRow?.plan_tier) setOrgPlanTier(orgRow.plan_tier);
+          }
+        } catch { /* white-label defaults to off */ }
 
         // Setear idioma desde el ticket
         setLanguage(currentTicket.language);
@@ -261,7 +281,7 @@ export default function TicketInterviewPage({
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <header className="px-6 py-4">
-        <Logo forceWhiteLabel={planTier === 'enterprise'} />
+        <Logo forceWhiteLabel={orgPlanTier === 'enterprise'} />
       </header>
       <main className="flex-1 flex items-center justify-center px-6 pb-12">
         <AnimatePresence mode="wait">

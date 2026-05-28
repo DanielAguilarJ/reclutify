@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, X, ChevronDown, Zap, Crown, Building2, ArrowRight } from 'lucide-react';
+import { Check, X, ChevronDown, Zap, Crown, Building2, ArrowRight, Loader2 } from 'lucide-react';
 import Logo from '@/components/ui/Logo';
 import LanguageToggle from '@/components/ui/LanguageToggle';
 import { useAppStore } from '@/store/appStore';
@@ -234,7 +235,10 @@ function FAQItem({ question, answer }: { question: string; answer: string }) {
 export default function PricingPage() {
   const { language } = useAppStore();
   const d = t[language] || t.en;
+  const router = useRouter();
   const [annual, setAnnual] = useState(false);
+  const [loadingTier, setLoadingTier] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const plans = [
     { ...d.starter, icon: Zap, color: '#D3FB52', tier: 'starter' },
@@ -246,6 +250,48 @@ export default function PricingPage() {
     if (annual) return Math.round(base * 0.8);
     return base;
   };
+
+  async function handleCheckout(tier: string) {
+    if (tier === 'enterprise') {
+      window.location.href = 'mailto:hello@reclutify.com?subject=Enterprise%20Plan%20Inquiry';
+      return;
+    }
+
+    setLoadingTier(tier);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier, interval: annual ? 'yearly' : 'monthly' }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        // Not logged in → send to login then back to pricing
+        if (res.status === 401) {
+          router.push('/login?redirectTo=/pricing');
+          return;
+        }
+        // No org yet → send to onboarding
+        if (res.status === 400 && data.error?.includes('onboarding')) {
+          router.push('/onboarding');
+          return;
+        }
+        throw new Error(data.error ?? 'Something went wrong');
+      }
+
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unexpected error');
+    } finally {
+      setLoadingTier(null);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#1a1b23] text-white font-sans selection:bg-[#D3FB52] selection:text-black">
@@ -317,11 +363,19 @@ export default function PricingPage() {
           )}
         </motion.div>
 
+        {/* Error banner */}
+        {error && (
+          <div className="max-w-md mx-auto mb-8 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded-xl px-4 py-3 text-center">
+            {error}
+          </div>
+        )}
+
         {/* Pricing Cards */}
         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
           {plans.map((plan, i) => {
-            const isPro = plan.tier === 'pro';
-            const Icon = plan.icon;
+            const isPro      = plan.tier === 'pro';
+            const isLoading  = loadingTier === plan.tier;
+            const Icon       = plan.icon;
             return (
               <motion.div
                 key={plan.tier}
@@ -387,7 +441,9 @@ export default function PricingPage() {
                 </div>
 
                 <button
-                  className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all ${
+                  onClick={() => handleCheckout(plan.tier)}
+                  disabled={isLoading}
+                  className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed ${
                     isPro
                       ? 'bg-[#00D3D8] text-black hover:bg-[#00bfc4] shadow-lg shadow-[#00D3D8]/20'
                       : plan.tier === 'enterprise'
@@ -395,7 +451,11 @@ export default function PricingPage() {
                       : 'bg-[#D3FB52] text-black hover:bg-[#c1e847]'
                   }`}
                 >
-                  {plan.tier === 'enterprise' ? d.contactSales : d.getStarted}
+                  {isLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    plan.tier === 'enterprise' ? d.contactSales : d.getStarted
+                  )}
                 </button>
               </motion.div>
             );
@@ -425,13 +485,20 @@ export default function PricingPage() {
               <p className="text-lg text-neutral-400 mb-8 max-w-xl mx-auto">
                 {d.ctaSub}
               </p>
-              <Link
-                href="/login"
-                className="inline-flex items-center gap-2 bg-[#D3FB52] text-black font-semibold px-8 py-4 rounded-xl hover:bg-[#c1e847] transition-colors text-lg"
+              <button
+                onClick={() => handleCheckout('pro')}
+                disabled={loadingTier === 'pro'}
+                className="inline-flex items-center gap-2 bg-[#D3FB52] text-black font-semibold px-8 py-4 rounded-xl hover:bg-[#c1e847] transition-colors text-lg disabled:opacity-70"
               >
-                {d.ctaButton}
-                <ArrowRight className="w-5 h-5" />
-              </Link>
+                {loadingTier === 'pro' ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    {d.ctaButton}
+                    <ArrowRight className="w-5 h-5" />
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </section>
@@ -442,7 +509,7 @@ export default function PricingPage() {
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between text-xs text-neutral-400">
           <p>&copy; {new Date().getFullYear()} Reclutify. {language === 'es' ? 'Todos los derechos reservados.' : 'All rights reserved.'}</p>
           <div className="flex items-center gap-6 mt-4 md:mt-0">
-            <Link href="/terms" className="hover:text-white transition-colors">{language === 'es' ? 'T\u00e9rminos' : 'Terms'}</Link>
+            <Link href="/terms" className="hover:text-white transition-colors">{language === 'es' ? 'Términos' : 'Terms'}</Link>
             <Link href="/privacy" className="hover:text-white transition-colors">{language === 'es' ? 'Privacidad' : 'Privacy'}</Link>
           </div>
         </div>

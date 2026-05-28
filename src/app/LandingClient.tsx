@@ -19,6 +19,7 @@ import LanguageToggle from '@/components/ui/LanguageToggle';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
+import { SignInButton, SignUpButton, Show, UserButton } from '@clerk/nextjs';
 
 const trustedLogos = [
   { name: 'WorldBrain', src: '/worldbrain-logo.webp' },
@@ -192,19 +193,22 @@ export function Header() {
         </nav>
         <div className="flex items-center gap-2.5">
           <LanguageToggle />
-          <Link
-            href="/login"
-            className="hidden md:inline-flex text-[13px] text-white/65 hover:text-white px-3 py-1.5 transition-colors"
-          >
-            Log in
-          </Link>
-          <Link
-            href="/login?tab=register&role=employer"
-            className="inline-flex items-center gap-1.5 pl-4 pr-3.5 py-1.5 rounded-full bg-white text-black text-[13px] font-medium hover:bg-white/90 transition-colors"
-          >
-            {es ? 'Empieza ahora' : 'Get started'}
-            <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
+          <Show when="signed-out">
+            <SignInButton>
+              <button className="hidden md:inline-flex text-[13px] text-white/65 hover:text-white px-3 py-1.5 transition-colors">
+                {es ? 'Iniciar sesión' : 'Log in'}
+              </button>
+            </SignInButton>
+            <SignUpButton>
+              <button className="inline-flex items-center gap-1.5 pl-4 pr-3.5 py-1.5 rounded-full bg-white text-black text-[13px] font-medium hover:bg-white/90 transition-colors">
+                {es ? 'Empieza ahora' : 'Get started'}
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </SignUpButton>
+          </Show>
+          <Show when="signed-in">
+            <UserButton />
+          </Show>
         </div>
       </div>
     </header>

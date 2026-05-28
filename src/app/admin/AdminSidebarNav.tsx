@@ -2,10 +2,11 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useEffect } from 'react';
 import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert, Loader2, GraduationCap } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { switchOrganization } from '@/app/actions/organizations';
+import { createClient } from '@/utils/supabase/client';
 
 /**
  * Props del componente — recibe datos reales desde el Server Component (layout.tsx)
@@ -18,9 +19,27 @@ interface AdminSidebarNavProps {
 export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSidebarNavProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { language, planTier } = useAppStore();
+  const { language } = useAppStore();
   const [showOrgDropdown, setShowOrgDropdown] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const [serverPlanTier, setServerPlanTier] = useState<string>('starter');
+
+  useEffect(() => {
+    async function fetchPlan() {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from('user_profiles').select('org_id').eq('user_id', user.id).single();
+        if (!profile?.org_id) return;
+        const { data: org } = await supabase
+          .from('organizations').select('plan_tier').eq('id', profile.org_id).single();
+        if (org?.plan_tier) setServerPlanTier(org.plan_tier);
+      } catch { /* keep default */ }
+    }
+    fetchPlan();
+  }, []);
 
   // Determinar la org activa a partir de los datos reales
   const activeOrg = organizations.find(o => o.id === activeOrgId) || organizations[0] || null;
@@ -133,7 +152,7 @@ export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSid
           </span>
         </div>
         
-        {planTier === 'starter' ? (
+        {serverPlanTier === 'starter' ? (
           <Link
             href="/admin/settings"
             className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted hover:text-foreground hover:bg-background transition-all group"

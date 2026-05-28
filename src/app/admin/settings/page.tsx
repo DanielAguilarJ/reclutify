@@ -1,16 +1,232 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { User, Bell, Globe, Save, CheckCircle2, CreditCard, Key, Link2, Send, Loader2, Trash2, ExternalLink } from 'lucide-react';
-import { useAppStore, PlanTier } from '@/store/appStore';
+import { User, Bell, Globe, Save, CheckCircle2, CreditCard, Key, Link2, Send, Loader2, Trash2, ExternalLink, Crown, Zap, Building2, ArrowUpRight } from 'lucide-react';
+import { useAppStore } from '@/store/appStore';
 import { useWebhookStore } from '@/store/webhookStore';
 import { dictionaries } from '@/lib/i18n';
+import { createClient } from '@/utils/supabase/client';
+import type { PlanTier } from '@/lib/stripe';
+
+// ─── Subscription card ────────────────────────────────────────────────────────
+interface OrgSubscription {
+  plan_tier: PlanTier;
+  subscription_status: string;
+  subscription_period_end: string | null;
+  billing_interval: string | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+}
+
+const PLAN_META: Record<PlanTier, { label: string; price: number; color: string; Icon: React.ElementType }> = {
+  starter:    { label: 'Starter',    price: 29,  color: '#D3FB52', Icon: Zap },
+  pro:        { label: 'Pro',        price: 79,  color: '#00D3D8', Icon: Crown },
+  enterprise: { label: 'Enterprise', price: 199, color: '#b56afa', Icon: Building2 },
+};
+
+function BillingCard({ language }: { language: string }) {
+  const [sub, setSub]                 = useState<OrgSubscription | null>(null);
+  const [loading, setLoading]         = useState(true);
+  const [portalLoading, setPortal]    = useState(false);
+  const [checkoutTier, setCheckout]   = useState<string | null>(null);
+  const es = language === 'es';
+
+  useEffect(() => {
+    async function load() {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setLoading(false); return; }
+
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('org_id')
+        .eq('user_id', user.id)
+        .single();
+      if (!profile?.org_id) { setLoading(false); return; }
+
+      const { data: org } = await supabase
+        .from('organizations')
+        .select('plan_tier, subscription_status, subscription_period_end, billing_interval, stripe_customer_id, stripe_subscription_id')
+        .eq('id', profile.org_id)
+        .single();
+
+      if (org) setSub(org as OrgSubscription);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  async function openPortal() {
+    setPortal(true);
+    try {
+      const res  = await fetch('/api/stripe/portal', { method: 'POST' });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+    } finally {
+      setPortal(false);
+    }
+  }
+
+  async function upgrade(tier: string) {
+    setCheckout(tier);
+    try {
+      const res  = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier, interval: 'monthly' }),
+      });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+    } finally {
+      setCheckout(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="p-5 flex items-center justify-center text-muted text-sm gap-2">
+        <Loader2 className="w-4 h-4 animate-spin" /> {es ? 'Cargando...' : 'Loading...'}
+      </div>
+    );
+  }
+
+  const currentTier = (sub?.plan_tier ?? 'starter') as PlanTier;
+  const meta        = PLAN_META[currentTier];
+  const Icon        = meta.Icon;
+  const isActive    = !sub?.subscription_status || ['active','trialing'].includes(sub.subscription_status);
+  const periodEnd   = sub?.subscription_period_end
+    ? new Date(sub.subscription_period_end).toLocaleDateString(es ? 'es-MX' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : null;
+
+  return (
+    <div className="p-5 space-y-5">
+      {/* Current plan badge */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${meta.color}20` }}>
+            <Icon className="w-5 h-5" style={{ color: meta.color }} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-base font-semibold text-foreground">{meta.label}</span>
+              <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                isActive ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
+              }`}>
+                {isActive ? (es ? 'Activo' : 'Active') : sub?.subscription_status}
+              </span>
+            </div>
+            <p className="text-sm text-muted">
+              ${meta.price}/mo
+              {sub?.billing_interval === 'yearly' && (
+                <span className="ml-2 text-xs text-success">
+                  {es ? '(facturado anual — 20% off)' : '(billed yearly — 20% off)'}
+                </span>
+              )}
+            </p>
+            {periodEnd && (
+              <p className="text-xs text-muted/70 mt-0.5">
+                {es ? `Próximo ciclo: ${periodEnd}` : `Next billing: ${periodEnd}`}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {sub?.stripe_customer_id && (
+          <button
+            onClick={openPortal}
+            disabled={portalLoading}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-surface hover:bg-surface-hover border border-border transition-colors disabled:opacity-60"
+          >
+            {portalLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
+            {es ? 'Gestionar facturación' : 'Manage billing'}
+          </button>
+        )}
+      </div>
+
+      {/* Upgrade options */}
+      {currentTier !== 'enterprise' && (
+        <div className="pt-4 border-t border-border/30 space-y-2">
+          <p className="text-xs font-medium text-muted mb-3">
+            {es ? 'Actualizar plan' : 'Upgrade plan'}
+          </p>
+          {(Object.entries(PLAN_META) as [PlanTier, typeof PLAN_META[PlanTier]][])
+            .filter(([tier]) => tier !== currentTier && tier !== 'starter')
+            .map(([tier, m]) => {
+              const TierIcon = m.Icon;
+              const isUpgrading = checkoutTier === tier;
+              return (
+                <button
+                  key={tier}
+                  onClick={() => upgrade(tier)}
+                  disabled={!!checkoutTier}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-border bg-background hover:border-primary/30 hover:bg-primary/5 transition-all text-left disabled:opacity-60"
+                >
+                  <div className="flex items-center gap-3">
+                    <TierIcon className="w-4 h-4" style={{ color: m.color }} />
+                    <span className="text-sm font-medium text-foreground">{m.label}</span>
+                    <span className="text-xs text-muted">${m.price}/mo</span>
+                  </div>
+                  {isUpgrading ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-muted" />
+                  ) : (
+                    <ArrowUpRight className="w-4 h-4 text-muted" />
+                  )}
+                </button>
+              );
+            })}
+        </div>
+      )}
+
+      {!sub?.stripe_customer_id && (
+        <div className="pt-4 border-t border-border/30">
+          <button
+            onClick={() => upgrade('pro')}
+            disabled={!!checkoutTier}
+            className="w-full py-2.5 rounded-xl text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            {checkoutTier ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+            {es ? 'Suscribirse ahora' : 'Subscribe now'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
-  const { language, setLanguage, planTier, setPlanTier } = useAppStore();
+  const { language, setLanguage, setPlanTier } = useAppStore();
   const { webhookUrl, webhookSecret, webhookLogs, setWebhookUrl, setWebhookSecret, addLog, clearLogs, fetchWebhookConfig, syncWebhookConfig } = useWebhookStore();
   const t = dictionaries[language];
+  const searchParams = useSearchParams();
+  const checkoutSuccess = searchParams.get('checkout') === 'success';
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+
+  // Show success banner after checkout and sync plan from DB
+  useEffect(() => {
+    if (checkoutSuccess) {
+      setShowSuccessBanner(true);
+      // Sync the real plan tier from DB into Zustand (for any legacy code still reading it)
+      async function syncPlan() {
+        try {
+          const supabase = createClient();
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return;
+          const { data: profile } = await supabase
+            .from('user_profiles').select('org_id').eq('user_id', user.id).single();
+          if (!profile?.org_id) return;
+          const { data: org } = await supabase
+            .from('organizations').select('plan_tier').eq('id', profile.org_id).single();
+          if (org?.plan_tier) setPlanTier(org.plan_tier as PlanTier);
+        } catch { /* keep existing */ }
+      }
+      syncPlan();
+      // Auto-dismiss after 8s
+      const timer = setTimeout(() => setShowSuccessBanner(false), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [checkoutSuccess, setPlanTier]);
 
   // Cargar configuración de webhook desde Supabase al montar
   useEffect(() => {
@@ -99,6 +315,26 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-4xl mx-auto pb-12">
+      {/* Checkout success banner */}
+      {showSuccessBanner && (
+        <motion.div
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -12 }}
+          className="mb-6 flex items-center gap-3 px-5 py-4 bg-success/10 border border-success/20 rounded-2xl"
+        >
+          <CheckCircle2 className="w-5 h-5 text-success shrink-0" />
+          <p className="text-sm font-medium text-foreground">
+            {language === 'es'
+              ? 'Tu suscripción se activó correctamente. Ya tienes acceso a las funciones de tu nuevo plan.'
+              : 'Your subscription is now active. You have access to your new plan features.'}
+          </p>
+          <button onClick={() => setShowSuccessBanner(false)} className="ml-auto text-muted hover:text-foreground text-xs">
+            &times;
+          </button>
+        </motion.div>
+      )}
+
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-foreground mb-1">
           {language === 'es' ? 'Configuración' : 'Settings'}
@@ -205,52 +441,7 @@ export default function SettingsPage() {
               {language === 'es' ? 'Suscripción y Facturación' : 'Subscription & Billing'}
             </h2>
           </div>
-          <div className="p-5 space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-muted mb-1.5">{language === 'es' ? 'Plan Activo (Suscripción Simulada)' : 'Active Plan (Simulated Subscription)'}</label>
-              <select
-                value={planTier}
-                onChange={(e) => setPlanTier(e.target.value as PlanTier)}
-                className="w-full md:w-1/2 px-4 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-              >
-                <option value="starter">Starter ($29/mo) - 3 Roles Max</option>
-                <option value="pro">Pro ($79/mo) - Priority Support, Transcripts</option>
-                <option value="enterprise">Enterprise ($199/mo) - White Label, API</option>
-              </select>
-              <p className="mt-1.5 text-xs text-muted/80">
-                {language === 'es' 
-                  ? 'Cambia tu plan aquí para ver cómo se habilitan o bloquean las diferentes funciones en la plataforma.' 
-                  : 'Change your plan here to see how different features are enabled or locked across the platform.'}
-              </p>
-            </div>
-
-            {/* API Access (Enterprise Only) */}
-            <div className="pt-4 border-t border-border/30">
-              <div className="flex items-center gap-2 mb-3">
-                <Key className="h-4 w-4 text-muted" />
-                <h3 className="text-sm font-medium text-foreground">API Access</h3>
-              </div>
-              {planTier === 'enterprise' ? (
-                <div className="bg-background rounded-xl border border-border/50 p-4">
-                  <p className="text-xs text-muted mb-2">WorldBrain API Key (Secret)</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 bg-muted/20 px-3 py-2 rounded-lg text-xs font-mono text-foreground break-all">
-                      wb_live_sk_7f8a9...[REDACTED]...2c4b
-                    </code>
-                    <button className="px-3 py-2 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg text-xs font-medium transition-colors">
-                      {language === 'es' ? 'Copiar' : 'Copy'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-muted/10 rounded-xl border border-border/50 p-6 text-center">
-                  <Key className="h-6 w-6 text-muted/50 mx-auto mb-2" />
-                  <p className="text-sm font-medium text-muted">API Access is locked</p>
-                  <p className="text-xs text-muted/80 mt-1">Upgrade to Enterprise to generate API keys.</p>
-                </div>
-              )}
-            </div>
-          </div>
+          <BillingCard language={language} />
         </div>
 
         {/* Module 4: Webhook Integrations */}

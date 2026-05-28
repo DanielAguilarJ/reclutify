@@ -1,3 +1,4 @@
+import {ClerkProvider} from "@clerk/nextjs";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import PostHogProvider from "@/components/PostHogProvider";
@@ -151,11 +152,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased`}
       >
-        <PostHogProvider>
+        <ClerkProvider>
+          <PostHogProvider>
           <ToastProvider>
-            {children}
+          {children}
           </ToastProvider>
-        </PostHogProvider>
+          </PostHogProvider>
+        </ClerkProvider>
       </body>
     </html>
   );

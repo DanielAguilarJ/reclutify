@@ -9,6 +9,8 @@ import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
 import type { Role, Topic, TopicRubric } from '@/types';
 import Link from 'next/link';
+import { createClient } from '@/utils/supabase/client';
+import { PLAN_LIMITS, type PlanTier } from '@/lib/stripe';
 
 // ─── Topic with rubric data (from API or manual) ───
 interface TopicDraft {
@@ -827,11 +829,36 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
 export default function CreateRolePage() {
 
   const { addRole, roles, removeRole } = useAdminStore();
-  const { language, planTier } = useAppStore();
+  const { language } = useAppStore();
   const t = dictionaries[language];
 
   // Sincronizar roles con Supabase al montar
   useRoles();
+
+  // Real server-side plan tier (fetched from DB, not localStorage)
+  const [serverPlanTier, setServerPlanTier] = useState<PlanTier>('starter');
+  const [serverMaxRoles, setServerMaxRoles] = useState<number | null>(PLAN_LIMITS.starter.maxRoles);
+
+  useEffect(() => {
+    async function fetchPlan() {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from('user_profiles').select('org_id').eq('user_id', user.id).single();
+        if (!profile?.org_id) return;
+        const { data: org } = await supabase
+          .from('organizations').select('plan_tier').eq('id', profile.org_id).single();
+        if (org?.plan_tier) {
+          const tier = org.plan_tier as PlanTier;
+          setServerPlanTier(tier);
+          setServerMaxRoles(PLAN_LIMITS[tier].maxRoles);
+        }
+      } catch { /* keep defaults */ }
+    }
+    fetchPlan();
+  }, []);
 
   // Form state
   const [jobTitle, setJobTitle] = useState('');
@@ -1074,7 +1101,7 @@ export default function CreateRolePage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Form or Upgrade Banner */}
         <div className="lg:col-span-2">
-          {planTier === 'starter' && roles.length >= 3 ? (
+          {serverPlanTier === 'starter' && serverMaxRoles !== null && roles.length >= serverMaxRoles ? (
             <div className="bg-card rounded-2xl shadow-sm border border-[#D3FB52]/30 p-8 md:p-12 text-center relative overflow-hidden">
               <div className="absolute -inset-4 bg-[#D3FB52]/5 rounded-3xl blur-2xl top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4/5 h-4/5" />
               <div className="relative z-10 flex flex-col items-center">

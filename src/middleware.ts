@@ -26,6 +26,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url, 308); // 308 Permanent Redirect
   }
 
+  // Skip auth for Stripe webhooks (no user session, saves latency)
+  if (request.nextUrl.pathname.startsWith('/api/stripe/webhooks')) {
+    return NextResponse.next();
+  }
+
   // Refrescar la sesión del usuario de forma segura con getUser()
   const { supabaseResponse, supabase, user } = await createClient(request);
 
@@ -151,6 +156,8 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    '/(api|trpc)(.*)',
+    '/__clerk/(.*)',
     /*
      * Match all request paths except for the ones starting with:
      * - _next/static (static files)

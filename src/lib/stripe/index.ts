@@ -1,12 +1,25 @@
 import Stripe from 'stripe';
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  throw new Error('STRIPE_SECRET_KEY is not set');
+let _stripe: Stripe | undefined;
+
+export function getStripe(): Stripe {
+  if (!_stripe) {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      throw new Error('STRIPE_SECRET_KEY is not set');
+    }
+    _stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2026-04-22.dahlia',
+      typescript: true,
+    });
+  }
+  return _stripe;
 }
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2026-04-22.dahlia',
-  typescript: true,
+/** @deprecated Use `getStripe()` instead — kept for backward compatibility */
+export const stripe = new Proxy({} as Stripe, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getStripe(), prop, receiver);
+  },
 });
 
 // ─── Plan → Price ID map ────────────────────────────────────────────────────
@@ -14,31 +27,48 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 export type PlanTier = 'starter' | 'pro' | 'enterprise';
 export type BillingInterval = 'monthly' | 'yearly';
 
-export const PRICE_IDS: Record<PlanTier, Record<BillingInterval, string>> = {
-  starter: {
-    monthly: process.env.STRIPE_PRICE_STARTER_MONTHLY!,
-    yearly:  process.env.STRIPE_PRICE_STARTER_YEARLY!,
+function getPriceIds(): Record<PlanTier, Record<BillingInterval, string>> {
+  return {
+    starter: {
+      monthly: process.env.STRIPE_PRICE_STARTER_MONTHLY!,
+      yearly:  process.env.STRIPE_PRICE_STARTER_YEARLY!,
+    },
+    pro: {
+      monthly: process.env.STRIPE_PRICE_PRO_MONTHLY!,
+      yearly:  process.env.STRIPE_PRICE_PRO_YEARLY!,
+    },
+    enterprise: {
+      monthly: process.env.STRIPE_PRICE_ENTERPRISE_MONTHLY!,
+      yearly:  process.env.STRIPE_PRICE_ENTERPRISE_YEARLY!,
+    },
+  };
+}
+
+export const PRICE_IDS = new Proxy({} as Record<PlanTier, Record<BillingInterval, string>>, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getPriceIds(), prop, receiver);
   },
-  pro: {
-    monthly: process.env.STRIPE_PRICE_PRO_MONTHLY!,
-    yearly:  process.env.STRIPE_PRICE_PRO_YEARLY!,
-  },
-  enterprise: {
-    monthly: process.env.STRIPE_PRICE_ENTERPRISE_MONTHLY!,
-    yearly:  process.env.STRIPE_PRICE_ENTERPRISE_YEARLY!,
-  },
-};
+});
 
 // Reverse map: priceId → { tier, interval }
-export const PRICE_TIER_MAP: Record<string, { tier: PlanTier; interval: BillingInterval }> = {};
-for (const [tier, intervals] of Object.entries(PRICE_IDS)) {
-  for (const [interval, priceId] of Object.entries(intervals)) {
-    PRICE_TIER_MAP[priceId] = {
-      tier: tier as PlanTier,
-      interval: interval as BillingInterval,
-    };
+function getPriceTierMap(): Record<string, { tier: PlanTier; interval: BillingInterval }> {
+  const map: Record<string, { tier: PlanTier; interval: BillingInterval }> = {};
+  for (const [tier, intervals] of Object.entries(getPriceIds())) {
+    for (const [interval, priceId] of Object.entries(intervals)) {
+      map[priceId] = {
+        tier: tier as PlanTier,
+        interval: interval as BillingInterval,
+      };
+    }
   }
+  return map;
 }
+
+export const PRICE_TIER_MAP = new Proxy({} as Record<string, { tier: PlanTier; interval: BillingInterval }>, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getPriceTierMap(), prop, receiver);
+  },
+});
 
 // ─── Plan limits ─────────────────────────────────────────────────────────────
 

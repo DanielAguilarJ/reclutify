@@ -37,7 +37,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Reclutify — AI Interview Platform",
-    description: "Entrevistas con IA • AI Interviews • From $29/mo",
+    description: "Entrevistas con IA • AI Interviews • From $87/mo",
     url: "https://www.reclutify.com",
     siteName: "Reclutify",
     locale: "es_MX",
@@ -55,7 +55,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Reclutify — AI Interview Platform",
-    description: "Entrevistas con IA para empresas en LATAM y España. Desde $29/mes.",
+    description: "Entrevistas con IA para empresas en LATAM y España. Desde $87/mes.",
     images: ["/og-image.png"],
   },
   icons: {
@@ -98,8 +98,8 @@ export default function RootLayout({
       url: "https://www.reclutify.com",
       offers: {
         "@type": "AggregateOffer",
-        lowPrice: "29",
-        highPrice: "99",
+        lowPrice: "87",
+        highPrice: "297",
         priceCurrency: "USD",
         offerCount: "3",
       },

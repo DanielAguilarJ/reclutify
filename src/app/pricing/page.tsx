@@ -25,7 +25,7 @@ const t = {
     starter: {
       name: 'Starter',
       desc: 'Perfect for small teams starting with AI interviews.',
-      price: 29,
+      price: 87,
       interviews: '30 interviews/mo',
       features: [
         { text: 'AI Interviewer (Zara)', included: true },
@@ -42,7 +42,7 @@ const t = {
     pro: {
       name: 'Pro',
       desc: 'For growing teams that need more power and insights.',
-      price: 79,
+      price: 237,
       interviews: '150 interviews/mo',
       features: [
         { text: 'AI Interviewer (Zara)', included: true },
@@ -59,7 +59,7 @@ const t = {
     enterprise: {
       name: 'Enterprise',
       desc: 'For organizations hiring at scale with custom needs.',
-      price: 199,
+      price: 597,
       interviews: 'Unlimited interviews',
       features: [
         { text: 'AI Interviewer (Zara)', included: true },
@@ -85,7 +85,7 @@ const t = {
       },
       {
         q: 'What happens if I exceed my interview limit?',
-        a: 'We\'ll notify you when you\'re close to your limit. You can upgrade your plan anytime or purchase additional interview packs at $1.50 per interview.',
+        a: 'We\'ll notify you when you\'re close to your limit. You can upgrade your plan anytime or purchase additional interview packs at $4.50 per interview.',
       },
       {
         q: 'Is my data secure?',
@@ -119,7 +119,7 @@ const t = {
     starter: {
       name: 'Starter',
       desc: 'Perfecto para equipos pequeños que inician con entrevistas IA.',
-      price: 29,
+      price: 87,
       interviews: '30 entrevistas/mes',
       features: [
         { text: 'Entrevistadora IA (Zara)', included: true },
@@ -136,7 +136,7 @@ const t = {
     pro: {
       name: 'Pro',
       desc: 'Para equipos en crecimiento que necesitan más poder e insights.',
-      price: 79,
+      price: 237,
       interviews: '150 entrevistas/mes',
       features: [
         { text: 'Entrevistadora IA (Zara)', included: true },
@@ -153,7 +153,7 @@ const t = {
     enterprise: {
       name: 'Enterprise',
       desc: 'Para organizaciones que contratan a gran escala con necesidades personalizadas.',
-      price: 199,
+      price: 597,
       interviews: 'Entrevistas ilimitadas',
       features: [
         { text: 'Entrevistadora IA (Zara)', included: true },
@@ -179,7 +179,7 @@ const t = {
       },
       {
         q: '¿Qué pasa si excedo mi límite de entrevistas?',
-        a: 'Te notificaremos cuando estés cerca de tu límite. Puedes actualizar tu plan en cualquier momento o comprar paquetes adicionales de entrevistas a $1.50 USD por entrevista.',
+        a: 'Te notificaremos cuando estés cerca de tu límite. Puedes actualizar tu plan en cualquier momento o comprar paquetes adicionales de entrevistas a $4.50 USD por entrevista.',
       },
       {
         q: '¿Mis datos están seguros?',

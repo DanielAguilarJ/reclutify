@@ -240,7 +240,7 @@ export default function LandingPage() {
               <tr><th>Feature</th><th>Reclutify</th><th>HireVue</th></tr>
             </thead>
             <tbody>
-              <tr><td>Pricing</td><td>From $29/mo</td><td>From $500/mo</td></tr>
+              <tr><td>Pricing</td><td>From $87/mo</td><td>From $500/mo</td></tr>
               <tr><td>Native Spanish AI</td><td>Yes</td><td>Limited</td></tr>
               <tr><td>Setup Time</td><td>5 minutes</td><td>2-4 weeks</td></tr>
               <tr><td>Built-in Job Board</td><td>Yes</td><td>No</td></tr>

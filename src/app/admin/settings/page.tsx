@@ -21,9 +21,9 @@ interface OrgSubscription {
 }
 
 const PLAN_META: Record<PlanTier, { label: string; price: number; color: string; Icon: React.ElementType }> = {
-  starter:    { label: 'Starter',    price: 29,  color: '#D3FB52', Icon: Zap },
-  pro:        { label: 'Pro',        price: 79,  color: '#00D3D8', Icon: Crown },
-  enterprise: { label: 'Enterprise', price: 199, color: '#b56afa', Icon: Building2 },
+  starter:    { label: 'Starter',    price: 87,  color: '#D3FB52', Icon: Zap },
+  pro:        { label: 'Pro',        price: 237,  color: '#00D3D8', Icon: Crown },
+  enterprise: { label: 'Enterprise', price: 597, color: '#b56afa', Icon: Building2 },
 };
 
 function BillingCard({ language }: { language: string }) {

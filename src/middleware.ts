@@ -31,6 +31,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Skip auth for training token-based access (employees access via token link)
+  if (request.nextUrl.pathname.startsWith('/training/') && !request.nextUrl.pathname.startsWith('/training/center')) {
+    const { supabaseResponse } = await createClient(request);
+    return supabaseResponse;
+  }
+
   // Refrescar la sesión del usuario de forma segura con getUser()
   const { supabaseResponse, supabase, user } = await createClient(request);
 

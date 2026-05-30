@@ -24,12 +24,14 @@ import {
   ShieldAlert,
   TrendingUp,
   Eye,
+  UserCheck,
 } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import ScoreGauge from '@/components/admin/ScoreGauge';
 import TopicScoreBar from '@/components/admin/TopicScoreBar';
 import PDFExportButton from '@/components/admin/ScorecardPDF';
+import HireModal from '@/components/admin/HireModal';
 
 export default function ReportPage({
   params,
@@ -40,6 +42,7 @@ export default function ReportPage({
   const { candidates } = useAdminStore();
   const { language, planTier } = useAppStore();
   const candidate = candidates.find((c) => c.id === id);
+  const [showHireModal, setShowHireModal] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'sentiment'>('overview');
 
@@ -179,6 +182,15 @@ export default function ReportPage({
         </div>
 
         <div className="ml-auto flex items-center gap-3">
+          {(evaluation.recommendation === 'Strong Hire' || evaluation.recommendation === 'Hire') && (
+            <button
+              onClick={() => setShowHireModal(true)}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all bg-success/10 text-success hover:bg-success/20 border border-success/20 cursor-pointer"
+            >
+              <UserCheck className="h-3.5 w-3.5" />
+              {language === 'es' ? 'Contratar' : 'Hire'}
+            </button>
+          )}
           <PDFExportButton candidate={candidate} language={language} />
           <button
             onClick={handleExportTranscript}
@@ -755,7 +767,16 @@ export default function ReportPage({
                </div>
              )}
            </div>
-        </motion.div>
+         </motion.div>
+      )}
+
+      {/* Hire Modal */}
+      {showHireModal && (
+        <HireModal
+          candidate={candidate}
+          language={language}
+          onClose={() => setShowHireModal(false)}
+        />
       )}
     </div>
   );

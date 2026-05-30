@@ -67,10 +67,10 @@ export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSid
     { label: language === 'es' ? 'Dashboard' : 'Dashboard', href: '/admin', icon: PieChart },
     { label: language === 'es' ? 'Crear Puesto' : 'Create Role', href: '/admin/create-role', icon: PlusCircle },
     { label: language === 'es' ? 'Candidatos' : 'Pipeline', href: '/admin/pipeline', icon: Users },
+    { label: language === 'es' ? 'Capacitación' : 'Training', href: '/admin/training', icon: GraduationCap },
     { label: language === 'es' ? 'Equidad (Sesgo)' : 'AI Fairness', href: '/admin/analytics/bias', icon: ShieldAlert },
     { label: language === 'es' ? 'Telemetría AI' : 'AI Telemetry', href: '/admin/telemetry', icon: PieChart },
     { label: 'Tickets', href: '/admin/tickets', icon: Ticket },
-    { label: language === 'es' ? 'Informes (Cursos)' : 'Info Sessions', href: '/coach', icon: GraduationCap },
   ];
 
   return (

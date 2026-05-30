@@ -132,3 +132,150 @@ export interface InterviewTicket {
   expiresAt: number;
   used: boolean;
 }
+
+// ─── Training Center Types ───
+
+export interface TrainingProgram {
+  id: string;
+  orgId: string;
+  title: string;
+  description?: string;
+  isDefault: boolean;
+  welcomeMessage?: string;
+  aiPersonality: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrainingDocument {
+  id: string;
+  programId: string;
+  orgId: string;
+  fileName: string;
+  fileUrl: string;
+  fileType: string;
+  fileSize?: number;
+  extractedText?: string;
+  aiSummary?: string;
+  aiTopics: TrainingDocumentTopic[];
+  sortOrder: number;
+  createdAt: string;
+}
+
+export interface TrainingDocumentTopic {
+  title: string;
+  description: string;
+  keyPoints: string[];
+}
+
+export interface TrainingModuleSection {
+  title: string;
+  body: string;
+  keyPoints: string[];
+}
+
+export interface TrainingModule {
+  id: string;
+  programId: string;
+  title: string;
+  description?: string;
+  content: { sections: TrainingModuleSection[] };
+  sourceDocumentId?: string;
+  sortOrder: number;
+  durationEstimate: number;
+  evaluationEnabled: boolean;
+  evaluationQuestions: TrainingQuestion[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrainingQuestion {
+  question: string;
+  type: 'multiple_choice' | 'open_ended' | 'true_false';
+  options?: string[];
+  correctAnswer: string;
+  explanation?: string;
+}
+
+export interface TrainingEmployee {
+  id: string;
+  orgId: string;
+  candidateResultId?: string;
+  userId?: string;
+  programId: string;
+  token: string;
+  email: string;
+  name: string;
+  roleTitle?: string;
+  status: 'active' | 'completed' | 'paused' | 'not_started';
+  overallProgress: number;
+  overallScore?: number;
+  hiredAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  interviewData: {
+    evaluation?: Evaluation;
+    transcript?: TranscriptEntry[];
+    cvData?: CvData;
+  };
+  personalizationNotes: {
+    strengths?: string[];
+    areasToWatch?: string[];
+    learningStyle?: string;
+    customTips?: string[];
+  };
+  createdAt: string;
+}
+
+export type TrainingProgressStatus = 'locked' | 'available' | 'in_progress' | 'completed';
+
+export interface TrainingProgress {
+  id: string;
+  employeeId: string;
+  moduleId: string;
+  status: TrainingProgressStatus;
+  startedAt?: string;
+  completedAt?: string;
+  score?: number;
+  aiFeedback?: string;
+  timeSpent: number;
+  createdAt: string;
+}
+
+export interface TrainingEvaluation {
+  id: string;
+  employeeId: string;
+  moduleId: string;
+  questions: TrainingQuestion[];
+  answers: TrainingAnswer[];
+  score?: number;
+  passed: boolean;
+  attempts: number;
+  evaluatedAt: string;
+}
+
+export interface TrainingAnswer {
+  questionIndex: number;
+  answer: string;
+  isCorrect: boolean;
+  aiExplanation?: string;
+}
+
+export interface TrainingMessage {
+  role: 'assistant' | 'user' | 'system';
+  content: string;
+  timestamp: number;
+  type?: 'text' | 'quiz' | 'feedback' | 'celebration';
+}
+
+export interface TrainingSession {
+  id: string;
+  employeeId: string;
+  moduleId?: string;
+  sessionType: 'module' | 'general' | 'evaluation';
+  messages: TrainingMessage[];
+  startedAt: string;
+  endedAt?: string;
+}
+
+export type TrainingPhase = 'welcome' | 'overview' | 'module' | 'evaluation' | 'complete';

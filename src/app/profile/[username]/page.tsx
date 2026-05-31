@@ -33,6 +33,7 @@ export async function generateMetadata({ params }: ProfilePageProps): Promise<Me
   return {
     title,
     description,
+    alternates: { canonical: `/profile/${username}` },
     openGraph: {
       title: profile.full_name,
       description,
@@ -96,8 +97,19 @@ export default async function ProfilePage({ params }: ProfilePageProps) {
     }
   }
 
+  const personJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Person',
+    name: profile.full_name || profile.username,
+    url: `https://www.reclutify.com/profile/${profile.username}`,
+    jobTitle: profile.headline || undefined,
+    image: profile.avatar_url || undefined,
+    address: profile.location ? { '@type': 'PostalAddress', addressLocality: profile.location } : undefined,
+  };
+
   return (
     <div className="min-h-screen bg-background">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
       <AppNavbar user={navUser} activeRoute={isOwn ? '/profile' : undefined} />
 
       {/* Profile content */}

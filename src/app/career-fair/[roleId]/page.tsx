@@ -22,11 +22,25 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     description: job.description
       ? job.description.slice(0, 160)
       : `Aplica a ${job.title} en ${orgName}. Entrevista con IA en Reclutify.`,
+    alternates: { canonical: `/career-fair/${roleId}` },
     openGraph: {
       title: `${job.title} — ${orgName}`,
       description: job.description?.slice(0, 200) || `Vacante en ${orgName}`,
       type: 'website',
       siteName: 'Reclutify',
+      url: `https://www.reclutify.com/career-fair/${roleId}`,
+      images: [{
+        url: `/api/og?title=${encodeURIComponent(job.title)}&subtitle=${encodeURIComponent(orgName)}&type=job`,
+        width: 1200,
+        height: 630,
+        alt: `${job.title} en ${orgName}`,
+      }],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: `${job.title} — ${orgName}`,
+      description: job.description?.slice(0, 200) || `Vacante en ${orgName}`,
+      images: [`/api/og?title=${encodeURIComponent(job.title)}&subtitle=${encodeURIComponent(orgName)}&type=job`],
     },
   };
 }
@@ -61,6 +75,12 @@ export default async function RoleDetailPage({ params }: PageProps) {
       : undefined,
     employmentType: job.job_type || undefined,
     url: `${baseUrl}/career-fair/${job.id}`,
+    validThrough: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+    baseSalary: job.salary ? {
+      '@type': 'MonetaryAmount',
+      currency: 'USD',
+      value: { '@type': 'QuantitativeValue', value: job.salary },
+    } : undefined,
   };
 
   return (

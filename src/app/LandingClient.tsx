@@ -61,6 +61,7 @@ export function HeroSection() {
           muted
           loop
           playsInline
+          aria-label="Reclutify AI interview platform demo - AI-powered hiring for companies"
           className="absolute inset-0 w-full h-full object-cover"
           src="/hero.mp4"
         />

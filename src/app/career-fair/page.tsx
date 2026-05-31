@@ -6,9 +6,13 @@ export const metadata: Metadata = {
   title: 'Bolsa de Trabajo | Reclutify',
   description:
     'Encuentra tu próximo empleo con Reclutify. Explora vacantes de empresas top con entrevistas de IA. Busca por ubicación, tipo de trabajo y más.',
+  alternates: {
+    canonical: '/career-fair',
+  },
   openGraph: {
     title: 'Bolsa de Trabajo | Reclutify',
     description: 'Explora vacantes de empresas top y aplica con entrevistas de IA.',
+    url: 'https://www.reclutify.com/career-fair',
     locale: 'es_MX',
     type: 'website',
     siteName: 'Reclutify',

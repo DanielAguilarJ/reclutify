@@ -1,5 +1,11 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Centro de Capacitación | Reclutify',
+  robots: { index: false, follow: false },
+};
 
 export default async function TrainingCenterLayout({
   children,

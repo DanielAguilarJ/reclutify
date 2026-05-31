@@ -1,5 +1,5 @@
 import {ClerkProvider} from "@clerk/nextjs";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import PostHogProvider from "@/components/PostHogProvider";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -23,6 +23,16 @@ const instrumentSerif = Instrument_Serif({
   display: "swap",
 });
 
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#3b4cca' },
+    { media: '(prefers-color-scheme: dark)', color: '#0f1117' },
+  ],
+};
+
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.reclutify.com"),
   title: {
@@ -31,9 +41,14 @@ export const metadata: Metadata = {
   },
   description:
     "Reclutify: Plataforma de entrevistas con IA para reclutamiento. Conduct AI-powered interviews in English & Spanish. Evaluaciones automáticas, detección de sesgos, y reportes ejecutivos.",
-  keywords: ["AI interviews", "entrevistas IA", "HR tech", "reclutamiento", "HireVue alternative", "AI recruiter", "LATAM hiring"],
+  keywords: ["AI interviews", "entrevistas IA", "HR tech", "reclutamiento", "HireVue alternative", "AI recruiter", "LATAM hiring", "entrevistas inteligencia artificial", "plataforma de reclutamiento", "hiring platform"],
   alternates: {
     canonical: "/",
+    languages: {
+      'es': 'https://www.reclutify.com',
+      'en': 'https://www.reclutify.com',
+      'x-default': 'https://www.reclutify.com',
+    },
   },
   openGraph: {
     title: "Reclutify — AI Interview Platform",
@@ -48,7 +63,7 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Reclutify — AI Interview Platform",
+        alt: "Reclutify — AI Interview Platform for LATAM & Spain",
       },
     ],
   },
@@ -57,10 +72,21 @@ export const metadata: Metadata = {
     title: "Reclutify — AI Interview Platform",
     description: "Entrevistas con IA para empresas en LATAM y España. Desde $87/mes.",
     images: ["/og-image.png"],
+    creator: "@reclutify",
   },
   icons: {
     icon: "/favicon.ico",
     apple: "/icons/icon-192x192.png",
+  },
+  robots: {
+    index: true,
+    follow: true,
+    'max-snippet': -1,
+    'max-image-preview': 'large',
+    'max-video-preview': -1,
+  },
+  verification: {
+    google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || undefined,
   },
 };
 

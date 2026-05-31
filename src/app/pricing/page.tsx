@@ -296,17 +296,39 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen bg-[#1a1b23] text-white font-sans selection:bg-[#D3FB52] selection:text-black">
       {/* Header */}
-      <header className="fixed top-0 inset-x-0 z-50 px-6 py-4 flex items-center justify-between border-b border-white/5 bg-[#1a1b23]/80 backdrop-blur-xl">
-        <Link href="/"><Logo /></Link>
-        <div className="flex items-center gap-4">
-          <LanguageToggle />
-          <Link
-            href="/login"
-            className="hidden md:inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium text-sm border border-white/20 hover:border-white/40 transition-colors"
-          >
-            Log in
+      <header className="fixed top-0 inset-x-0 z-50 flex justify-center pointer-events-none pt-4 px-4">
+        <nav
+          className="pointer-events-auto relative flex items-center gap-1 px-2 py-2 rounded-full bg-white/[0.06] shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.1)] border border-white/[0.08] backdrop-blur-2xl backdrop-saturate-[1.8]"
+          style={{ WebkitBackdropFilter: 'blur(40px) saturate(1.8)', backdropFilter: 'blur(40px) saturate(1.8)' }}
+        >
+          <div className="absolute inset-x-4 -top-px h-px">
+            <div className="h-full w-full bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+          </div>
+          <Link href="/" className="relative flex items-center pl-3 pr-2 py-1 shrink-0">
+            <Logo />
           </Link>
-        </div>
+          <div className="hidden md:flex items-center gap-0.5 px-2">
+            <Link href="/#product" className="px-3.5 py-1.5 text-[13px] text-white/60 hover:text-white rounded-full hover:bg-white/[0.06] transition-all duration-300">
+              {language === 'es' ? 'Producto' : 'Product'}
+            </Link>
+            <Link href="/career-fair" className="px-3.5 py-1.5 text-[13px] text-white/60 hover:text-white rounded-full hover:bg-white/[0.06] transition-all duration-300">
+              {language === 'es' ? 'Vacantes' : 'Jobs'}
+            </Link>
+            <Link href="/practice" className="px-3.5 py-1.5 text-[13px] text-white/60 hover:text-white rounded-full hover:bg-white/[0.06] transition-all duration-300">
+              {language === 'es' ? 'Práctica' : 'Practice'}
+            </Link>
+          </div>
+          <div className="flex items-center gap-1.5 pl-2">
+            <LanguageToggle />
+            <Link href="/login" className="hidden md:inline-flex text-[13px] text-white/60 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/[0.06] transition-all duration-300">
+              Log in
+            </Link>
+            <Link href="/login?mode=register" className="relative inline-flex items-center gap-1.5 pl-4 pr-3.5 py-2 rounded-full bg-white text-[#0a0a0a] text-[13px] font-semibold hover:bg-white/90 transition-all duration-300 shadow-[0_0_20px_rgba(255,255,255,0.1)]">
+              {language === 'es' ? 'Empieza' : 'Get started'}
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </nav>
       </header>
 
       <main className="pt-32 pb-24 px-6">

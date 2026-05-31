@@ -21,7 +21,6 @@ import LanguageToggle from '@/components/ui/LanguageToggle';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
-import { SignInButton, SignUpButton, Show, UserButton } from '@clerk/nextjs';
 
 const trustedLogos = [
   { name: 'WorldBrain', src: '/worldbrain-logo.webp' },
@@ -251,22 +250,19 @@ export function Header() {
             <div className="hidden md:block">
               <LanguageToggle />
             </div>
-            <Show when="signed-out">
-              <SignInButton>
-                <button className="hidden md:inline-flex text-[13px] text-white/60 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/[0.06] transition-all duration-300">
-                  {es ? 'Iniciar sesión' : 'Log in'}
-                </button>
-              </SignInButton>
-              <SignUpButton>
-                <button className="relative inline-flex items-center gap-1.5 pl-4 pr-3.5 py-2 rounded-full bg-white text-[#0a0a0a] text-[13px] font-semibold hover:bg-white/90 transition-all duration-300 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]">
-                  {es ? 'Empieza' : 'Get started'}
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </SignUpButton>
-            </Show>
-            <Show when="signed-in">
-              <UserButton />
-            </Show>
+            <Link
+              href="/login"
+              className="hidden md:inline-flex text-[13px] text-white/60 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/[0.06] transition-all duration-300"
+            >
+              {es ? 'Iniciar sesión' : 'Log in'}
+            </Link>
+            <Link
+              href="/login?mode=register"
+              className="relative inline-flex items-center gap-1.5 pl-4 pr-3.5 py-2 rounded-full bg-white text-[#0a0a0a] text-[13px] font-semibold hover:bg-white/90 transition-all duration-300 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]"
+            >
+              {es ? 'Empieza' : 'Get started'}
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
 
             {/* Mobile menu toggle */}
             <button
@@ -321,14 +317,13 @@ export function Header() {
               </nav>
               <div className="mt-4 pt-4 border-t border-white/[0.08] flex items-center justify-between">
                 <LanguageToggle />
-                <Show when="signed-out">
-                  <SignUpButton>
-                    <button className="inline-flex items-center gap-1.5 pl-4 pr-3.5 py-2 rounded-full bg-white text-[#0a0a0a] text-[13px] font-semibold">
-                      {es ? 'Empieza' : 'Get started'}
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  </SignUpButton>
-                </Show>
+                <Link
+                  href="/login?mode=register"
+                  className="inline-flex items-center gap-1.5 pl-4 pr-3.5 py-2 rounded-full bg-white text-[#0a0a0a] text-[13px] font-semibold"
+                >
+                  {es ? 'Empieza' : 'Get started'}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
               </div>
             </motion.div>
           </motion.div>

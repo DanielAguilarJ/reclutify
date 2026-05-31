@@ -80,9 +80,19 @@ function renderContent(text: string) {
 export default function TermsPage() {
   return (
     <div className="min-h-screen bg-background text-foreground font-sans">
-      <header className="fixed top-0 inset-x-0 z-50 px-6 py-4 flex items-center justify-between border-b border-border bg-background/80 backdrop-blur-xl">
-        <Link href="/"><Logo /></Link>
-        <Link href="/login" className="inline-flex items-center px-4 py-2 rounded-lg font-medium text-sm border border-border hover:bg-surface transition-colors">Log in</Link>
+      <header className="fixed top-0 inset-x-0 z-50 flex justify-center pointer-events-none pt-4 px-4">
+        <nav className="pointer-events-auto relative flex items-center gap-1 px-2 py-2 rounded-full bg-white/[0.06] shadow-[0_8px_32px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.05)] border border-border/30 backdrop-blur-2xl backdrop-saturate-[1.8]" style={{ WebkitBackdropFilter: 'blur(40px) saturate(1.8)', backdropFilter: 'blur(40px) saturate(1.8)' }}>
+          <div className="absolute inset-x-4 -top-px h-px"><div className="h-full w-full bg-gradient-to-r from-transparent via-border/50 to-transparent" /></div>
+          <Link href="/" className="relative flex items-center pl-3 pr-4 py-1 shrink-0"><Logo /></Link>
+          <div className="hidden md:flex items-center gap-0.5 px-2">
+            <Link href="/pricing" className="px-3.5 py-1.5 text-[13px] text-muted hover:text-foreground rounded-full hover:bg-surface transition-all duration-300">Pricing</Link>
+            <Link href="/career-fair" className="px-3.5 py-1.5 text-[13px] text-muted hover:text-foreground rounded-full hover:bg-surface transition-all duration-300">Jobs</Link>
+            <Link href="/practice" className="px-3.5 py-1.5 text-[13px] text-muted hover:text-foreground rounded-full hover:bg-surface transition-all duration-300">Practice</Link>
+          </div>
+          <div className="flex items-center gap-1.5 pl-2">
+            <Link href="/login" className="inline-flex items-center px-4 py-2 rounded-full font-medium text-[13px] text-foreground hover:bg-surface border border-border/50 transition-all duration-300">Log in</Link>
+          </div>
+        </nav>
       </header>
 
       <main className="pt-32 pb-24 px-6">

@@ -3,7 +3,8 @@ import { createClient } from '@/utils/supabase/server';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Centro de Capacitación | Reclutify',
+  title: 'AI Training Center — Employee Onboarding | Reclutify',
+  description: 'AI-powered employee training and onboarding. Personalized AI training modules for new hires.',
   robots: { index: false, follow: false },
 };
 

@@ -53,14 +53,21 @@ export default function LandingPage() {
 
         {/* SEO: Server-rendered hero text (hidden visually, visible to crawlers) */}
         <div className="sr-only" aria-hidden="false">
-          <h1>Entrevistas que cuentan algo — Interviews that actually tell you something</h1>
+          <h1>AI Interview Tool — Reclutify: The #1 AI Interview Platform & AI Hiring Tool</h1>
           <p>
-            Reclutify reemplaza la llamada de filtro con una conversación adaptativa. Tu equipo recibe
-            transcripciones, puntuaciones por rúbrica y una recomendación clara — sin agendar nada.
+            Reclutify is the best AI interview tool for HR teams. Our AI interview assistant conducts
+            automated interviews, AI screening, and AI resume parsing in English and Spanish. The top
+            HireVue alternative and AI recruiter for companies in LATAM, Mexico, Colombia, and Spain.
           </p>
           <p>
-            Reclutify replaces the screening call with an adaptive conversation. Your team gets
-            transcripts, rubric-based scores, and a clear recommendation — with nothing to schedule.
+            Reclutify reemplaza la llamada de filtro con una entrevista con IA adaptativa. Tu equipo recibe
+            transcripciones, puntuaciones por rúbrica y una recomendación clara — sin agendar nada.
+            La mejor plataforma de reclutamiento con inteligencia artificial. Bolsa de trabajo con IA.
+          </p>
+          <p>
+            AI interview assistant for automated hiring. AI screening tool that evaluates candidates
+            with rubric-based scores. ChatGPT interview alternative for enterprise HR. Video interview
+            platform with AI-powered evaluation, bias detection, and executive reports.
           </p>
         </div>
 
@@ -94,20 +101,26 @@ export default function LandingPage() {
 
         {/* SEO: Product value prop static text */}
         <div className="sr-only" aria-hidden="false">
-          <h2>Menos llamadas. Más señal — Fewer calls. More signal.</h2>
+          <h2>AI Screening & Automated Interview Tool — Fewer calls. More signal.</h2>
           <p>
-            Reemplazamos las primeras horas de filtrado con una conversación de 4 a 30 minutos que
-            los candidatos disfrutan — y un reporte que tu equipo realmente lee.
+            Our AI interview tool replaces the first hours of screening with a 4-to-30-minute AI conversation
+            that candidates enjoy — and a report your team actually reads. AI screening that works 24/7.
           </p>
           <p>
-            Cada entrevista se evalúa con la misma rúbrica, en el mismo orden, sin sesgo de fatiga
-            ni &quot;química&quot;. Solo señal.
+            Every AI interview is evaluated with the same rubric, in the same order, without fatigue bias.
+            Pure signal. The best AI recruitment tool and automated interview platform for modern HR teams.
+          </p>
+          <p>
+            Plataforma de reclutamiento con IA. Entrevistas con inteligencia artificial automatizadas.
+            Bolsa de trabajo inteligente. AI resume screening y evaluación automática de candidatos.
+            Herramienta de entrevistas con IA para empresas en México, Colombia, España y toda LATAM.
           </p>
           <ul>
-            <li>40h ahorradas a la semana</li>
-            <li>4 min entrevista media</li>
-            <li>60% menos tiempo a oferta</li>
-            <li>24/7 disponibilidad continua</li>
+            <li>40h saved per week with AI screening</li>
+            <li>4 min average AI interview duration</li>
+            <li>60% less time-to-hire with automated interviews</li>
+            <li>24/7 AI interview availability — always-on hiring</li>
+            <li>AI bias detection and fair hiring practices</li>
           </ul>
         </div>
 

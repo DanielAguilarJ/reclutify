@@ -1,22 +1,22 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Planes y Precios | Reclutify',
-  description: 'Planes de Reclutify desde $87/mes. Entrevistas con IA ilimitadas, evaluaciones automáticas, detección de sesgos y reportes ejecutivos. Prueba gratis 14 días.',
+  title: 'AI Interview Tool Pricing — Plans from $87/mo | Reclutify',
+  description: 'AI interview tool pricing from $87/mo. AI screening, automated interviews, AI resume parsing, bias detection. Best HireVue alternative. Free 14-day trial. Precios de entrevistas con IA desde $87/mes.',
   alternates: {
     canonical: '/pricing',
   },
   openGraph: {
-    title: 'Planes y Precios — Reclutify',
-    description: 'Desde $87/mes. Entrevistas AI ilimitadas, evaluaciones, y mucho más.',
+    title: 'AI Interview Tool Pricing — Reclutify',
+    description: 'AI hiring platform from $87/mo. AI screening, automated interviews, bias detection. Free trial.',
     url: 'https://www.reclutify.com/pricing',
     type: 'website',
     siteName: 'Reclutify',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Planes y Precios — Reclutify',
-    description: 'Entrevistas con IA desde $87/mes. Prueba gratis.',
+    title: 'AI Interview Tool — Plans from $87/mo',
+    description: 'Best AI interview platform. AI screening + automated hiring. Free 14-day trial.',
   },
 };
 

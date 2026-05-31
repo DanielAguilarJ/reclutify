@@ -3,15 +3,15 @@ import { getPublishedJobs, getDistinctLocations } from '@/app/actions/jobs';
 import JobSearchResults from './JobSearchResults';
 
 export const metadata: Metadata = {
-  title: 'Bolsa de Trabajo | Reclutify',
+  title: 'Bolsa de Trabajo con IA — Vacantes y Empleo | Reclutify',
   description:
-    'Encuentra tu próximo empleo con Reclutify. Explora vacantes de empresas top con entrevistas de IA. Busca por ubicación, tipo de trabajo y más.',
+    'Bolsa de trabajo con entrevistas de IA. Encuentra empleo y vacantes en empresas top de CDMX, Monterrey, Guadalajara y toda LATAM. Aplica con AI interview y destaca.',
   alternates: {
     canonical: '/career-fair',
   },
   openGraph: {
-    title: 'Bolsa de Trabajo | Reclutify',
-    description: 'Explora vacantes de empresas top y aplica con entrevistas de IA.',
+    title: 'Bolsa de Trabajo con IA — Empleo y Vacantes',
+    description: 'Encuentra vacantes con entrevistas de IA. Empleo en CDMX, Monterrey, Guadalajara y más.',
     url: 'https://www.reclutify.com/career-fair',
     locale: 'es_MX',
     type: 'website',
@@ -19,8 +19,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Bolsa de Trabajo | Reclutify',
-    description: 'Encuentra tu próximo empleo con entrevistas de IA.',
+    title: 'Bolsa de Trabajo con IA — Reclutify',
+    description: 'Bolsa de trabajo con AI interview. Vacantes en empresas top de LATAM.',
   },
 };
 

@@ -40,8 +40,8 @@ export const metadata: Metadata = {
     default: "Reclutify — AI Interview Platform | Entrevistas con IA",
   },
   description:
-    "Reclutify: Plataforma de entrevistas con IA para reclutamiento. Conduct AI-powered interviews in English & Spanish. Evaluaciones automáticas, detección de sesgos, y reportes ejecutivos.",
-  keywords: ["AI interviews", "entrevistas IA", "HR tech", "reclutamiento", "HireVue alternative", "AI recruiter", "LATAM hiring", "entrevistas inteligencia artificial", "plataforma de reclutamiento", "hiring platform"],
+    "Reclutify: AI Interview Platform & AI Hiring Tool. Conduct AI-powered interviews in English & Spanish. AI screening, automated candidate evaluation, bias detection. The #1 AI interview assistant for HR teams. Bolsa de trabajo con IA.",
+  keywords: ["AI interview", "AI hiring", "AI interview tool", "AI interview assistant", "AI screening", "AI recruitment", "AI resume screening", "entrevistas IA", "bolsa de trabajo", "HR tech", "reclutamiento IA", "HireVue alternative", "AI recruiter", "LATAM hiring", "video interview platform", "automated interview", "ChatGPT interview", "empleo", "vacantes", "plataforma de reclutamiento", "AI training", "employee onboarding", "capacitacion empresarial"],
   alternates: {
     canonical: "/",
     languages: {
@@ -51,8 +51,8 @@ export const metadata: Metadata = {
     },
   },
   openGraph: {
-    title: "Reclutify — AI Interview Platform",
-    description: "Entrevistas con IA • AI Interviews • From $87/mo",
+    title: "Reclutify — #1 AI Interview Tool & Hiring Platform",
+    description: "AI-powered interviews, AI screening & automated hiring. From $87/mo. Trusted by HR teams across LATAM & Spain.",
     url: "https://www.reclutify.com",
     siteName: "Reclutify",
     locale: "es_MX",
@@ -63,14 +63,14 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Reclutify — AI Interview Platform for LATAM & Spain",
+        alt: "Reclutify — AI Interview Tool & Hiring Platform for HR Teams",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Reclutify — AI Interview Platform",
-    description: "Entrevistas con IA para empresas en LATAM y España. Desde $87/mes.",
+    title: "Reclutify — AI Interview Tool for HR Teams",
+    description: "AI interviews, AI screening, automated hiring. Trusted by HR teams in LATAM. From $87/mo.",
     images: ["/og-image.png"],
     creator: "@reclutify",
   },
@@ -102,7 +102,7 @@ export default function RootLayout({
       name: "Reclutify",
       url: "https://www.reclutify.com",
       logo: "https://www.reclutify.com/icons/icon-512x512.png",
-      description: "AI-powered recruitment platform for HR teams in LATAM and Spain.",
+      description: "AI Interview Tool & AI Hiring Platform. The #1 AI interview assistant for HR teams in LATAM and Spain. AI screening, automated interviews, and AI resume parsing.",
       sameAs: [
         "https://www.linkedin.com/company/reclutify",
         "https://twitter.com/reclutify",
@@ -113,14 +113,15 @@ export default function RootLayout({
         contactType: "customer service",
         availableLanguage: ["Spanish", "English"],
       },
+      knowsAbout: ["AI Interview", "AI Screening", "AI Recruitment", "Automated Hiring", "HR Technology", "Employee Onboarding", "AI Training"],
     },
     {
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
-      name: "Reclutify",
+      name: "Reclutify — AI Interview Tool",
       applicationCategory: "BusinessApplication",
       operatingSystem: "Web",
-      description: "AI-powered interview platform for HR teams. Conduct interviews in English and Spanish with automatic evaluation, bias detection, and executive reports.",
+      description: "AI interview tool and AI hiring platform. Conducts AI-powered interviews with AI screening, automated candidate evaluation, bias detection, and executive reports. Best HireVue alternative for LATAM.",
       url: "https://www.reclutify.com",
       offers: {
         "@type": "AggregateOffer",
@@ -129,12 +130,7 @@ export default function RootLayout({
         priceCurrency: "USD",
         offerCount: "3",
       },
-      aggregateRating: {
-        "@type": "AggregateRating",
-        ratingValue: "4.8",
-        reviewCount: "150",
-        bestRating: "5",
-      },
+      featureList: "AI Interview, AI Screening, AI Resume Parsing, Automated Evaluation, Bias Detection, Video Interviews, Employee Onboarding, AI Training",
       inLanguage: ["en", "es"],
     },
     {
@@ -142,6 +138,7 @@ export default function RootLayout({
       "@type": "WebSite",
       name: "Reclutify",
       url: "https://www.reclutify.com",
+      description: "AI Interview Tool & Bolsa de Trabajo con IA",
       potentialAction: {
         "@type": "SearchAction",
         target: {

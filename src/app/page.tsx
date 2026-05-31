@@ -53,21 +53,22 @@ export default function LandingPage() {
 
         {/* SEO: Server-rendered hero text (hidden visually, visible to crawlers) */}
         <div className="sr-only" aria-hidden="false">
-          <h1>AI Interview Tool — Reclutify: The #1 AI Interview Platform & AI Hiring Tool</h1>
+          <h1>AI Interview Tool & Video Interview Platform — Reclutify</h1>
           <p>
-            Reclutify is the best AI interview tool for HR teams. Our AI interview assistant conducts
-            automated interviews, AI screening, and AI resume parsing in English and Spanish. The top
-            HireVue alternative and AI recruiter for companies in LATAM, Mexico, Colombia, and Spain.
+            Reclutify is the #1 AI interview tool and video interview platform for HR teams.
+            Conduct one-way video interviews with AI screening and automated evaluation.
+            The best HireVue alternative for companies hiring in LATAM, Mexico, Spain, and Colombia.
           </p>
           <p>
-            Reclutify reemplaza la llamada de filtro con una entrevista con IA adaptativa. Tu equipo recibe
-            transcripciones, puntuaciones por rúbrica y una recomendación clara — sin agendar nada.
-            La mejor plataforma de reclutamiento con inteligencia artificial. Bolsa de trabajo con IA.
+            Our interview AI conducts video interview questions automatically, provides AI screening
+            scores, and delivers executive reports. AI interview assistant that works 24/7.
+            Video interview software trusted by enterprise HR teams worldwide.
           </p>
           <p>
-            AI interview assistant for automated hiring. AI screening tool that evaluates candidates
-            with rubric-based scores. ChatGPT interview alternative for enterprise HR. Video interview
-            platform with AI-powered evaluation, bias detection, and executive reports.
+            Reclutify es la mejor plataforma de entrevistas con IA y bolsa de trabajo inteligente.
+            Entrevistas de trabajo con inteligencia artificial. Bolsa de empleo con vacantes de
+            empresas top en CDMX, Monterrey, Guadalajara, Puebla y toda LATAM.
+            Plataforma de reclutamiento con video interview y evaluación automática.
           </p>
         </div>
 

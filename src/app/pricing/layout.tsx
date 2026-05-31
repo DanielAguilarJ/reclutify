@@ -1,22 +1,22 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'AI Interview Tool Pricing — Plans from $87/mo | Reclutify',
-  description: 'AI interview tool pricing from $87/mo. AI screening, automated interviews, AI resume parsing, bias detection. Best HireVue alternative. Free 14-day trial. Precios de entrevistas con IA desde $87/mes.',
+  title: 'Video Interview Platform Pricing — AI Interview Software from $87 | Reclutify',
+  description: 'Video interview platform and AI interview tool pricing from $87/mo. One-way video interview software with AI screening, automated evaluation. Best HireVue alternative. Free 14-day trial.',
   alternates: {
     canonical: '/pricing',
   },
   openGraph: {
-    title: 'AI Interview Tool Pricing — Reclutify',
-    description: 'AI hiring platform from $87/mo. AI screening, automated interviews, bias detection. Free trial.',
+    title: 'Video Interview Software Pricing — Reclutify',
+    description: 'AI interview tool & video interview platform from $87/mo. AI screening, one-way interviews, automated hiring.',
     url: 'https://www.reclutify.com/pricing',
     type: 'website',
     siteName: 'Reclutify',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'AI Interview Tool — Plans from $87/mo',
-    description: 'Best AI interview platform. AI screening + automated hiring. Free 14-day trial.',
+    title: 'AI Interview & Video Interview Software — from $87/mo',
+    description: 'Video interview platform with AI. One-way interviews + AI screening. Free trial.',
   },
 };
 

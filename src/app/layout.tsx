@@ -40,8 +40,8 @@ export const metadata: Metadata = {
     default: "Reclutify — AI Interview Platform | Entrevistas con IA",
   },
   description:
-    "Reclutify: AI Interview Platform & AI Hiring Tool. Conduct AI-powered interviews in English & Spanish. AI screening, automated candidate evaluation, bias detection. The #1 AI interview assistant for HR teams. Bolsa de trabajo con IA.",
-  keywords: ["AI interview", "AI hiring", "AI interview tool", "AI interview assistant", "AI screening", "AI recruitment", "AI resume screening", "entrevistas IA", "bolsa de trabajo", "HR tech", "reclutamiento IA", "HireVue alternative", "AI recruiter", "LATAM hiring", "video interview platform", "automated interview", "ChatGPT interview", "empleo", "vacantes", "plataforma de reclutamiento", "AI training", "employee onboarding", "capacitacion empresarial"],
+    "Reclutify: #1 AI Interview Tool & Video Interview Platform. AI-powered hiring with one-way video interviews, AI screening, and automated candidate evaluation. The best HireVue alternative for HR teams. Bolsa de trabajo con IA. Interview AI that works 24/7.",
+  keywords: ["AI interview", "AI interview tool", "AI hiring", "AI screening", "video interview platform", "video interview software", "AI interview assistant", "interview AI", "one way video interview", "AI recruitment", "AI resume screening", "entrevistas IA", "bolsa de trabajo", "bolsa de empleo", "HR tech", "reclutamiento IA", "HireVue alternative", "AI recruiter", "LATAM hiring", "video interview platform", "automated interview", "interview questions", "empleo", "vacantes", "plataforma de reclutamiento", "AI training", "training software", "onboarding", "ofertas de empleo", "video interview practice", "entrevista de trabajo"],
   alternates: {
     canonical: "/",
     languages: {
@@ -51,8 +51,8 @@ export const metadata: Metadata = {
     },
   },
   openGraph: {
-    title: "Reclutify — #1 AI Interview Tool & Hiring Platform",
-    description: "AI-powered interviews, AI screening & automated hiring. From $87/mo. Trusted by HR teams across LATAM & Spain.",
+    title: "Reclutify — AI Interview Tool & Video Interview Platform",
+    description: "AI-powered video interviews, one-way interviews & AI screening. Video interview software from $87/mo. Trusted by HR teams across LATAM & Spain.",
     url: "https://www.reclutify.com",
     siteName: "Reclutify",
     locale: "es_MX",
@@ -130,7 +130,7 @@ export default function RootLayout({
         priceCurrency: "USD",
         offerCount: "3",
       },
-      featureList: "AI Interview, AI Screening, AI Resume Parsing, Automated Evaluation, Bias Detection, Video Interviews, Employee Onboarding, AI Training",
+      featureList: "AI Interview Tool, Video Interview Platform, One Way Video Interview, AI Screening, Video Interview Software, AI Resume Screening, Automated Interview, Interview Questions AI, Bias Detection, Employee Onboarding, Training Software",
       inLanguage: ["en", "es"],
     },
     {

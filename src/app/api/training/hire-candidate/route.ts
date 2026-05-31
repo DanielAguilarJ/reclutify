@@ -36,8 +36,8 @@ export async function POST(req: NextRequest) {
         role_title: roleTitle,
         org_id: orgId,
         program_id: programId,
-        access_token: token,
-        status: 'active',
+        token: token,
+        status: 'not_started',
         overall_progress: 0,
         interview_data: interviewData || null,
       })
@@ -55,9 +55,9 @@ export async function POST(req: NextRequest) {
     // 2. Fetch all modules for the program (ordered)
     const { data: modules, error: modulesError } = await supabase
       .from('training_modules')
-      .select('id, title, order_index')
+      .select('id, title, sort_order')
       .eq('program_id', programId)
-      .order('order_index', { ascending: true });
+      .order('sort_order', { ascending: true });
 
     if (modulesError) {
       console.error('[hire-candidate] Modules fetch error:', modulesError);
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
         module_id: mod.id,
         status: index === 0 ? 'available' : 'locked',
         score: null,
-        feedback: null,
+        ai_feedback: null,
       }));
 
       const { error: progressError } = await supabase

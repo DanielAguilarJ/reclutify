@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/utils/supabase/server';
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +13,9 @@ export async function POST(req: NextRequest) {
       personalizationNotes,
       moduleTitle,
       evaluationMode,
+      sessionId,
+      employeeId,
+      moduleId,
     } = body;
 
     if (!messages || !Array.isArray(messages)) {
@@ -111,6 +115,7 @@ ${evaluationMode ? 'You are now in EVALUATION MODE. Ask quiz questions one at a 
       isQuizQuestion?: boolean;
       evaluationComplete?: boolean;
       score?: number;
+      sessionId?: string;
     } = {};
 
     // Heuristic detection of quiz questions (AI asking a question in evaluation mode)
@@ -119,11 +124,60 @@ ${evaluationMode ? 'You are now in EVALUATION MODE. Ask quiz questions one at a 
 
       // Check if evaluation seems complete (AI mentions final score)
       const scoreMatch = responseContent.match(
-        /(?:final score|puntuaci[oó]n final|resultado final)[:\s]*(\d+)/i
+        /(?:final score|puntuaci[oó]n final|resultado final|score final)[:\s]*(\d+)/i
       );
       if (scoreMatch) {
         metadata.evaluationComplete = true;
         metadata.score = parseInt(scoreMatch[1], 10);
+      }
+    }
+
+    // Persist messages to training_sessions (non-blocking)
+    if (employeeId && moduleId) {
+      try {
+        const supabase = await createClient();
+        const allMessages = [
+          ...messages.map((msg: { role: string; content: string; timestamp?: number }) => ({
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp || Date.now(),
+          })),
+          {
+            role: 'assistant',
+            content: responseContent,
+            timestamp: Date.now(),
+          },
+        ];
+
+        if (sessionId) {
+          // Update existing session
+          await supabase
+            .from('training_sessions')
+            .update({
+              messages: allMessages,
+              ended_at: metadata.evaluationComplete ? new Date().toISOString() : null,
+            })
+            .eq('id', sessionId);
+        } else {
+          // Create new session
+          const { data: newSession } = await supabase
+            .from('training_sessions')
+            .insert({
+              employee_id: employeeId,
+              module_id: moduleId,
+              session_type: evaluationMode ? 'evaluation' : 'module',
+              messages: allMessages,
+            })
+            .select('id')
+            .single();
+
+          if (newSession) {
+            metadata.sessionId = newSession.id;
+          }
+        }
+      } catch (persistError) {
+        // Non-blocking: chat continues even if persistence fails
+        console.error('[training/chat] Session persist error:', persistError);
       }
     }
 

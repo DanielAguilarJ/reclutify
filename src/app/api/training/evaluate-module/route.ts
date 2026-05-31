@@ -101,9 +101,9 @@ Evaluate and return JSON with:
     const { error: progressError } = await supabase
       .from('training_progress')
       .update({
-        status: passed ? 'completed' : 'failed',
+        status: passed ? 'completed' : 'in_progress',
         score,
-        feedback: evaluation.feedback || null,
+        ai_feedback: evaluation.feedback || null,
         completed_at: passed ? new Date().toISOString() : null,
       })
       .eq('employee_id', employeeId)
@@ -118,14 +118,14 @@ Evaluate and return JSON with:
       // Get current module's order to find the next one
       const { data: currentProgress } = await supabase
         .from('training_progress')
-        .select('module_id, training_modules(order_index, program_id)')
+        .select('module_id, training_modules(sort_order, program_id)')
         .eq('employee_id', employeeId)
         .eq('module_id', moduleId)
         .single();
 
       if (currentProgress?.training_modules) {
         const moduleData = currentProgress.training_modules as unknown as {
-          order_index: number;
+          sort_order: number;
           program_id: string;
         };
 
@@ -134,7 +134,9 @@ Evaluate and return JSON with:
           .from('training_modules')
           .select('id')
           .eq('program_id', moduleData.program_id)
-          .eq('order_index', moduleData.order_index + 1)
+          .gt('sort_order', moduleData.sort_order)
+          .order('sort_order', { ascending: true })
+          .limit(1)
           .single();
 
         if (nextModule) {
@@ -156,11 +158,18 @@ Evaluate and return JSON with:
         module_id: moduleId,
         score,
         passed,
-        feedback: evaluation.feedback || '',
-        strong_areas: evaluation.strongAreas || [],
-        weak_areas: evaluation.weakAreas || [],
-        recommendation: evaluation.recommendation || '',
-        conversation_summary: conversationText.substring(0, 5000),
+        attempts: 1,
+        questions: evaluation.strongAreas?.map((area: string) => ({
+          question: area,
+          type: 'open_ended',
+          correctAnswer: '',
+        })) || [],
+        answers: evaluation.weakAreas?.map((area: string, i: number) => ({
+          questionIndex: i,
+          answer: area,
+          isCorrect: false,
+          aiExplanation: evaluation.recommendation || '',
+        })) || [],
       });
 
     if (evalError) {

@@ -40,6 +40,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     setSessionId,
     setRoleId: setStoreRoleId,
     screenStream,
+    selectedCameraId,
+    selectedMicId,
   } = useInterviewStore();
 
   const { language } = useAppStore();
@@ -49,6 +51,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
   const [hasStarted, setHasStarted] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -574,8 +577,18 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     if (!existingSessionId) setSessionId(guaranteedSessionId);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const videoConstraints: MediaTrackConstraints | boolean = selectedCameraId
+        ? { deviceId: { exact: selectedCameraId } }
+        : true;
+      const audioConstraints: MediaTrackConstraints | boolean = selectedMicId
+        ? { deviceId: { exact: selectedMicId } }
+        : true;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraints,
+        audio: audioConstraints,
+      });
       streamRef.current = stream;
+      setMediaError(null);
 
       // Try to attach immediately if ref is already mounted
       if (videoRef.current) {
@@ -628,6 +641,16 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         updateVolume();
     } catch (err) {
       console.error('Media error:', err);
+      const error = err as DOMException;
+      if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+        setMediaError(language === 'es'
+          ? 'Acceso a cámara/micrófono denegado. Permite los permisos en tu navegador y recarga.'
+          : 'Camera/microphone access denied. Please allow permissions in your browser and reload.');
+      } else {
+        setMediaError(language === 'es'
+          ? 'No se pudo acceder a la cámara o micrófono. Verifica tus dispositivos.'
+          : 'Could not access camera or microphone. Please check your devices.');
+      }
     }
 
     // Start timer
@@ -1100,6 +1123,12 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
             >
               {t.startInterviewBtn}
             </button>
+            {mediaError && (
+              <div className="mt-4 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700">{mediaError}</p>
+              </div>
+            )}
           </motion.div>
         ) : (
           /* === TWO-COLUMN LAYOUT: Orb Left | Chat Right === */

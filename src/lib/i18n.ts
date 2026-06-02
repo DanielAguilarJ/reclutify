@@ -108,6 +108,13 @@ export const dictionaries = {
     screenShareBtn: 'Screen-share & continue',
     screenShareNote: 'Note: Screen sharing is required. Please share your entire screen to continue.',
     continueBtn: 'Continue',
+    cameraErrorPermission: 'Camera access was denied. Please allow camera permissions in your browser settings and reload.',
+    cameraErrorNotFound: 'No camera found. Please connect a camera and try again.',
+    cameraErrorGeneric: 'Could not access the camera. Please check your device and browser permissions.',
+    micErrorPermission: 'Microphone access was denied. Please allow microphone permissions in your browser settings and reload.',
+    micErrorNotFound: 'No microphone found. Please connect a microphone and try again.',
+    micErrorGeneric: 'Could not access the microphone. Please check your device and browser permissions.',
+    retryBtn: 'Retry',
 
     // Interview Room
     micDefault: 'Mic: Default',
@@ -392,6 +399,13 @@ export const dictionaries = {
     screenShareBtn: 'Compartir pantalla y continuar',
     screenShareNote: 'Nota: Compartir pantalla es obligatorio. Por favor, comparte toda tu pantalla para continuar.',
     continueBtn: 'Continuar',
+    cameraErrorPermission: 'El acceso a la cámara fue denegado. Por favor, permite el acceso a la cámara en la configuración de tu navegador y recarga la página.',
+    cameraErrorNotFound: 'No se encontró ninguna cámara. Por favor, conecta una cámara e intenta de nuevo.',
+    cameraErrorGeneric: 'No se pudo acceder a la cámara. Verifica tu dispositivo y los permisos del navegador.',
+    micErrorPermission: 'El acceso al micrófono fue denegado. Por favor, permite el acceso al micrófono en la configuración de tu navegador y recarga la página.',
+    micErrorNotFound: 'No se encontró ningún micrófono. Por favor, conecta un micrófono e intenta de nuevo.',
+    micErrorGeneric: 'No se pudo acceder al micrófono. Verifica tu dispositivo y los permisos del navegador.',
+    retryBtn: 'Reintentar',
 
     // Interview Room
     micDefault: 'Mic: Predeterminado',

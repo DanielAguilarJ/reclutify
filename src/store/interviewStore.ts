@@ -15,6 +15,8 @@ interface InterviewState {
   roleId: string | null;
   screenStream: MediaStream | null;
   interviewDuration: number; // Duración de la entrevista en minutos
+  selectedCameraId: string | null;
+  selectedMicId: string | null;
 
   setPhase: (phase: InterviewPhase) => void;
   setCandidate: (candidate: Candidate) => void;
@@ -31,6 +33,8 @@ interface InterviewState {
   setRoleId: (roleId: string | null) => void;
   setScreenStream: (stream: MediaStream | null) => void;
   setInterviewDuration: (minutes: number) => void;
+  setSelectedCameraId: (id: string | null) => void;
+  setSelectedMicId: (id: string | null) => void;
   reset: () => void;
 }
 
@@ -49,6 +53,8 @@ const initialState = {
   roleId: null,
   screenStream: null,
   interviewDuration: 30, // Default: 30 minutos
+  selectedCameraId: null,
+  selectedMicId: null,
 };
 
 export const useInterviewStore = create<InterviewState>((set) => ({
@@ -77,5 +83,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
   setRoleId: (roleId) => set({ roleId }),
   setInterviewDuration: (interviewDuration) => set({ interviewDuration }),
   setScreenStream: (screenStream) => set({ screenStream }),
+  setSelectedCameraId: (selectedCameraId) => set({ selectedCameraId }),
+  setSelectedMicId: (selectedMicId) => set({ selectedMicId }),
   reset: () => set(initialState),
 }));

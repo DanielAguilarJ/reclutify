@@ -5,14 +5,25 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Monitor, ArrowLeft } from 'lucide-react';
+import { Monitor, ArrowLeft, AlertCircle } from 'lucide-react';
 import { useInterviewStore } from '@/store/interviewStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 import Logo from '@/components/ui/Logo';
 
+function getMediaErrorMessage(err: unknown, type: 'camera' | 'mic', t: any): string {
+  const error = err as DOMException;
+  if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+    return type === 'camera' ? t.cameraErrorPermission : t.micErrorPermission;
+  }
+  if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+    return type === 'camera' ? t.cameraErrorNotFound : t.micErrorNotFound;
+  }
+  return type === 'camera' ? t.cameraErrorGeneric : t.micErrorGeneric;
+}
+
 export default function HardwareCheck() {
-  const { setPhase } = useInterviewStore();
+  const { setPhase, setSelectedCameraId, setSelectedMicId } = useInterviewStore();
   const { language } = useAppStore();
   const t = dictionaries[language];
 
@@ -29,6 +40,8 @@ export default function HardwareCheck() {
   const [agreed, setAgreed] = useState(false);
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [testTranscript, setTestTranscript] = useState('');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
   
   const streamRef = useRef<MediaStream | null>(null);
@@ -38,9 +51,441 @@ export default function HardwareCheck() {
 
   const startCamera = useCallback(async (deviceId?: string) => {
     try {
+      setCameraError(null);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((tk) => tk.stop());
       }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setCameraReady(true);
+      // Persist the selected device ID (or the actual track's device if none specified)
+      const actualDeviceId = deviceId || stream.getVideoTracks()[0]?.getSettings()?.deviceId || null;
+      if (actualDeviceId) {
+        setSelectedCameraId(actualDeviceId);
+      }
+    } catch (err) {
+      console.error('Camera error:', err);
+      setCameraReady(false);
+      setCameraError(getMediaErrorMessage(err, 'camera', t));
+    }
+  }, [t, setSelectedCameraId]);
+
+  const startMic = useCallback(async (deviceId?: string) => {
+    try {
+      setMicError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+      });
+      // Bug 25 fix: close any prior AudioContext before opening a new one and
+      // keep a ref so we can release it on unmount (preventing the leaked
+      // context from competing with the one InterviewRoom creates next).
+      if (audioCtxRef.current) {
+        try { await audioCtxRef.current.close(); } catch { /* ignore */ }
+        audioCtxRef.current = null;
+      }
+      const audioCtx = new AudioContext();
+      audioCtxRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateVolume = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const maxVol = Math.max(...dataArray);
+        setVolumeLevel(maxVol / 255);
+        animationRef.current = requestAnimationFrame(updateVolume);
+      };
+      updateVolume();
+      setMicReady(true);
+      // Persist the selected mic device ID
+      const actualDeviceId = deviceId || stream.getAudioTracks()[0]?.getSettings()?.deviceId || null;
+      if (actualDeviceId) {
+        setSelectedMicId(actualDeviceId);
+      }
+    } catch (err) {
+      console.error('Mic error:', err);
+      setMicReady(false);
+      setMicError(getMediaErrorMessage(err, 'mic', t));
+    }
+  }, [t, setSelectedMicId]);
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        // Request permissions first - this triggers the browser permission prompt
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Now enumerate devices (labels are only available after permission is granted)
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoCams = devices.filter((d) => d.kind === 'videoinput');
+        const audioMics = devices.filter((d) => d.kind === 'audioinput');
+        setCameras(videoCams);
+        setMics(audioMics);
+        // Now start camera and mic AFTER device enumeration is complete
+        await startCamera();
+        await startMic();
+      } catch (err) {
+        console.error('getDevices error:', err);
+        // If the initial permission request fails, show the error on camera step
+        setCameraError(getMediaErrorMessage(err, 'camera', t));
+      }
+    };
+    init();
+
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((tk) => tk.stop());
+      }
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(e) {}
+      }
+      // Bug 25 fix: explicitly close the audio context so InterviewRoom can
+      // open a fresh one without competing for the device on Safari/Firefox.
+      if (audioCtxRef.current) {
+        try { audioCtxRef.current.close(); } catch { /* ignore */ }
+        audioCtxRef.current = null;
+      }
+    };
+  }, [startCamera, startMic]);
+
+  const handleTestMic = () => {
+    setIsTestingMic(true);
+    setTestTranscript('');
+
+    const langCode = language === 'es' ? 'es-ES' : 'en-US';
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = langCode;
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          interimTranscript += event.results[i][0].transcript;
+        }
+        setTestTranscript(interimTranscript);
+      };
+
+      recognition.onend = () => {
+        setIsTestingMic(false);
+      };
+
+      recognition.onerror = () => {
+        setIsTestingMic(false);
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        console.error(e);
+        setIsTestingMic(false);
+      }
+    } else {
+      setIsTestingMic(false);
+      setTestTranscript('Speech recognition not supported in this browser.');
+    }
+  };
+
+  const handleScreenShareAndContinue = async () => {
+    if (!agreed) return;
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: 'monitor' } as MediaTrackConstraints,
+      });
+      useInterviewStore.getState().setScreenStream(stream);
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch {
+        // Fullscreen block ignored
+      }
+      setPhase('interview');
+    } catch (err) {
+      console.error('Screen share error:', err);
+      alert("Screen sharing is required to proceed.");
+    }
+  };
+
+  const handleRetryCamera = () => {
+    setCameraError(null);
+    startCamera(selectedCamera || undefined);
+  };
+
+  const handleRetryMic = () => {
+    setMicError(null);
+    startMic(selectedMic || undefined);
+  };
+
+  return (
+    <div className="w-full max-w-2xl mx-auto flex flex-col pt-8">
+      {/* Header Area */}
+      <div className="flex justify-between items-center mb-12 w-full px-4">
+        <Logo />
+      </div>
+
+      <AnimatePresence mode="wait">
+        {step === 'camera' && (
+          <motion.div
+            key="camera"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="flex flex-col items-center"
+          >
+            <div className="mb-6 self-start px-4">
+               <button 
+                  onClick={() => setPhase('overview')}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white text-sm font-medium border border-border/50 shadow-sm text-foreground hover:bg-gray-50 cursor-pointer"
+               >
+                  <ArrowLeft className="h-4 w-4" /> {t.backButton}
+               </button>
+            </div>
+
+            <div className="text-center mb-8">
+              <h1 className="text-2xl font-bold text-foreground mb-3">
+                {t.checkCamera}
+              </h1>
+              <p className="text-muted text-sm max-w-md mx-auto leading-relaxed">
+                {t.checkCameraSub}
+              </p>
+            </div>
+
+            <div className="w-full max-w-lg bg-card rounded-[24px] shadow-sm border border-border/50 p-6 flex flex-col items-center">
+              <div className="w-full mb-4">
+                <div className="relative border border-border rounded-xl bg-white focus-within:ring-2 focus-within:ring-primary/20 transition-all overflow-hidden flex items-center pr-3">
+                  <div className="px-3 flex items-center justify-center text-primary">
+                    <Monitor className="h-4 w-4" />
+                  </div>
+                  <select
+                    value={selectedCamera}
+                    onChange={(e) => {
+                      setSelectedCamera(e.target.value);
+                      startCamera(e.target.value);
+                    }}
+                    className="w-full py-3 bg-transparent text-sm text-foreground font-medium outline-none cursor-pointer appearance-none"
+                  >
+                    {cameras.length === 0 && (
+                      <option value="">{t.cameraLabel}</option>
+                    )}
+                    {cameras.map((cam) => (
+                      <option key={cam.deviceId} value={cam.deviceId}>
+                        {cam.label || `${t.cameraLabel} ${cameras.indexOf(cam) + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none text-muted">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                  </div>
+                </div>
+              </div>
+              
+              {cameraError && (
+                <div className="w-full mb-4 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-red-700">{cameraError}</p>
+                    <button
+                      onClick={handleRetryCamera}
+                      className="mt-2 text-sm font-medium text-red-600 hover:text-red-800 underline cursor-pointer"
+                    >
+                      {t.retryBtn}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="w-full rounded-[16px] overflow-hidden bg-foreground/5 aspect-video mb-6">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <button
+                onClick={() => setStep('mic')}
+                disabled={!cameraReady}
+                className={`px-8 py-3 rounded-full text-white font-medium text-sm transition-all shadow-sm ${
+                  cameraReady
+                    ? 'bg-primary hover:bg-primary-hover shadow-primary/25 cursor-pointer'
+                    : 'bg-muted/40 cursor-not-allowed text-muted'
+                }`}
+              >
+                {t.continueBtn}
+              </button>
+              <p className="text-xs text-muted mt-4 text-center">
+                 {t.screenShareNote}
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {step === 'mic' && (
+          <motion.div
+            key="mic"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="flex flex-col items-center"
+          >
+            <div className="mb-6 self-start px-4">
+               <button 
+                  onClick={() => setStep('camera')}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white text-sm font-medium border border-border/50 shadow-sm text-foreground hover:bg-gray-50 cursor-pointer"
+               >
+                  <ArrowLeft className="h-4 w-4" /> {t.backButton}
+               </button>
+            </div>
+
+            <div className="text-center mb-8">
+              <h1 className="text-2xl font-bold text-foreground mb-3">
+                {t.checkMic}
+              </h1>
+              <p className="text-muted text-sm max-w-md mx-auto leading-relaxed">
+                {t.checkMicSub}
+              </p>
+            </div>
+
+            <div className="w-full max-w-lg">
+              <div className="w-full mb-4">
+                <div className="relative border border-border rounded-xl bg-white focus-within:ring-2 focus-within:ring-primary/20 transition-all overflow-hidden flex items-center pr-3 shadow-sm">
+                  <div className="px-3 flex items-center justify-center text-primary">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                  </div>
+                  <select
+                    value={selectedMic}
+                    onChange={(e) => {
+                      setSelectedMic(e.target.value);
+                      startMic(e.target.value);
+                    }}
+                    className="w-full py-3 bg-transparent text-sm text-foreground font-medium outline-none cursor-pointer appearance-none"
+                  >
+                    {mics.length === 0 && (
+                      <option value="">Mic</option>
+                    )}
+                    {mics.map((mic) => (
+                      <option key={mic.deviceId} value={mic.deviceId}>
+                        {mic.label || `Mic ${mics.indexOf(mic) + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none text-muted">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                  </div>
+                </div>
+              </div>
+
+              {micError && (
+                <div className="w-full mb-4 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-red-700">{micError}</p>
+                    <button
+                      onClick={handleRetryMic}
+                      className="mt-2 text-sm font-medium text-red-600 hover:text-red-800 underline cursor-pointer"
+                    >
+                      {t.retryBtn}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-card rounded-[24px] shadow-sm border border-border/50 p-6 flex flex-col items-center mb-8">
+                <p className="text-sm font-medium text-foreground mb-5">
+                  {t.micInstruction}
+                </p>
+                <div className="w-full bg-background rounded-2xl p-6 flex flex-col items-center mb-6">
+                   <p className="text-lg font-medium text-muted/60 mb-5 text-center">
+                      {t.testPhrase}
+                   </p>
+                   <div className="flex items-end gap-1.5 h-6">
+                     {Array.from({ length: 16 }).map((_, i) => (
+                       <div
+                         key={i}
+                         className="w-2.5 rounded-full bg-primary/20 transition-all duration-75"
+                         style={{
+                           height: `${Math.min(100, Math.max(20, volumeLevel * 100 * (1 + (i % 5) * 0.1) * (i % 3 === 0 ? 1.2 : 0.8)))}%`,
+                           backgroundColor: volumeLevel > 0.1 ? 'var(--color-primary)' : 'rgba(168, 184, 252, 0.3)',
+                         }}
+                       />
+                     ))}
+                   </div>
+                   
+                   {testTranscript && (
+                     <div className="mt-4 w-full p-3 bg-white/50 rounded-xl border border-primary/20 text-center">
+                       <p className="text-sm font-medium text-primary/80 italic">&quot;{testTranscript}&quot;</p>
+                     </div>
+                   )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleTestMic}
+                  disabled={isTestingMic}
+                  className={`w-full py-3 rounded-full text-white font-medium text-sm transition-colors shadow-sm cursor-pointer ${
+                    isTestingMic 
+                      ? 'bg-primary/70 cursor-not-allowed animate-pulse' 
+                      : 'bg-primary hover:bg-primary-hover shadow-primary/25'
+                  }`}
+                >
+                  {isTestingMic ? (language === 'es' ? 'Escuchando...' : 'Listening...') : t.speakBtn}
+                </button>
+              </div>
+
+              <div className="flex justify-center mb-6">
+                 <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                       type="checkbox" 
+                       checked={agreed}
+                       onChange={(e) => setAgreed(e.target.checked)}
+                       className="peer sr-only" 
+                    />
+                    <div className="w-4 h-4 rounded border border-border bg-white flex items-center justify-center peer-checked:bg-primary peer-checked:border-primary transition-all">
+                       <svg className="w-3 h-3 text-white opacity-0 peer-checked:opacity-100" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    </div>
+                    <span className="text-sm text-foreground font-medium">{t.agreeTermsText} <span className="text-primary group-hover:underline">{t.termsLink}</span></span>
+                 </label>
+              </div>
+
+              <div className="flex flex-col items-center">
+                 <button
+                   onClick={handleScreenShareAndContinue}
+                   disabled={!agreed}
+                   className={`px-8 py-3 rounded-full font-medium text-sm transition-all shadow-sm ${
+                     agreed
+                       ? 'bg-muted text-white hover:bg-muted/80 cursor-pointer'
+                       : 'bg-muted/30 text-muted/60 cursor-not-allowed'
+                   }`}
+                 >
+                   {t.screenShareBtn}
+                 </button>
+                 <p className="text-xs text-muted mt-4 text-center">
+                    {t.screenShareNote}
+                 </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
       const stream = await navigator.mediaDevices.getUserMedia({
         video: deviceId ? { deviceId: { exact: deviceId } } : true,
         audio: false,

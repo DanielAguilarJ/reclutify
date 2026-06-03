@@ -565,10 +565,6 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
   // Start the interview
   const startInterview = async () => {
-    setHasStarted(true);
-    setIsAiSpeaking(true);
-    interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
-
     // Bug 9 fix: generate the sessionId synchronously BEFORE the opening API
     // call so the very first telemetry row has the real session id and is
     // tied to the rest of the interview.
@@ -589,6 +585,11 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
       });
       streamRef.current = stream;
       setMediaError(null);
+
+      // Media acquired successfully — NOW transition to interview UI
+      setHasStarted(true);
+      setIsAiSpeaking(true);
+      interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
 
       // Try to attach immediately if ref is already mounted
       if (videoRef.current) {
@@ -651,6 +652,8 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
           ? 'No se pudo acceder a la cámara o micrófono. Verifica tus dispositivos.'
           : 'Could not access camera or microphone. Please check your devices.');
       }
+      // Do NOT proceed — user stays on pre-interview screen and sees the error
+      return;
     }
 
     // Start timer

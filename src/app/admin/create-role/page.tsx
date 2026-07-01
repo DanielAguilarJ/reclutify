@@ -5,12 +5,25 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
+import { useTicketStore } from '@/store/ticketStore';
 import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
 import type { Role, Topic, TopicRubric } from '@/types';
 import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
 import { PLAN_LIMITS, type PlanTier } from '@/lib/stripe';
+
+// ─── Helper: extraer nombre formateado del prefijo del email ───
+function extractNameFromEmail(email: string): string {
+  const prefix = email.split('@')[0] || email;
+  // Reemplazar puntos, guiones bajos y guiones con espacios
+  const spaced = prefix.replace(/[._-]+/g, ' ');
+  // Capitalizar cada palabra
+  return spaced
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
 
 // ─── Topic with rubric data (from API or manual) ───
 interface TopicDraft {
@@ -830,6 +843,7 @@ export default function CreateRolePage() {
 
   const { addRole, roles, removeRole } = useAdminStore();
   const { language } = useAppStore();
+  const { addTicket, syncAddTicket } = useTicketStore();
   const t = dictionaries[language];
 
   // Sincronizar roles con Supabase al montar
@@ -881,6 +895,10 @@ export default function CreateRolePage() {
   const [success, setSuccess] = useState(false);
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
   const [showDescription, setShowDescription] = useState(false);
+
+  // Bulk email sending state
+  const [bulkSending, setBulkSending] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ sent: 0, total: 0 });
 
   // ─── Generate rubric with AI ───
   const handleGenerateRubric = async () => {
@@ -1043,29 +1061,56 @@ export default function CreateRolePage() {
       createdAt: Date.now(),
     });
 
-    if (process.env.NEXT_PUBLIC_MAKE_WEBHOOK_URL && candidateEmails.trim()) {
+    // ─── Bulk send: crear tickets y enviar emails directamente (como tickets page) ───
+    if (candidateEmails.trim()) {
       const candidatesList = candidateEmails
         .split('\n')
         .map(e => e.trim())
         .filter(e => e);
       
-      const candidatesPayload = candidatesList.map(email => {
-        const nameMatch = email.match(/^([^@]+)/);
-        const name = nameMatch ? nameMatch[1] : email;
-        return { email, name };
-      });
+      if (candidatesList.length > 0) {
+        setBulkSending(true);
+        setBulkProgress({ sent: 0, total: candidatesList.length });
 
-      if (candidatesPayload.length > 0) {
-        fetch(process.env.NEXT_PUBLIC_MAKE_WEBHOOK_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roleId: newRoleId,
-            roleTitle: jobTitle,
-            candidates: candidatesPayload,
-            language: generationLanguage,
-          }),
-        }).catch(err => console.error("Webhook failed:", err));
+        // Procesar en background sin bloquear la UI del éxito
+        (async () => {
+          for (let i = 0; i < candidatesList.length; i++) {
+            const email = candidatesList[i];
+            const candidateName = extractNameFromEmail(email);
+            
+            // 1. Crear ticket (igual que tickets page)
+            const ticket = addTicket(candidateName, newRoleId, generationLanguage);
+            
+            // 2. Sincronizar con Supabase
+            await syncAddTicket(ticket);
+            
+            // 3. Construir URL con datos embebidos (cross-device trick)
+            const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration };
+            const dPayload = JSON.stringify({ t: ticket, r: role });
+            const dParam = typeof window !== 'undefined' ? `?d=${btoa(unescape(encodeURIComponent(dPayload)))}` : '';
+            const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
+            
+            // 4. Enviar email via Brevo (mismo endpoint que tickets page)
+            try {
+              await fetch('/api/send-email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  email,
+                  candidateName,
+                  roleTitle: jobTitle,
+                  link: url,
+                  language: generationLanguage,
+                }),
+              });
+            } catch (err) {
+              console.error(`Error enviando email a ${email}:`, err);
+            }
+            
+            setBulkProgress({ sent: i + 1, total: candidatesList.length });
+          }
+          setBulkSending(false);
+        })();
       }
     }
 
@@ -1374,13 +1419,63 @@ export default function CreateRolePage() {
                       <textarea
                         value={candidateEmails}
                         onChange={(e) => setCandidateEmails(e.target.value)}
-                        placeholder="juan@email.com&#10;maria@email.com&#10;carlos@email.com"
+                        placeholder="juan.perez@email.com&#10;maria_lopez@email.com&#10;carlos-garcia@email.com"
                         className="w-full px-4 py-3 rounded-xl border border-border bg-background text-foreground text-sm
                           placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-primary/30 min-h-[100px] resize-y"
                       />
                       <p className="text-xs text-muted mt-1">
-                        {language === 'es' ? 'Se enviará un link único a cada correo automáticamente' : 'A unique link will be sent to each email automatically'}
+                        {language === 'es' 
+                          ? 'Se creará un ticket y se enviará un link único a cada correo automáticamente. El nombre se extrae del correo (ej: juan.perez@ = "Juan Perez")' 
+                          : 'A ticket will be created and a unique link will be sent to each email automatically. Name is extracted from the email (e.g. juan.perez@ = "Juan Perez")'}
                       </p>
+                      
+                      {/* Preview de nombres extraídos */}
+                      {candidateEmails.trim() && (
+                        <div className="mt-2 p-3 rounded-lg bg-primary/5 border border-primary/10">
+                          <p className="text-[11px] font-medium text-primary mb-1.5">
+                            {language === 'es' ? `Vista previa (${candidateEmails.split('\n').filter(e => e.trim()).length} candidatos):` : `Preview (${candidateEmails.split('\n').filter(e => e.trim()).length} candidates):`}
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {candidateEmails.split('\n').filter(e => e.trim()).slice(0, 8).map((email, i) => (
+                              <span key={i} className="inline-flex items-center px-2 py-0.5 rounded-md bg-background border border-border/50 text-[11px] text-foreground">
+                                {extractNameFromEmail(email.trim())}
+                              </span>
+                            ))}
+                            {candidateEmails.split('\n').filter(e => e.trim()).length > 8 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-muted/10 text-[11px] text-muted">
+                                +{candidateEmails.split('\n').filter(e => e.trim()).length - 8} {language === 'es' ? 'más' : 'more'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Progress bar de envío bulk */}
+                      {bulkSending && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="mt-3 p-3 rounded-lg bg-primary/5 border border-primary/20"
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-xs font-medium text-primary flex items-center gap-1.5">
+                              <div className="h-3 w-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                              {language === 'es' ? 'Enviando invitaciones...' : 'Sending invitations...'}
+                            </span>
+                            <span className="text-xs font-bold text-primary">
+                              {bulkProgress.sent}/{bulkProgress.total}
+                            </span>
+                          </div>
+                          <div className="w-full h-2 rounded-full bg-primary/10 overflow-hidden">
+                            <motion.div
+                              className="h-full bg-primary rounded-full"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${(bulkProgress.sent / bulkProgress.total) * 100}%` }}
+                              transition={{ duration: 0.3 }}
+                            />
+                          </div>
+                        </motion.div>
+                      )}
                     </div>
 
                     {/* Actions */}
@@ -1388,6 +1483,7 @@ export default function CreateRolePage() {
                       <button
                         onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setInterviewDuration(30); setCandidateEmails(''); setShowDescription(false); }}
                         className="px-4 py-2 text-sm font-medium text-muted hover:text-foreground transition-colors"
+                        disabled={bulkSending}
                       >
                         {language === 'es' ? 'Limpiar' : 'Clear Form'}
                       </button>
@@ -1398,12 +1494,14 @@ export default function CreateRolePage() {
                           animate={{ scale: 1, opacity: 1 }}
                           className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium text-sm bg-success text-white"
                         >
-                          ✓ {language === 'es' ? '¡Puesto Creado!' : 'Role Created!'}
+                          {bulkSending 
+                            ? (language === 'es' ? `Enviando ${bulkProgress.sent}/${bulkProgress.total}...` : `Sending ${bulkProgress.sent}/${bulkProgress.total}...`)
+                            : (language === 'es' ? '¡Puesto Creado!' : 'Role Created!')}
                         </motion.div>
                       ) : (
                         <button
                           onClick={handleSaveRole}
-                          disabled={!jobTitle.trim() || topics.length === 0}
+                          disabled={!jobTitle.trim() || topics.length === 0 || bulkSending}
                           className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium text-sm text-foreground bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                         >
                           <Plus className="h-4 w-4" />

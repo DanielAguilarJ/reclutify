@@ -1004,7 +1004,7 @@ export default function CreateRolePage() {
   };
 
   // ─── Save role ───
-  const handleSaveRole = () => {
+  const handleSaveRole = async () => {
     if (!jobTitle.trim() || topics.length === 0) return;
 
     // ─── Validation: Check critical topics have rubric content ───
@@ -1049,7 +1049,9 @@ export default function CreateRolePage() {
     }));
 
     const newRoleId = `role-${Date.now()}`;
-    addRole({
+    
+    // Esperar a que el role se guarde en Supabase antes de crear tickets
+    await addRole({
       id: newRoleId,
       title: jobTitle,
       description: jobDescription || undefined,
@@ -1062,55 +1064,73 @@ export default function CreateRolePage() {
     });
 
     // ─── Bulk send: crear tickets y enviar emails directamente (como tickets page) ───
-    if (candidateEmails.trim()) {
-      const candidatesList = candidateEmails
-        .split('\n')
-        .map(e => e.trim())
-        .filter(e => e);
-      
-      if (candidatesList.length > 0) {
-        setBulkSending(true);
-        setBulkProgress({ sent: 0, total: candidatesList.length });
+    const candidatesList = candidateEmails
+      .split('\n')
+      .map(e => e.trim())
+      .filter(e => e);
 
-        // Procesar en background sin bloquear la UI del éxito
-        (async () => {
-          for (let i = 0; i < candidatesList.length; i++) {
-            const email = candidatesList[i];
-            const candidateName = extractNameFromEmail(email);
-            
-            // 1. Crear ticket (igual que tickets page)
-            const ticket = addTicket(candidateName, newRoleId, generationLanguage);
-            
-            // 2. Sincronizar con Supabase
-            await syncAddTicket(ticket);
-            
-            // 3. Construir URL con datos embebidos (cross-device trick)
-            const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration };
-            const dPayload = JSON.stringify({ t: ticket, r: role });
-            const dParam = typeof window !== 'undefined' ? `?d=${btoa(unescape(encodeURIComponent(dPayload)))}` : '';
-            const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
-            
-            // 4. Enviar email via Brevo (mismo endpoint que tickets page)
-            try {
-              await fetch('/api/send-email', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  email,
-                  candidateName,
-                  roleTitle: jobTitle,
-                  link: url,
-                  language: generationLanguage,
-                }),
-              });
-            } catch (err) {
-              console.error(`Error enviando email a ${email}:`, err);
-            }
-            
-            setBulkProgress({ sent: i + 1, total: candidatesList.length });
+    if (candidatesList.length > 0) {
+      setBulkSending(true);
+      setBulkProgress({ sent: 0, total: candidatesList.length });
+      
+      let failedEmails: string[] = [];
+
+      for (let i = 0; i < candidatesList.length; i++) {
+        const email = candidatesList[i];
+        const candidateName = extractNameFromEmail(email);
+        
+        // 1. Crear ticket (igual que tickets page)
+        const ticket = addTicket(candidateName, newRoleId, generationLanguage);
+        
+        // 2. Sincronizar con Supabase
+        await syncAddTicket(ticket);
+        
+        // 3. Construir URL con datos embebidos (cross-device trick)
+        const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration };
+        const dPayload = JSON.stringify({ t: ticket, r: role });
+        const dParam = typeof window !== 'undefined' ? `?d=${btoa(unescape(encodeURIComponent(dPayload)))}` : '';
+        const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
+        
+        // 4. Enviar email via Brevo (mismo endpoint que tickets page)
+        try {
+          const res = await fetch('/api/send-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email,
+              candidateName,
+              roleTitle: jobTitle,
+              link: url,
+              language: generationLanguage,
+            }),
+          });
+          if (!res.ok) {
+            failedEmails.push(email);
+            console.error(`Error enviando email a ${email}: HTTP ${res.status}`);
           }
-          setBulkSending(false);
-        })();
+        } catch (err) {
+          failedEmails.push(email);
+          console.error(`Error enviando email a ${email}:`, err);
+        }
+        
+        setBulkProgress({ sent: i + 1, total: candidatesList.length });
+      }
+      
+      setBulkSending(false);
+
+      // Mostrar resultado del envío
+      if (failedEmails.length === 0) {
+        alert(
+          language === 'es'
+            ? `Se enviaron ${candidatesList.length} invitaciones exitosamente.`
+            : `Successfully sent ${candidatesList.length} invitations.`
+        );
+      } else {
+        alert(
+          language === 'es'
+            ? `Se enviaron ${candidatesList.length - failedEmails.length}/${candidatesList.length} invitaciones.\n\nFallaron:\n${failedEmails.join('\n')}`
+            : `Sent ${candidatesList.length - failedEmails.length}/${candidatesList.length} invitations.\n\nFailed:\n${failedEmails.join('\n')}`
+        );
       }
     }
 

@@ -161,53 +161,89 @@ export default function TicketsPage() {
           {es ? 'Generar Nuevo Ticket' : 'Generate New Ticket'}
         </h2>
 
-        <div className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={es ? 'Nombre del candidato' : 'Candidate name'}
-            className="flex-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-          />
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder={es ? 'Correo (opcional)' : 'Email (optional)'}
-            className="flex-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-          />
-          <select
-            value={selectedRoleId}
-            onChange={(e) => setSelectedRoleId(e.target.value)}
-            className="px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-          >
-            {roles.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.title}
-              </option>
-            ))}
-          </select>
-          <select
-            value={selectedLang}
-            onChange={(e) => setSelectedLang(e.target.value as 'en' | 'es')}
-            className="px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-          >
-            <option value="es">🇲🇽 Español</option>
-            <option value="en">🇺🇸 English</option>
-          </select>
-          <button
-            onClick={handleGenerate}
-            disabled={(!name.trim() && !email.trim()) || isSending}
-            className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-          >
-            {isSending ? (
-              <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-            ) : (
-              <Plus className="h-4 w-4" />
-            )}
-            {es ? (isSending ? 'Enviando...' : 'Generar') : (isSending ? 'Sending...' : 'Generate')}
-          </button>
-        </div>
+        {roles.length === 0 ? (
+          <div className="rounded-xl bg-yellow-50 border border-yellow-200 px-4 py-3 text-sm text-yellow-800">
+            {es
+              ? 'No hay vacantes creadas. Ve a Crear Puesto primero.'
+              : 'No roles created. Go to Create Role first.'}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Fila 1: nombre + email */}
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={es ? 'Nombre del candidato' : 'Candidate name'}
+              className="col-span-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder={es ? 'Correo (opcional)' : 'Email (optional)'}
+              className="col-span-1 px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+
+            {/* Fila 2: select vacante (ancho completo) + detalle */}
+            <div className="col-span-1 md:col-span-2">
+              <select
+                value={selectedRoleId}
+                onChange={(e) => setSelectedRoleId(e.target.value)}
+                className="w-full max-w-full px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary truncate"
+              >
+                {roles.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.title}{r.location ? ` — ${r.location}` : ''}{r.salary ? ` | ${r.salary}` : ''}
+                  </option>
+                ))}
+              </select>
+              {(() => {
+                const role = roles.find((r) => r.id === selectedRoleId);
+                if (!role) return null;
+                const details = [
+                  role.location,
+                  role.jobType,
+                  role.interviewDuration ? `${role.interviewDuration} min` : null,
+                  role.topics?.length
+                    ? `${role.topics.length} ${es ? 'criterios' : 'criteria'}`
+                    : null,
+                ].filter(Boolean) as string[];
+                return details.length > 0 ? (
+                  <p className="text-xs text-muted mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {details.map((d, i) => (
+                      <span key={i}>{d}</span>
+                    ))}
+                  </p>
+                ) : null;
+              })()}
+            </div>
+
+            {/* Fila 3: idioma + botón (alineados a la derecha) */}
+            <div className="col-span-1 md:col-span-2 flex justify-end gap-3">
+              <select
+                value={selectedLang}
+                onChange={(e) => setSelectedLang(e.target.value as 'en' | 'es')}
+                className="px-4 py-2.5 rounded-xl border border-border/50 bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+              >
+                <option value="es">🇲🇽 Español</option>
+                <option value="en">🇺🇸 English</option>
+              </select>
+              <button
+                onClick={handleGenerate}
+                disabled={(!name.trim() && !email.trim()) || isSending}
+                className="flex items-center justify-center gap-2 min-w-[110px] px-6 py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isSending ? (
+                  <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {es ? (isSending ? 'Enviando...' : 'Generar') : (isSending ? 'Sending...' : 'Generate')}
+              </button>
+            </div>
+          </div>
+        )}
       </motion.div>
 
       {/* Tickets Table */}

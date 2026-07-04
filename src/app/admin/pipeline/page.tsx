@@ -261,6 +261,11 @@ export default function PipelinePage() {
                       </p>
                       <p className="text-xs text-muted">
                         {candidate.candidate.email}
+                        {candidate.source === 'public_link' && (
+                          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-500/10 text-blue-600">
+                            Link
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>

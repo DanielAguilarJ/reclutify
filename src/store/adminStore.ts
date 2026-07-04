@@ -44,6 +44,7 @@ function roleToSupabase(role: Role, orgId: string) {
     created_at: new Date(role.createdAt).toISOString(),
     is_published: role.isPublished ?? false,
     published_at: role.publishedAt ? new Date(role.publishedAt).toISOString() : null,
+    public_token: role.publicToken || null,
   };
 }
 
@@ -64,6 +65,7 @@ function roleFromSupabase(row: Record<string, unknown>): Role {
     createdAt: new Date(row.created_at as string).getTime(),
     isPublished: (row.is_published as boolean) ?? false,
     publishedAt: row.published_at ? new Date(row.published_at as string).getTime() : undefined,
+    publicToken: (row.public_token as string) || undefined,
   };
 }
 
@@ -86,6 +88,7 @@ function candidateToSupabase(c: CandidateResult, orgId: string) {
     video_url: c.videoUrl || null,
     evaluation: c.evaluation || null,
     transcript: c.transcript || [],
+    source: c.source || 'ticket',
   };
 }
 
@@ -111,6 +114,7 @@ function candidateFromSupabase(row: Record<string, unknown>): CandidateResult {
     evaluation: (row.evaluation as any) || undefined,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     transcript: (row.transcript as any) || [],
+    source: (row.source as 'ticket' | 'public_link') || 'ticket',
   };
 }
 

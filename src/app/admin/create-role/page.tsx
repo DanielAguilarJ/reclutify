@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown } from 'lucide-react';
+import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown, Link2, Copy, Check } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useTicketStore } from '@/store/ticketStore';
@@ -896,6 +896,10 @@ export default function CreateRolePage() {
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
   const [showDescription, setShowDescription] = useState(false);
 
+  // General link state
+  const [createdPublicLink, setCreatedPublicLink] = useState<string>('');
+  const [linkCopied, setLinkCopied] = useState(false);
+
   // Bulk email sending state
   const [bulkSending, setBulkSending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ sent: 0, total: 0 });
@@ -1050,6 +1054,9 @@ export default function CreateRolePage() {
 
     const newRoleId = `role-${Date.now()}`;
     
+    // Generar token público para enlace general
+    const publicToken = `pub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    
     // Esperar a que el role se guarde en Supabase antes de crear tickets
     await addRole({
       id: newRoleId,
@@ -1061,7 +1068,12 @@ export default function CreateRolePage() {
       interviewDuration,
       topics: roleTopics,
       createdAt: Date.now(),
+      publicToken,
     });
+
+    // Guardar enlace público para mostrar en UI
+    const publicLink = `${window.location.origin}/interview/public/${publicToken}`;
+    setCreatedPublicLink(publicLink);
 
     // ─── Bulk send: crear tickets y enviar emails directamente (como tickets page) ───
     const candidatesList = candidateEmails
@@ -1146,7 +1158,8 @@ export default function CreateRolePage() {
       setCandidateEmails('');
       setSuccess(false);
       setShowDescription(false);
-    }, 2000);
+      // No limpiar createdPublicLink — se queda visible para que copien
+    }, 5000);
   };
 
   const hasTopicsWithRubric = topics.some(t => t.rubric);
@@ -1501,7 +1514,7 @@ export default function CreateRolePage() {
                     {/* Actions */}
                     <div className="pt-4 flex items-center justify-between border-t border-border/30">
                       <button
-                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setInterviewDuration(30); setCandidateEmails(''); setShowDescription(false); }}
+                        onClick={() => { setTopics([]); setJobTitle(''); setJobDescription(''); setJobType(''); setLocation(''); setSalary(''); setInterviewDuration(30); setCandidateEmails(''); setShowDescription(false); setCreatedPublicLink(''); }}
                         className="px-4 py-2 text-sm font-medium text-muted hover:text-foreground transition-colors"
                         disabled={bulkSending}
                       >
@@ -1529,6 +1542,69 @@ export default function CreateRolePage() {
                         </button>
                       )}
                     </div>
+
+                    {/* ─── Enlace General / Public Link (after role creation) ─── */}
+                    <AnimatePresence>
+                      {createdPublicLink && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-4 p-4 rounded-xl border border-primary/30 bg-primary/5">
+                            <div className="flex items-start gap-3 mb-3">
+                              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                                <Link2 className="h-4 w-4 text-primary" />
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-semibold text-foreground">
+                                  {language === 'es' ? 'Enlace General de Entrevista' : 'General Interview Link'}
+                                </h4>
+                                <p className="text-[11px] text-muted mt-0.5">
+                                  {language === 'es'
+                                    ? 'Comparte este enlace con todos tus prospectos. Cada persona que lo use deberá registrarse con su nombre y correo, y su entrevista se guardará de forma independiente.'
+                                    : 'Share this link with all your prospects. Each person who uses it must register with their name and email, and their interview will be saved independently.'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                readOnly
+                                value={createdPublicLink}
+                                className="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground font-mono truncate"
+                              />
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(createdPublicLink);
+                                  setLinkCopied(true);
+                                  setTimeout(() => setLinkCopied(false), 2000);
+                                }}
+                                className={`px-4 py-2 rounded-lg text-xs font-medium transition-all shrink-0 ${
+                                  linkCopied
+                                    ? 'bg-success text-white'
+                                    : 'bg-primary text-white hover:bg-primary-hover'
+                                }`}
+                              >
+                                {linkCopied
+                                  ? (language === 'es' ? '¡Copiado!' : 'Copied!')
+                                  : (language === 'es' ? 'Copiar Enlace' : 'Copy Link')}
+                              </button>
+                            </div>
+                            <div className="mt-2 flex items-center gap-4">
+                              <span className="text-[10px] text-muted flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+                                {language === 'es' ? 'Sin límite de uso' : 'Unlimited use'}
+                              </span>
+                              <span className="text-[10px] text-muted">
+                                {language === 'es' ? 'Requiere nombre + correo' : 'Requires name + email'}
+                              </span>
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -1575,6 +1651,26 @@ export default function CreateRolePage() {
                           )}
                         </p>
                       </div>
+                      {/* Copy public link button */}
+                      {role.publicToken && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const link = `${window.location.origin}/interview/public/${role.publicToken}`;
+                            navigator.clipboard.writeText(link);
+                            // Brief visual feedback using the button text
+                            const btn = e.currentTarget;
+                            const originalText = btn.innerText;
+                            btn.innerText = language === 'es' ? '¡Copiado!' : 'Copied!';
+                            setTimeout(() => { btn.innerText = originalText; }, 1500);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors shrink-0"
+                          title={language === 'es' ? 'Copiar enlace general' : 'Copy general link'}
+                        >
+                          <Link2 className="h-3 w-3" />
+                          {language === 'es' ? 'Enlace General' : 'Public Link'}
+                        </button>
+                      )}
                     </div>
 
                     <AnimatePresence>

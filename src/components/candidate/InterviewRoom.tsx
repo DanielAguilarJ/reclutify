@@ -14,7 +14,7 @@ import Logo from '@/components/ui/Logo';
 import AiOrb from './AiOrb';
 import { computeInterviewPlan, getQuestionBudget } from '@/lib/interviewTimingEngine';
 
-export default function InterviewRoom({ roleId }: { roleId: string }) {
+export default function InterviewRoom({ roleId, publicResultId }: { roleId: string; publicResultId?: string }) {
   const { roles } = useAdminStore();
   const currentRole = roles.find(r => r.id === roleId);
 
@@ -150,7 +150,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     
     let currentSessionId = sessionId;
     if (!currentSessionId) {
-      currentSessionId = `cand-${Date.now()}`;
+      currentSessionId = publicResultId || `cand-${Date.now()}`;
       setSessionId(currentSessionId);
     }
 
@@ -168,6 +168,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         status: 'in-progress',
         transcript,
         duration: timerSeconds,
+        source: publicResultId ? 'public_link' : 'ticket',
       });
     } else {
       updateCandidate(currentSessionId, { transcript, duration: timerSeconds });
@@ -569,7 +570,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
     // call so the very first telemetry row has the real session id and is
     // tied to the rest of the interview.
     const existingSessionId = useInterviewStore.getState().sessionId;
-    const guaranteedSessionId = existingSessionId || `cand-${Date.now()}`;
+    const guaranteedSessionId = existingSessionId || publicResultId || `cand-${Date.now()}`;
     if (!existingSessionId) setSessionId(guaranteedSessionId);
 
     try {
@@ -879,7 +880,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
 
     // CRITICAL: Force-save transcript to admin store before transitioning
     // This ensures data is persisted even if InterviewComplete fails
-    const currentSessionId = sessionId || `cand-${Date.now()}`;
+    const currentSessionId = sessionId || publicResultId || `cand-${Date.now()}`;
     if (!sessionId) setSessionId(currentSessionId);
 
     const exists = candidates.find(c => c.id === currentSessionId);
@@ -899,6 +900,7 @@ export default function InterviewRoom({ roleId }: { roleId: string }) {
         status: 'in-progress',
         transcript,
         duration: timerSeconds,
+        source: publicResultId ? 'public_link' : 'ticket',
       });
     }
     

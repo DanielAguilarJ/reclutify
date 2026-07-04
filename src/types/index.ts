@@ -105,6 +105,7 @@ export interface Role {
   interviewDuration?: number; // Duración de la entrevista en minutos (default: 30)
   isPublished?: boolean;
   publishedAt?: number;
+  publicToken?: string; // Token para enlace público/general de entrevista
 }
 
 export type InterviewPhase = 'details' | 'overview' | 'hardware' | 'interview' | 'complete';
@@ -120,6 +121,7 @@ export interface CandidateResult {
   videoUrl?: string;
   evaluation?: Evaluation;
   transcript: TranscriptEntry[];
+  source?: 'ticket' | 'public_link'; // Origen del candidato
 }
 
 export interface InterviewTicket {

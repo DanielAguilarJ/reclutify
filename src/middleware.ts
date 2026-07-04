@@ -31,6 +31,17 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Skip auth for public interview API (candidates access without auth)
+  if (request.nextUrl.pathname.startsWith('/api/public-interview')) {
+    return NextResponse.next();
+  }
+
+  // Skip auth for public interview pages (candidates access via general link)
+  if (request.nextUrl.pathname.startsWith('/interview/public/')) {
+    const { supabaseResponse } = await createClient(request);
+    return supabaseResponse;
+  }
+
   // Skip auth for training token-based access (employees access via token link)
   if (request.nextUrl.pathname.startsWith('/training/') && !request.nextUrl.pathname.startsWith('/training/center')) {
     const { supabaseResponse } = await createClient(request);

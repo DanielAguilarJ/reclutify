@@ -8,6 +8,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing text' }, { status: 400 });
     }
 
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      console.error('TTS Error: OPENROUTER_API_KEY is not configured');
+      return NextResponse.json(
+        { error: 'TTS service not configured' },
+        { status: 500 }
+      );
+    }
+
     console.log('\n====== TTS API ======');
     console.log('Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
 
@@ -16,37 +25,65 @@ export async function POST(req: Request) {
     const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    // Use the correct OpenRouter TTS endpoint: /api/v1/audio/speech
-    // This returns a raw audio byte stream, NOT JSON.
-    const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-3.1-flash-tts-preview',
-        input: text,
-        voice: selectedVoice,
-        response_format: 'mp3',
-      }),
-    });
+    // Try multiple response formats in order of preference.
+    // Some TTS models on OpenRouter only support specific audio codecs.
+    const formatsToTry = ['mp3', 'wav', 'pcm'] as const;
+    const contentTypeMap: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      wav: 'audio/wav',
+      pcm: 'audio/pcm',
+    };
 
-    if (!response.ok) {
+    let lastError = '';
+
+    for (const format of formatsToTry) {
+      console.log(`[TTS] Trying format: ${format}, voice: ${selectedVoice}`);
+
+      const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-3.1-flash-tts-preview',
+          input: text,
+          voice: selectedVoice,
+          response_format: format,
+        }),
+      });
+
+      if (response.ok) {
+        const audioBuffer = await response.arrayBuffer();
+
+        // Use the Content-Type from OpenRouter if available, otherwise map it
+        const upstreamContentType = response.headers.get('Content-Type');
+        const resolvedContentType =
+          upstreamContentType || contentTypeMap[format] || 'audio/mpeg';
+
+        console.log(
+          `[TTS] Success with format: ${format}, ` +
+          `Content-Type: ${resolvedContentType}, ` +
+          `size: ${audioBuffer.byteLength} bytes`
+        );
+
+        return new NextResponse(audioBuffer, {
+          headers: {
+            'Content-Type': resolvedContentType,
+            'Content-Length': audioBuffer.byteLength.toString(),
+          },
+        });
+      }
+
+      // Log the error but continue trying the next format
       const errorText = await response.text();
-      console.error('TTS API error:', response.status, errorText);
-      throw new Error(`TTS API error ${response.status}: ${errorText}`);
+      lastError = `Format ${format}: ${response.status} — ${errorText}`;
+      console.warn(`[TTS] Format ${format} failed:`, response.status, errorText);
     }
 
-    // The response is already a raw audio stream — forward it directly
-    const audioBuffer = await response.arrayBuffer();
-
-    return new NextResponse(audioBuffer, {
-      headers: {
-        'Content-Type': 'audio/mpeg',
-        'Content-Length': audioBuffer.byteLength.toString(),
-      },
-    });
+    // All formats failed
+    console.error('[TTS] All formats failed. Last error:', lastError);
+    throw new Error(`TTS generation failed with all formats. ${lastError}`);
 
   } catch (error: unknown) {
     const err = error as Error;

@@ -803,29 +803,45 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         body: JSON.stringify({ text, language }),
       })
         .then((response) => {
+          console.log('[TTS-FE] fetch status:', response.status, 'ok:', response.ok);
           if (response.ok) {
             return response.blob();
           }
-          throw new Error('TTS failed');
+          throw new Error(`TTS failed with status ${response.status}`);
         })
         .then((audioBlob) => {
+          console.log('[TTS-FE] blob received — size:', audioBlob.size, 'type:', audioBlob.type);
+          if (audioBlob.size === 0) {
+            console.warn('[TTS-FE] Empty audio blob — falling back');
+            throw new Error('Empty audio blob');
+          }
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           audioRef.current = audio;
-          audio.onended = onFinishSpeaking;
-          audio.onerror = () => {
+          audio.onended = () => {
+            console.log('[TTS-FE] Audio playback ended normally');
+            onFinishSpeaking();
+          };
+          audio.onerror = (e) => {
+            console.warn('[TTS-FE] Audio element error — falling back to browser speech', e);
             fallbackSpeech(text, onFinishSpeaking);
           };
-          audio.play().catch(() => fallbackSpeech(text, onFinishSpeaking));
+          audio.play()
+            .then(() => console.log('[TTS-FE] Audio play() started successfully'))
+            .catch((err) => {
+              console.warn('[TTS-FE] Audio play() rejected:', err, '— falling back');
+              fallbackSpeech(text, onFinishSpeaking);
+            });
         })
-        .catch(() => {
+        .catch((err) => {
+          console.warn('[TTS-FE] fetch/blob error:', err, '— falling back to browser speech');
           fallbackSpeech(text, onFinishSpeaking);
         });
     });
   };
 
   const fallbackSpeech = (text: string, onDone: () => void) => {
-    if (!synthesisRef.current) { onDone(); return; }
+    if (!synthesisRef.current) { console.warn('[TTS-FE] No SpeechSynthesis — calling onDone'); onDone(); return; }
     synthesisRef.current.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
@@ -842,7 +858,16 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       utterance.voice = preferredVoice;
     }
 
-    utterance.onend = onDone;
+    console.log('[TTS-FE] fallbackSpeech — voice:', preferredVoice?.name || 'default', 'lang:', langCode);
+
+    utterance.onend = () => {
+      console.log('[TTS-FE] fallbackSpeech ended normally');
+      onDone();
+    };
+    utterance.onerror = (e) => {
+      console.error('[TTS-FE] fallbackSpeech error:', e);
+      onDone();
+    };
     synthesisRef.current.speak(utterance);
   };
 

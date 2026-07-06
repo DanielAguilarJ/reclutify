@@ -10,7 +10,7 @@ export async function POST(req: Request) {
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      console.error('TTS Error: OPENROUTER_API_KEY is not configured');
+      console.error('[TTS] OPENROUTER_API_KEY is not configured');
       return NextResponse.json(
         { error: 'TTS service not configured' },
         { status: 500 }
@@ -18,27 +18,22 @@ export async function POST(req: Request) {
     }
 
     console.log('\n====== TTS API ======');
-    console.log('Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
+    console.log('[TTS] Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
+    console.log('[TTS] Language:', language);
 
-    // Voice selection: check model-specific voices
+    // Voice selection — Gemini 3.1 Flash TTS voices are case-sensitive
     const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'Kore';
     const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    // Try multiple response formats in order of preference.
-    // Some TTS models on OpenRouter only support specific audio codecs.
-    const formatsToTry = ['mp3', 'wav', 'pcm'] as const;
-    const contentTypeMap: Record<string, string> = {
-      mp3: 'audio/mpeg',
-      wav: 'audio/wav',
-      pcm: 'audio/pcm',
-    };
+    console.log('[TTS] Voice:', selectedVoice);
 
-    let lastError = '';
+    // Single request with mp3 format — no retry loop to avoid timeout.
+    // OpenRouter + Gemini 3.1 Flash TTS supports mp3 natively.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000); // 25s timeout
 
-    for (const format of formatsToTry) {
-      console.log(`[TTS] Trying format: ${format}, voice: ${selectedVoice}`);
-
+    try {
       const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
         method: 'POST',
         headers: {
@@ -49,45 +44,67 @@ export async function POST(req: Request) {
           model: 'google/gemini-3.1-flash-tts-preview',
           input: text,
           voice: selectedVoice,
-          response_format: format,
+          response_format: 'mp3',
         }),
+        signal: controller.signal,
       });
 
-      if (response.ok) {
-        const audioBuffer = await response.arrayBuffer();
+      clearTimeout(timeout);
 
-        // Use the Content-Type from OpenRouter if available, otherwise map it
-        const upstreamContentType = response.headers.get('Content-Type');
-        const resolvedContentType =
-          upstreamContentType || contentTypeMap[format] || 'audio/mpeg';
-
-        console.log(
-          `[TTS] Success with format: ${format}, ` +
-          `Content-Type: ${resolvedContentType}, ` +
-          `size: ${audioBuffer.byteLength} bytes`
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('[TTS] OpenRouter error:', response.status, errorBody);
+        return NextResponse.json(
+          { error: `TTS upstream error: ${response.status}`, detail: errorBody },
+          { status: 502 }
         );
-
-        return new NextResponse(audioBuffer, {
-          headers: {
-            'Content-Type': resolvedContentType,
-            'Content-Length': audioBuffer.byteLength.toString(),
-          },
-        });
       }
 
-      // Log the error but continue trying the next format
-      const errorText = await response.text();
-      lastError = `Format ${format}: ${response.status} — ${errorText}`;
-      console.warn(`[TTS] Format ${format} failed:`, response.status, errorText);
-    }
+      const audioBuffer = await response.arrayBuffer();
 
-    // All formats failed
-    console.error('[TTS] All formats failed. Last error:', lastError);
-    throw new Error(`TTS generation failed with all formats. ${lastError}`);
+      if (audioBuffer.byteLength === 0) {
+        console.error('[TTS] OpenRouter returned empty audio buffer');
+        return NextResponse.json(
+          { error: 'TTS returned empty audio' },
+          { status: 502 }
+        );
+      }
+
+      // Detect content type from upstream; default to audio/mpeg for mp3
+      const upstreamCT = response.headers.get('Content-Type');
+      // Clean the content-type: keep only the mime type, strip params
+      const contentType = upstreamCT
+        ? upstreamCT.split(';')[0].trim()
+        : 'audio/mpeg';
+
+      console.log(
+        `[TTS] Success — size: ${audioBuffer.byteLength} bytes, ` +
+        `Content-Type: ${contentType}`
+      );
+
+      return new NextResponse(audioBuffer, {
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': audioBuffer.byteLength.toString(),
+        },
+      });
+
+    } catch (fetchError: unknown) {
+      clearTimeout(timeout);
+      const fe = fetchError as Error;
+      if (fe.name === 'AbortError') {
+        console.error('[TTS] Request timed out after 25s');
+        return NextResponse.json(
+          { error: 'TTS request timed out' },
+          { status: 504 }
+        );
+      }
+      throw fetchError;
+    }
 
   } catch (error: unknown) {
     const err = error as Error;
-    console.error('TTS Error:', err.message);
+    console.error('[TTS] Unhandled error:', err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

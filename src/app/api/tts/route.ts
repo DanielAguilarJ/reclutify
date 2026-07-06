@@ -21,17 +21,17 @@ export async function POST(req: Request) {
     console.log('[TTS] Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
     console.log('[TTS] Language:', language);
 
-    // Voice selection — Gemini 3.1 Flash TTS voices are case-sensitive
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'Kore';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
+    // Kokoro 82M voice mapping:
+    // ef_ = español female, em_ = español male
+    // af_ = american female, am_ = american male
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'ef_dora';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'af_nova';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    console.log('[TTS] Voice:', selectedVoice);
+    console.log('[TTS] Model: hexgrad/kokoro-82m, Voice:', selectedVoice);
 
-    // Single request with mp3 format — no retry loop to avoid timeout.
-    // OpenRouter + Gemini 3.1 Flash TTS supports mp3 natively.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000); // 25s timeout
+    const timeout = setTimeout(() => controller.abort(), 25000);
 
     try {
       const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'google/gemini-3.1-flash-tts-preview',
+          model: 'hexgrad/kokoro-82m',
           input: text,
           voice: selectedVoice,
           response_format: 'mp3',
@@ -72,7 +72,6 @@ export async function POST(req: Request) {
 
       // Detect content type from upstream; default to audio/mpeg for mp3
       const upstreamCT = response.headers.get('Content-Type');
-      // Clean the content-type: keep only the mime type, strip params
       const contentType = upstreamCT
         ? upstreamCT.split(';')[0].trim()
         : 'audio/mpeg';

@@ -12,8 +12,8 @@ export async function POST(req: Request) {
     console.log('Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
 
     // Voice selection: check model-specific voices
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'nova';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'nova';
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'Kore';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'Kore';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
     // Use the correct OpenRouter TTS endpoint: /api/v1/audio/speech
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'openai/gpt-4o-mini-tts-2025-12-15',
+        model: 'google/gemini-3.1-flash-tts-preview',
         input: text,
         voice: selectedVoice,
         response_format: 'mp3',

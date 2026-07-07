@@ -1,22 +1,31 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
-'use client';
+"use client";
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, Mic, CheckCircle2, AlertCircle } from 'lucide-react';
-import { useInterviewStore } from '@/store/interviewStore';
-import { useAdminStore } from '@/store/adminStore';
-import { useAppStore } from '@/store/appStore';
-import { dictionaries } from '@/lib/i18n';
-import Logo from '@/components/ui/Logo';
-import AiOrb from './AiOrb';
-import { computeInterviewPlan, getQuestionBudget } from '@/lib/interviewTimingEngine';
+import { useEffect, useRef, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Clock, Mic, CheckCircle2, AlertCircle } from "lucide-react";
+import { useInterviewStore } from "@/store/interviewStore";
+import { useAdminStore } from "@/store/adminStore";
+import { useAppStore } from "@/store/appStore";
+import { dictionaries } from "@/lib/i18n";
+import Logo from "@/components/ui/Logo";
+import AiOrb from "./AiOrb";
+import {
+  computeInterviewPlan,
+  getQuestionBudget,
+} from "@/lib/interviewTimingEngine";
 
-export default function InterviewRoom({ roleId, publicResultId }: { roleId: string; publicResultId?: string }) {
+export default function InterviewRoom({
+  roleId,
+  publicResultId,
+}: {
+  roleId: string;
+  publicResultId?: string;
+}) {
   const { roles } = useAdminStore();
-  const currentRole = roles.find(r => r.id === roleId);
+  const currentRole = roles.find((r) => r.id === roleId);
 
   const {
     topics,
@@ -47,7 +56,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const { language } = useAppStore();
   const { candidates, addCandidate, updateCandidate } = useAdminStore();
   const t = dictionaries[language];
-  const langCode = language === 'es' ? 'es-ES' : 'en-US';
+  const langCode = language === "es" ? "es-ES" : "en-US";
 
   const [hasStarted, setHasStarted] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
@@ -60,7 +69,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
-  const speakingRef = useRef<boolean>(false);  // TTS mutex to prevent duplicates
+  const speakingRef = useRef<boolean>(false); // TTS mutex to prevent duplicates
   const audioRef = useRef<HTMLAudioElement | null>(null); // current audio element
   const interviewActiveRef = useRef<boolean>(false); // tracks if interview is active for safe SR restart
   const ttsTimeoutRef = useRef<NodeJS.Timeout | null>(null); // safety timeout for stuck TTS
@@ -71,11 +80,13 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   // FIX 6: Tracks where the current topic started in the transcript (for hard-limit guard)
   const topicStartIndexRef = useRef<number>(0);
   // FIX 7: Debounce speech recognition — accumulate fragments before processing
-  const utteranceBufferRef = useRef<string>('');
+  const utteranceBufferRef = useRef<string>("");
   const utteranceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
   // FIX 8: Ref to always point to the latest handleCandidateUtterance — solves stale closure
-  const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const handleUtteranceRef = useRef<(text: string) => Promise<void>>(
+    async () => {},
+  );
   // FIX 9: Mutex to prevent concurrent SpeechRecognition restart attempts
   const restartingRef = useRef<boolean>(false);
   // BUG 1 FIX: Queue utterances that arrive while processingLock is active.
@@ -92,6 +103,14 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   // redundantly call recognitionRef.current.start() a second time (which throws a
   // silently-swallowed InvalidStateError on every turn).
   const recognitionRestartedByTTSRef = useRef<boolean>(false);
+  // ANTI-FREEZE / ANTI-ECHO FIX: tracks whether the native recognition object is
+  // actually running right now (via onstart/onend), and the timestamp of the last
+  // recognition event of any kind. A watchdog uses these to detect a recognition
+  // instance that has silently died (a known Chrome issue after many start/stop
+  // cycles) and force it back to life instead of leaving the interview frozen.
+  const recognitionRunningRef = useRef<boolean>(false);
+  const lastRecognitionEventAtRef = useRef<number>(Date.now());
+  const watchdogIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -101,11 +120,18 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const totalDurationSeconds = interviewDurationMins * 60;
 
   // Lazy-import not needed — engine is a pure module with zero React dependencies
-  const interviewPlan = computeInterviewPlan(interviewDurationMins, topics.map(t => ({
-    label: t.label,
-    weight: t.rubric?.weight ?? 5,
-  })), { hasCv: !!candidate?.cvData });
-  const currentTopicBudget = getQuestionBudget(currentTopicIndex, interviewPlan);
+  const interviewPlan = computeInterviewPlan(
+    interviewDurationMins,
+    topics.map((t) => ({
+      label: t.label,
+      weight: t.rubric?.weight ?? 5,
+    })),
+    { hasCv: !!candidate?.cvData },
+  );
+  const currentTopicBudget = getQuestionBudget(
+    currentTopicIndex,
+    interviewPlan,
+  );
   const maxQuestionsHardLimit = currentTopicBudget.questionBudget;
 
   // Grace period: when time runs out but not all planned topics are covered yet,
@@ -116,27 +142,30 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const absoluteMaxSecs = totalDurationSeconds * GRACE_CAP_MULT;
 
   // Has at least one real (non-control) assistant message been delivered on the last topic?
-  const lastTopicHasQuestion = isLastTopic && (() => {
-    const start = topicStartIndexRef.current;
-    for (let i = start; i < transcript.length; i++) {
-      const m = transcript[i];
-      if (
-        m.role === 'assistant' &&
-        !m.content.includes('[NEXT_TOPIC]') &&
-        !m.content.includes('[END_INTERVIEW]')
-      ) {
-        return true;
+  const lastTopicHasQuestion =
+    isLastTopic &&
+    (() => {
+      const start = topicStartIndexRef.current;
+      for (let i = start; i < transcript.length; i++) {
+        const m = transcript[i];
+        if (
+          m.role === "assistant" &&
+          !m.content.includes("[NEXT_TOPIC]") &&
+          !m.content.includes("[END_INTERVIEW]")
+        ) {
+          return true;
+        }
       }
-    }
-    return false;
-  })();
+      return false;
+    })();
   const allTopicsCovered = isLastTopic && lastTopicHasQuestion;
-  const isGracePeriod = hasStarted && timerSeconds >= totalDurationSeconds && !allTopicsCovered;
+  const isGracePeriod =
+    hasStarted && timerSeconds >= totalDurationSeconds && !allTopicsCovered;
 
   // Closing phase: only fire at 90%+ AND when we're already on the last topic.
   // Previously this fired regardless of topic, telling the AI to wrap up prematurely.
   const isClosingPhase =
-    hasStarted && timerSeconds >= totalDurationSeconds * 0.90 && isLastTopic;
+    hasStarted && timerSeconds >= totalDurationSeconds * 0.9 && isLastTopic;
 
   // Reset topic start index whenever the topic advances.
   // Bug 12 fix: also expose a synchronous helper for callers that need to
@@ -153,7 +182,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   useEffect(() => {
     topicStartIndexRef.current = useInterviewStore.getState().transcript.length;
     consecutiveEmptyRef.current = 0;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTopicIndex]);
 
   // Sync to Admin Pipeline as "in-progress" automatically — ALWAYS save progress
@@ -161,7 +190,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   // Duration is accurately captured in endInterview(); no need to sync on every tick.
   useEffect(() => {
     if (!hasStarted) return;
-    
+
     let currentSessionId = sessionId;
     if (!currentSessionId) {
       currentSessionId = publicResultId || `cand-${Date.now()}`;
@@ -171,23 +200,23 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     // Also ensure roleId is in the interview store for InterviewComplete
     setStoreRoleId(roleId);
 
-    const exists = candidates.find(c => c.id === currentSessionId);
+    const exists = candidates.find((c) => c.id === currentSessionId);
     if (!exists) {
       addCandidate({
         id: currentSessionId,
         candidate,
         roleId,
-        roleTitle: currentRole?.title || 'Candidate',
+        roleTitle: currentRole?.title || "Candidate",
         date: Date.now(),
-        status: 'in-progress',
+        status: "in-progress",
         transcript,
         duration: timerSeconds,
-        source: publicResultId ? 'public_link' : 'ticket',
+        source: publicResultId ? "public_link" : "ticket",
       });
     } else {
       updateCandidate(currentSessionId, { transcript, duration: timerSeconds });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcript, hasStarted]);
 
   // Timer hard-stop: only fires when EITHER
@@ -206,131 +235,260 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     const naturalEnd = timerSeconds >= totalSecs && allTopicsCovered;
     const safetyCap = timerSeconds >= maxSecs;
 
-    if ((naturalEnd || safetyCap) && !speakingRef.current && !processingLockRef.current) {
+    if (
+      (naturalEnd || safetyCap) &&
+      !speakingRef.current &&
+      !processingLockRef.current
+    ) {
       console.log(
-        `[Timer Hard Stop] ${safetyCap ? 'Safety cap (2×)' : 'All topics covered'} — ending interview`
+        `[Timer Hard Stop] ${safetyCap ? "Safety cap (2×)" : "All topics covered"} — ending interview`,
       );
-      const closingMsg = language === 'es'
-        ? `Ha sido un placer hablar contigo. Hemos llegado al final de nuestra entrevista. El equipo de evaluación revisará tu desempeño y te contactarán pronto. ¡Mucho éxito!`
-        : `It's been great speaking with you. We've reached the end of our interview. The evaluation team will review your performance and be in touch soon. Best of luck!`;
-      addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+      const closingMsg =
+        language === "es"
+          ? `Ha sido un placer hablar contigo. Hemos llegado al final de nuestra entrevista. El equipo de evaluación revisará tu desempeño y te contactarán pronto. ¡Mucho éxito!`
+          : `It's been great speaking with you. We've reached the end of our interview. The evaluation team will review your performance and be in touch soon. Best of luck!`;
+      addTranscriptEntry({
+        role: "assistant",
+        content: closingMsg,
+        timestamp: Date.now(),
+      });
       speakText(closingMsg).then(() => endInterview());
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerSeconds, hasStarted, allTopicsCovered]);
 
-  // Safe restart of SpeechRecognition — prevents silent death
+  // Single source of truth: should the mic ACTUALLY be capturing candidate
+  // speech right now? Only when the interview is active, Zara is not talking,
+  // AND we're not mid-flight processing the previous answer. Using this
+  // everywhere (instead of ad-hoc checks) closes the race where the mic used
+  // to get switched back on while we were still waiting for the AI's reply —
+  // which is what let her own TTS voice get picked up and transcribed as if
+  // the candidate had said it.
+  const shouldBeListening = useCallback(() => {
+    return (
+      interviewActiveRef.current &&
+      !speakingRef.current &&
+      !processingLockRef.current
+    );
+  }, []);
+
+  // Builds a BRAND NEW SpeechRecognition instance with every handler wired up.
+  // We deliberately create a fresh instance every time we (re)start listening
+  // instead of reusing the same one for the whole interview: long-lived Chrome
+  // SpeechRecognition objects are known to silently stop firing ANY events at
+  // all after many start/stop cycles, which is what caused the interview to
+  // freeze permanently a few questions into a topic ("ya no escucha").
+  const createRecognitionInstance = useCallback(() => {
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) return null;
+
+    const rec = new SpeechRecognitionCtor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = langCode;
+
+    rec.onstart = () => {
+      recognitionRunningRef.current = true;
+      lastRecognitionEventAtRef.current = Date.now();
+    };
+
+    rec.onresult = (event: any) => {
+      lastRecognitionEventAtRef.current = Date.now();
+      let interimTranscript = "";
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          const finalText = event.results[i][0].transcript;
+          // DEBOUNCE: Accumulate final fragments and wait for silence
+          utteranceBufferRef.current +=
+            (utteranceBufferRef.current ? " " : "") + finalText;
+          setIsTranscribing(true);
+          if (utteranceTimerRef.current)
+            clearTimeout(utteranceTimerRef.current);
+          utteranceTimerRef.current = setTimeout(() => {
+            const fullUtterance = utteranceBufferRef.current.trim();
+            utteranceBufferRef.current = "";
+            setIsTranscribing(false);
+
+            // BUG 1 FOLLOW-UP: Only drop pure noise (empty/near-empty fragments).
+            // A hard 10-character cutoff used to silently swallow short but VALID
+            // answers ("Si", "No", "No se", "Correcto") with zero feedback, which
+            // recreated the "I spoke and nothing happened" symptom for legitimate
+            // short answers. Real short-answer handling (rephrase the question, or
+            // advance topic after 2 consecutive vague answers) already exists inside
+            // handleCandidateUtterance below — let it decide instead of guessing here.
+            if (fullUtterance.length < 2) {
+              console.warn(
+                "[STT] Empty/noise fragment, skipping:",
+                fullUtterance,
+              );
+              return;
+            }
+
+            // ECHO GUARD (critical fix): audio captured while Zara is actively
+            // speaking can ONLY be mic feedback from her own TTS voice coming out
+            // of the speakers — never the candidate. Treating it as an answer is
+            // exactly the "Zara answers her own questions" bug. Always discard it.
+            if (speakingRef.current) {
+              console.warn(
+                "[STT] Discarding fragment captured while AI is speaking (echo guard):",
+                fullUtterance,
+              );
+              return;
+            }
+
+            // BUG 1 FIX: If processingLock is active, queue instead of discard.
+            // Utterances that arrive while locked are appended (not overwritten)
+            // so nothing the candidate says while the system is busy is lost.
+            if (processingLockRef.current) {
+              console.log(
+                "[STT] Lock active — queuing utterance for later processing",
+              );
+              pendingUtterancesRef.current.push(fullUtterance);
+              return;
+            }
+
+            // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
+            handleUtteranceRef.current(fullUtterance);
+          }, 1500);
+        } else if (!speakingRef.current) {
+          // Same echo guard applied to the live interim preview shown under the
+          // orb — never show Zara's own words as if the candidate were saying them.
+          interimTranscript += event.results[i][0].transcript;
+          const preview = utteranceBufferRef.current
+            ? utteranceBufferRef.current + " " + interimTranscript
+            : interimTranscript;
+          setCurrentSubtitle(preview);
+        }
+      }
+    };
+
+    // Auto-restart on recoverable errors
+    rec.onerror = (event: any) => {
+      lastRecognitionEventAtRef.current = Date.now();
+      // no-speech is not a real error — onend will handle restart
+      if (event.error === "no-speech") return;
+      console.error("Speech recognition error:", event.error);
+      const fatalErrors = [
+        "not-allowed",
+        "service-not-allowed",
+        "language-not-supported",
+      ];
+      if (!fatalErrors.includes(event.error)) {
+        restartRecognition();
+      }
+    };
+
+    // KEY FIX: Auto-restart when recognition silently ends — but ONLY if we
+    // should actually be listening right now (not speaking, not processing).
+    // The old check only looked at `speakingRef`, so the mic got switched back
+    // on while we were still waiting for the AI's reply, well before the next
+    // speakText() call — that stray listening window is what picked up Zara's
+    // own TTS audio and fed it back in as a fake candidate answer.
+    rec.onend = () => {
+      recognitionRunningRef.current = false;
+      lastRecognitionEventAtRef.current = Date.now();
+      if (shouldBeListening()) {
+        console.log("SpeechRecognition ended unexpectedly — restarting...");
+        setTimeout(() => restartRecognition(), 300);
+      }
+    };
+
+    return rec;
+  }, [langCode]);
+
+  // Safe restart of SpeechRecognition — prevents silent death.
+  // Always builds a FRESH instance (see createRecognitionInstance) instead of
+  // reusing the old one — reusing the same instance across many start/stop
+  // cycles is what let it get permanently stuck with no way to recover.
   const restartRecognition = useCallback(() => {
-    if (!interviewActiveRef.current || speakingRef.current) return;
+    if (!shouldBeListening()) return;
     if (restartingRef.current) return; // Prevent concurrent restarts
     restartingRef.current = true;
-    const rec = recognitionRef.current;
-    if (!rec) { restartingRef.current = false; return; }
-    try {
-      rec.stop();
-    } catch (e) { /* already stopped */ }
-    // Delay to let the browser release resources
+
+    const oldRec = recognitionRef.current;
+    if (oldRec) {
+      try {
+        // Detach handlers first so the discarded instance can't also trigger
+        // its own restart once we've already replaced it.
+        oldRec.onend = null;
+        oldRec.onerror = null;
+        oldRec.stop();
+      } catch (e) {
+        /* already stopped */
+      }
+    }
+    // Delay to let the browser release the microphone before grabbing it again
     setTimeout(() => {
       restartingRef.current = false;
-      if (!interviewActiveRef.current || speakingRef.current) return;
+      if (!shouldBeListening()) return;
       try {
-        rec.start();
+        const fresh = createRecognitionInstance();
+        if (!fresh) return;
+        recognitionRef.current = fresh;
+        fresh.start();
         setIsRecording(true);
       } catch (e) {
-        // Already started or other error — ignore
+        // Already started or other error — ignore, the watchdog below will retry
       }
     }, 500);
-  }, []);
+  }, [createRecognitionInstance]);
 
   // Initialize Speech APIs
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       synthesisRef.current = window.speechSynthesis;
-      const SpeechRecognition =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = true;
-        recognitionRef.current.interimResults = true;
-        recognitionRef.current.lang = langCode;
-
-        recognitionRef.current.onresult = (event: any) => {
-          let interimTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              const finalText = event.results[i][0].transcript;
-              // DEBOUNCE: Accumulate final fragments and wait for silence
-              utteranceBufferRef.current += (utteranceBufferRef.current ? ' ' : '') + finalText;
-              setIsTranscribing(true);
-              if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
-              utteranceTimerRef.current = setTimeout(() => {
-                const fullUtterance = utteranceBufferRef.current.trim();
-                utteranceBufferRef.current = '';
-                setIsTranscribing(false);
-
-                // BUG 1 FOLLOW-UP: Only drop pure noise (empty/near-empty fragments).
-                // A hard 10-character cutoff used to silently swallow short but VALID
-                // answers ("Si", "No", "No se", "Correcto") with zero feedback, which
-                // recreated the "I spoke and nothing happened" symptom for legitimate
-                // short answers. Real short-answer handling (rephrase the question, or
-                // advance topic after 2 consecutive vague answers) already exists inside
-                // handleCandidateUtterance below — let it decide instead of guessing here.
-                if (fullUtterance.length < 2) {
-                  console.warn('[STT] Empty/noise fragment, skipping:', fullUtterance);
-                  return;
-                }
-
-                // BUG 1 FIX: If processingLock is active, queue instead of discard.
-                // Utterances that arrive while locked are appended (not overwritten)
-                // so nothing the candidate says while the system is busy is lost.
-                if (processingLockRef.current || speakingRef.current) {
-                  console.log('[STT] Lock active — queuing utterance for later processing');
-                  pendingUtterancesRef.current.push(fullUtterance);
-                  return;
-                }
-
-                // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
-                handleUtteranceRef.current(fullUtterance);
-              }, 1500);
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-              const preview = utteranceBufferRef.current
-                ? utteranceBufferRef.current + ' ' + interimTranscript
-                : interimTranscript;
-              setCurrentSubtitle(preview);
-            }
-          }
-        };
-
-        // Auto-restart on recoverable errors
-        recognitionRef.current.onerror = (event: any) => {
-          // no-speech is not a real error — onend will handle restart
-          if (event.error === 'no-speech') return;
-          console.error('Speech recognition error:', event.error);
-          const fatalErrors = ['not-allowed', 'service-not-allowed', 'language-not-supported'];
-          if (!fatalErrors.includes(event.error)) {
-            restartRecognition();
-          }
-        };
-
-        // KEY FIX: Auto-restart when recognition silently ends
-        recognitionRef.current.onend = () => {
-          // Only restart if interview is active and AI is not speaking
-          if (interviewActiveRef.current && !speakingRef.current) {
-            console.log('SpeechRecognition ended unexpectedly — restarting...');
-            setTimeout(() => restartRecognition(), 300);
-          }
-        };
-      }
+      recognitionRef.current = createRecognitionInstance();
     }
-  }, [langCode, restartRecognition]);
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.stop();
+        } catch (e) {
+          /* noop */
+        }
+      }
+    };
+  }, [langCode, createRecognitionInstance]);
+
+  // Watchdog: if we SHOULD be listening but haven't seen a single recognition
+  // event (onstart/onresult/onend/onerror) in a long time, the native object
+  // has almost certainly died silently (a known Chrome quirk) — force a fresh
+  // restart instead of leaving the interview frozen with no way to recover.
+  useEffect(() => {
+    watchdogIntervalRef.current = setInterval(() => {
+      if (!shouldBeListening()) return;
+      const silentFor = Date.now() - lastRecognitionEventAtRef.current;
+      if (silentFor > 20000) {
+        console.warn(
+          "[STT Watchdog] No recognition activity for",
+          silentFor,
+          "ms — forcing restart",
+        );
+        lastRecognitionEventAtRef.current = Date.now();
+        restartRecognition();
+      }
+    }, 5000);
+    return () => {
+      if (watchdogIntervalRef.current)
+        clearInterval(watchdogIntervalRef.current);
+    };
+  }, [restartRecognition]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
   // Attach stream to video element AFTER the DOM renders the <video> tag
   useEffect(() => {
-    if (hasStarted && videoRef.current && streamRef.current && !videoRef.current.srcObject) {
+    if (
+      hasStarted &&
+      videoRef.current &&
+      streamRef.current &&
+      !videoRef.current.srcObject
+    ) {
       videoRef.current.srcObject = streamRef.current;
     }
   }, [hasStarted]);
@@ -342,7 +500,8 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   // would be stale (transcript: [], timerSeconds: 0, currentTopicIndex: 0, etc.).
   const handleCandidateUtterance = async (text: string) => {
     // Hard guard: block if AI is speaking, processing, or another call is in flight
-    if (!text.trim() || processingLockRef.current || speakingRef.current) return;
+    if (!text.trim() || processingLockRef.current || speakingRef.current)
+      return;
     processingLockRef.current = true; // Acquire lock — released in finally block
     recognitionRestartedByTTSRef.current = false; // Reset — set by speakText() if it restarts SR
 
@@ -359,28 +518,31 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     // Grace-period-aware closing detection. Closing phase only fires when we're
     // on the last topic AND ≥90% elapsed. Grace period engages when the planned
     // duration is exceeded but the last topic hasn't been delivered yet.
-    const freshLastTopicHasQuestion = freshIsLastTopic && (() => {
-      const start = topicStartIndexRef.current;
-      for (let i = start; i < freshTranscript.length; i++) {
-        const m = freshTranscript[i];
-        if (
-          m.role === 'assistant' &&
-          !m.content.includes('[NEXT_TOPIC]') &&
-          !m.content.includes('[END_INTERVIEW]')
-        ) {
-          return true;
+    const freshLastTopicHasQuestion =
+      freshIsLastTopic &&
+      (() => {
+        const start = topicStartIndexRef.current;
+        for (let i = start; i < freshTranscript.length; i++) {
+          const m = freshTranscript[i];
+          if (
+            m.role === "assistant" &&
+            !m.content.includes("[NEXT_TOPIC]") &&
+            !m.content.includes("[END_INTERVIEW]")
+          ) {
+            return true;
+          }
         }
-      }
-      return false;
-    })();
+        return false;
+      })();
     const freshAllTopicsCovered = freshIsLastTopic && freshLastTopicHasQuestion;
-    const freshIsGracePeriod = freshTimerSeconds >= totalDurationSecs && !freshAllTopicsCovered;
+    const freshIsGracePeriod =
+      freshTimerSeconds >= totalDurationSecs && !freshAllTopicsCovered;
     const freshIsClosingPhase =
-      freshTimerSeconds >= totalDurationSecs * 0.90 && freshIsLastTopic;
+      freshTimerSeconds >= totalDurationSecs * 0.9 && freshIsLastTopic;
     // ═══════════════════════════════════════════════════════════
 
     // Save transcript entry FIRST, before any early returns.
-    addTranscriptEntry({ role: 'user', content: text, timestamp: Date.now() });
+    addTranscriptEntry({ role: "user", content: text, timestamp: Date.now() });
 
     // Bug 16 fix: confused-candidate detection.
     // If the candidate replied with a SINGLE confused word (or a fragment under
@@ -388,24 +550,44 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     // and don't trip the dead-end counter yet — ask Zara to rephrase instead.
     const trimmedText = text.trim();
     const wordCount = trimmedText.split(/\s+/).filter(Boolean).length;
-    const isSingleConfusedWord = wordCount <= 1 && /^(c[oó]mo|qu[eé]|huh|what|sorry|perdón|repite|repeat|disculpa)\??$/i.test(trimmedText);
-    const isShortConfusedFragment = wordCount >= 2 && wordCount <= 5 &&
-      /^(no entend|no te ent|puedes repet|can you rep|i didn'?t catch|didn'?t understand|otra vez|again please)/i.test(trimmedText);
+    const isSingleConfusedWord =
+      wordCount <= 1 &&
+      /^(c[oó]mo|qu[eé]|huh|what|sorry|perdón|repite|repeat|disculpa)\??$/i.test(
+        trimmedText,
+      );
+    const isShortConfusedFragment =
+      wordCount >= 2 &&
+      wordCount <= 5 &&
+      /^(no entend|no te ent|puedes repet|can you rep|i didn'?t catch|didn'?t understand|otra vez|again please)/i.test(
+        trimmedText,
+      );
 
     if (isSingleConfusedWord || isShortConfusedFragment) {
       // Re-deliver Zara's previous question simplified, without consuming budget.
-      const lastZaraMsg = useInterviewStore.getState().transcript
-        .slice()
+      const lastZaraMsg = useInterviewStore
+        .getState()
+        .transcript.slice()
         .reverse()
-        .find(m => m.role === 'assistant');
-      const lastQuestionRaw = lastZaraMsg?.content || '';
+        .find((m) => m.role === "assistant");
+      const lastQuestionRaw = lastZaraMsg?.content || "";
       // Strip control tags and pull the last interrogative sentence if any
-      const lastClean = lastQuestionRaw.replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
-      const lastQuestion = lastClean.match(/[^.!?¡¿\n]*\?+/g)?.pop()?.trim() || lastClean;
-      const rephraseMsg = language === 'es'
-        ? `Claro, lo formulo más simple: ${lastQuestion}`
-        : `Of course, let me put it more simply: ${lastQuestion}`;
-      addTranscriptEntry({ role: 'assistant', content: rephraseMsg, timestamp: Date.now() });
+      const lastClean = lastQuestionRaw
+        .replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, "")
+        .trim();
+      const lastQuestion =
+        lastClean
+          .match(/[^.!?¡¿\n]*\?+/g)
+          ?.pop()
+          ?.trim() || lastClean;
+      const rephraseMsg =
+        language === "es"
+          ? `Claro, lo formulo más simple: ${lastQuestion}`
+          : `Of course, let me put it more simply: ${lastQuestion}`;
+      addTranscriptEntry({
+        role: "assistant",
+        content: rephraseMsg,
+        timestamp: Date.now(),
+      });
       await speakText(rephraseMsg);
       processingLockRef.current = false;
       setIsProcessing(false);
@@ -416,7 +598,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     const isEmpty =
       trimmedText.length < 12 ||
       /\b(no s[eé]|no lo sé|no sabría|tampoco sé|i don'?t know|not sure|no idea)\b/i.test(
-        trimmedText
+        trimmedText,
       );
     if (isEmpty) {
       consecutiveEmptyRef.current += 1;
@@ -426,19 +608,29 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     if (consecutiveEmptyRef.current >= 2) {
       consecutiveEmptyRef.current = 0;
       if (freshIsLastTopic) {
-        const closingMsg = language === 'es'
-          ? `Entiendo. Hemos llegado al final de la entrevista. Muchas gracias por tu participación, ${candidate.name}. El equipo te contactará pronto. ¡Éxito!`
-          : `I understand. We've reached the end of the interview. Thank you for your participation, ${candidate.name}. The team will be in touch soon. Best of luck!`;
-        addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+        const closingMsg =
+          language === "es"
+            ? `Entiendo. Hemos llegado al final de la entrevista. Muchas gracias por tu participación, ${candidate.name}. El equipo te contactará pronto. ¡Éxito!`
+            : `I understand. We've reached the end of the interview. Thank you for your participation, ${candidate.name}. The team will be in touch soon. Best of luck!`;
+        addTranscriptEntry({
+          role: "assistant",
+          content: closingMsg,
+          timestamp: Date.now(),
+        });
         await speakText(closingMsg);
         processingLockRef.current = false;
         endInterview();
       } else {
-        const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || '';
-        const transitionMsg = language === 'es'
-          ? `De acuerdo, pasemos al siguiente tema: ${nextTopicLabel}.`
-          : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
-        addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
+        const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || "";
+        const transitionMsg =
+          language === "es"
+            ? `De acuerdo, pasemos al siguiente tema: ${nextTopicLabel}.`
+            : `Alright, let's move on to the next topic: ${nextTopicLabel}.`;
+        addTranscriptEntry({
+          role: "assistant",
+          content: transitionMsg,
+          timestamp: Date.now(),
+        });
         await speakText(transitionMsg);
         processingLockRef.current = false;
         syncAdvanceTopic();
@@ -446,10 +638,10 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       return;
     }
 
-    setCurrentSubtitle('');
+    setCurrentSubtitle("");
     setIsRecording(false);
     setIsProcessing(true);
-    
+
     // BUG 2 FIX: Detect if processing takes too long (>15s) — show retry option
     setProcessingTooLong(false);
     if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
@@ -459,18 +651,27 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
 
     // Stop recognition while processing
     if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch(e) {}
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
     }
 
     try {
       // Build conversation messages from FRESH transcript (not stale closure)
       // Re-read transcript because addTranscriptEntry above may have updated it
       const latestTranscript = useInterviewStore.getState().transcript;
-      const allMessages = latestTranscript.map((m) => ({ role: m.role, content: m.content }));
+      const allMessages = latestTranscript.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
       // Safety: ensure the user message we just added is included
       const lastEntry = allMessages[allMessages.length - 1];
-      if (!lastEntry || lastEntry.content !== text || lastEntry.role !== 'user') {
-        allMessages.push({ role: 'user', content: text });
+      if (
+        !lastEntry ||
+        lastEntry.content !== text ||
+        lastEntry.role !== "user"
+      ) {
+        allMessages.push({ role: "user", content: text });
       }
 
       // Frontend Guard: Hard-coded question counter — Bug 6 fix.
@@ -480,27 +681,42 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       // exactly `budget`. Now the counting is symmetric across all topics.
       const assistantMsgsInTopic = latestTranscript
         .slice(topicStartIndexRef.current)
-        .filter(m => m.role === 'assistant' &&
-                     !m.content.includes('[NEXT_TOPIC]') &&
-                     !m.content.includes('[END_INTERVIEW]'));
+        .filter(
+          (m) =>
+            m.role === "assistant" &&
+            !m.content.includes("[NEXT_TOPIC]") &&
+            !m.content.includes("[END_INTERVIEW]"),
+        );
       const zaraQsInTopic = assistantMsgsInTopic.length;
 
       if (zaraQsInTopic >= maxQuestionsHardLimit) {
-        console.log(`[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`);
+        console.log(
+          `[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`,
+        );
         setIsProcessing(false);
         if (freshIsLastTopic) {
-          const closingMsg = language === 'es'
-            ? `Excelente, hemos cubierto todo lo que necesitaba saber sobre este tema. Muchas gracias por tu tiempo, ${candidate.name}. El equipo revisará tu entrevista y te contactarán pronto. ¡Mucho éxito!`
-            : `Excellent, we've covered everything I needed to know. Thank you for your time, ${candidate.name}. The team will review your interview and be in touch soon. Best of luck!`;
-          addTranscriptEntry({ role: 'assistant', content: closingMsg, timestamp: Date.now() });
+          const closingMsg =
+            language === "es"
+              ? `Excelente, hemos cubierto todo lo que necesitaba saber sobre este tema. Muchas gracias por tu tiempo, ${candidate.name}. El equipo revisará tu entrevista y te contactarán pronto. ¡Mucho éxito!`
+              : `Excellent, we've covered everything I needed to know. Thank you for your time, ${candidate.name}. The team will review your interview and be in touch soon. Best of luck!`;
+          addTranscriptEntry({
+            role: "assistant",
+            content: closingMsg,
+            timestamp: Date.now(),
+          });
           await speakText(closingMsg);
           endInterview();
         } else {
-          const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || '';
-          const transitionMsg = language === 'es'
-            ? `Muy bien, con eso cubrimos este tema. Pasemos al siguiente tema: ${nextTopicLabel}.`
-            : `Great, that covers this topic. Let's move on to the next topic: ${nextTopicLabel}.`;
-          addTranscriptEntry({ role: 'assistant', content: transitionMsg, timestamp: Date.now() });
+          const nextTopicLabel = freshTopics[freshTopicIndex + 1]?.label || "";
+          const transitionMsg =
+            language === "es"
+              ? `Muy bien, con eso cubrimos este tema. Pasemos al siguiente tema: ${nextTopicLabel}.`
+              : `Great, that covers this topic. Let's move on to the next topic: ${nextTopicLabel}.`;
+          addTranscriptEntry({
+            role: "assistant",
+            content: transitionMsg,
+            timestamp: Date.now(),
+          });
           await speakText(transitionMsg);
           syncAdvanceTopic();
         }
@@ -512,28 +728,33 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       const allTopics = freshTopics.map((t, idx) => ({
         label: t.label,
         rubric: t.rubric || null,
-        status: idx < freshTopicIndex ? 'completed' : idx === freshTopicIndex ? 'current' : 'upcoming',
+        status:
+          idx < freshTopicIndex
+            ? "completed"
+            : idx === freshTopicIndex
+              ? "current"
+              : "upcoming",
       }));
 
       // BUG 2 FIX: AbortController with 30s timeout to prevent infinite hangs
       const controller = new AbortController();
       const fetchTimeout = setTimeout(() => controller.abort(), 30000);
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          currentTopic: freshCurrentTopic?.label || '',
+          currentTopic: freshCurrentTopic?.label || "",
           allTopics,
           cvData: candidate?.cvData || null,
-          candidateName: candidate?.name || '',
+          candidateName: candidate?.name || "",
           language: language,
-          roleTitle: currentRole?.title || 'Candidate',
+          roleTitle: currentRole?.title || "Candidate",
           roleDescription: `
-            ${currentRole?.description || ''}
-            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ''}
-            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ''}
-            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ''}
+            ${currentRole?.description || ""}
+            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ""}
+            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ""}
+            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ""}
           `.trim(),
           recentMessages: allMessages,
           isLastTopic: freshIsLastTopic,
@@ -547,7 +768,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           isClosingPhase: freshIsClosingPhase,
           isGracePeriod: freshIsGracePeriod,
           isOpeningPhase: false,
-          sessionId: freshSessionId || 'unknown-session',
+          sessionId: freshSessionId || "unknown-session",
         }),
         signal: controller.signal,
       });
@@ -564,37 +785,50 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         if (data.sentiment) {
           const currentTranscript = useInterviewStore.getState().transcript;
           const lastUserIdx = currentTranscript.length - 1;
-          if (lastUserIdx >= 0 && currentTranscript[lastUserIdx].role === 'user') {
-            const updatedEntry = { ...currentTranscript[lastUserIdx], sentiment: data.sentiment };
+          if (
+            lastUserIdx >= 0 &&
+            currentTranscript[lastUserIdx].role === "user"
+          ) {
+            const updatedEntry = {
+              ...currentTranscript[lastUserIdx],
+              sentiment: data.sentiment,
+            };
             const newTranscript = [...currentTranscript];
             newTranscript[lastUserIdx] = updatedEntry;
             useInterviewStore.setState({ transcript: newTranscript });
           }
         }
 
-        if (aiMessage.includes('[END_INTERVIEW]')) {
+        if (aiMessage.includes("[END_INTERVIEW]")) {
           finishInterview = true;
-          aiMessage = aiMessage.replace(/\[END_INTERVIEW\]/g, '').trim();
-        } else if (aiMessage.includes('[NEXT_TOPIC]')) {
+          aiMessage = aiMessage.replace(/\[END_INTERVIEW\]/g, "").trim();
+        } else if (aiMessage.includes("[NEXT_TOPIC]")) {
           advanceTopic = true;
-          aiMessage = aiMessage.replace(/\[NEXT_TOPIC\]/g, '').trim();
+          aiMessage = aiMessage.replace(/\[NEXT_TOPIC\]/g, "").trim();
         }
 
         if (aiMessage) {
-          addTranscriptEntry({ role: 'assistant', content: aiMessage, timestamp: Date.now() });
+          addTranscriptEntry({
+            role: "assistant",
+            content: aiMessage,
+            timestamp: Date.now(),
+          });
           await speakText(aiMessage);
         }
 
         // Re-read fresh isLastTopic in case topic advanced during speakText
         const postSpeakState = useInterviewStore.getState();
-        const postSpeakIsLastTopic = postSpeakState.currentTopicIndex === postSpeakState.topics.length - 1;
+        const postSpeakIsLastTopic =
+          postSpeakState.currentTopicIndex === postSpeakState.topics.length - 1;
 
         if (finishInterview) {
           endInterview();
         } else if (advanceTopic) {
           if (!topicAdvancingRef.current) {
             topicAdvancingRef.current = true;
-            setTimeout(() => { topicAdvancingRef.current = false; }, 2000);
+            setTimeout(() => {
+              topicAdvancingRef.current = false;
+            }, 2000);
             if (postSpeakIsLastTopic) {
               endInterview();
             } else {
@@ -603,21 +837,25 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           }
         }
       }
-
     } catch (error: unknown) {
-      console.error('Chat error:', error);
-      
+      console.error("Chat error:", error);
+
       // BUG 2 FIX: On timeout or network failure, inform the candidate instead of silent hang
-      const isAbort = error instanceof Error && error.name === 'AbortError';
-      const errorMsg = language === 'es'
-        ? (isAbort
-          ? 'Hubo un problema de conexión. ¿Podrías repetir tu respuesta?'
-          : 'Ocurrió un error temporal. ¿Podrías repetir lo que dijiste?')
-        : (isAbort
-          ? 'There was a connection timeout. Could you repeat your answer?'
-          : 'A temporary error occurred. Could you repeat what you said?');
-      
-      addTranscriptEntry({ role: 'assistant', content: errorMsg, timestamp: Date.now() });
+      const isAbort = error instanceof Error && error.name === "AbortError";
+      const errorMsg =
+        language === "es"
+          ? isAbort
+            ? "Hubo un problema de conexión. ¿Podrías repetir tu respuesta?"
+            : "Ocurrió un error temporal. ¿Podrías repetir lo que dijiste?"
+          : isAbort
+            ? "There was a connection timeout. Could you repeat your answer?"
+            : "A temporary error occurred. Could you repeat what you said?";
+
+      addTranscriptEntry({
+        role: "assistant",
+        content: errorMsg,
+        timestamp: Date.now(),
+      });
       await speakText(errorMsg);
     } finally {
       setIsProcessing(false);
@@ -630,15 +868,25 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       // BUG 2 FIX: Always restart recognition after processing completes — but only
       // if speakText() didn't already do it (avoids a redundant .start() call that
       // throws a silently-swallowed InvalidStateError on every single turn).
-      if (interviewActiveRef.current && !speakingRef.current && !recognitionRestartedByTTSRef.current) {
+      if (
+        interviewActiveRef.current &&
+        !speakingRef.current &&
+        !recognitionRestartedByTTSRef.current
+      ) {
         setIsRecording(true);
-        try { recognitionRef.current?.start(); } catch(e) {}
+        try {
+          const fresh = createRecognitionInstance();
+          if (fresh) {
+            recognitionRef.current = fresh;
+            fresh.start();
+          }
+        } catch (e) {}
       }
       // BUG 1 FIX: Process pending utterance(s) that arrived while lock was active.
       // Multiple queued fragments are merged into a single utterance — they were very
       // likely part of the same continuous answer, just split by processing timing.
       if (pendingUtterancesRef.current.length > 0 && !speakingRef.current) {
-        const pending = pendingUtterancesRef.current.join(' ').trim();
+        const pending = pendingUtterancesRef.current.join(" ").trim();
         pendingUtterancesRef.current = [];
         // Use setTimeout to avoid recursive lock acquisition in same tick
         setTimeout(() => {
@@ -659,16 +907,29 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     // call so the very first telemetry row has the real session id and is
     // tied to the rest of the interview.
     const existingSessionId = useInterviewStore.getState().sessionId;
-    const guaranteedSessionId = existingSessionId || publicResultId || `cand-${Date.now()}`;
+    const guaranteedSessionId =
+      existingSessionId || publicResultId || `cand-${Date.now()}`;
     if (!existingSessionId) setSessionId(guaranteedSessionId);
 
     try {
       const videoConstraints: MediaTrackConstraints | boolean = selectedCameraId
         ? { deviceId: { exact: selectedCameraId } }
         : true;
-      const audioConstraints: MediaTrackConstraints | boolean = selectedMicId
-        ? { deviceId: { exact: selectedMicId } }
-        : true;
+      // Explicit echo/noise constraints (most browsers default to these, but
+      // some devices/platforms don't) — reduces the chance of Zara's own
+      // voice leaking back into the mic through the speakers.
+      const audioConstraints: MediaTrackConstraints = selectedMicId
+        ? {
+            deviceId: { exact: selectedMicId },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        : {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          };
       const stream = await navigator.mediaDevices.getUserMedia({
         video: videoConstraints,
         audio: audioConstraints,
@@ -679,7 +940,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       // Media acquired successfully — NOW transition to interview UI
       setHasStarted(true);
       setIsAiSpeaking(true);
-      interviewActiveRef.current = true;  // Enable auto-restart for SpeechRecognition
+      interviewActiveRef.current = true; // Enable auto-restart for SpeechRecognition
 
       // Try to attach immediately if ref is already mounted
       if (videoRef.current) {
@@ -688,59 +949,68 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       // The useEffect above will also try to attach after re-render
 
       // Start video recording
-        try {
-          const tracks: MediaStreamTrack[] = [];
-          if (screenStream && screenStream.getVideoTracks().length > 0) {
-            tracks.push(screenStream.getVideoTracks()[0]);
-          } else if (stream.getVideoTracks().length > 0) {
-            tracks.push(stream.getVideoTracks()[0]);
-          }
-
-          if (stream.getAudioTracks().length > 0) {
-            tracks.push(stream.getAudioTracks()[0]);
-          }
-
-          const recordingStream = new MediaStream(tracks);
-          const mediaRecorder = new MediaRecorder(recordingStream, { mimeType: 'video/webm' });
-          mediaRecorderRef.current = mediaRecorder;
-          
-          mediaRecorder.ondataavailable = (event) => {
-            if (event.data && event.data.size > 0) {
-              recordedChunksRef.current.push(event.data);
-            }
-          };
-          mediaRecorder.start(1000);
-        } catch (e) {
-          console.error('MediaRecorder error:', e);
+      try {
+        const tracks: MediaStreamTrack[] = [];
+        if (screenStream && screenStream.getVideoTracks().length > 0) {
+          tracks.push(screenStream.getVideoTracks()[0]);
+        } else if (stream.getVideoTracks().length > 0) {
+          tracks.push(stream.getVideoTracks()[0]);
         }
 
-        // setup Audio Analyser for the bottom widget
-        const audioCtx = new AudioContext();
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        source.connect(analyser);
-        analyserRef.current = analyser;
+        if (stream.getAudioTracks().length > 0) {
+          tracks.push(stream.getAudioTracks()[0]);
+        }
 
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        const updateVolume = () => {
-          analyser.getByteFrequencyData(dataArray);
-          const maxVol = Math.max(...dataArray);
-          setVolumeLevel(maxVol / 255);
-          animationRef.current = requestAnimationFrame(updateVolume);
+        const recordingStream = new MediaStream(tracks);
+        const mediaRecorder = new MediaRecorder(recordingStream, {
+          mimeType: "video/webm",
+        });
+        mediaRecorderRef.current = mediaRecorder;
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            recordedChunksRef.current.push(event.data);
+          }
         };
-        updateVolume();
+        mediaRecorder.start(1000);
+      } catch (e) {
+        console.error("MediaRecorder error:", e);
+      }
+
+      // setup Audio Analyser for the bottom widget
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateVolume = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const maxVol = Math.max(...dataArray);
+        setVolumeLevel(maxVol / 255);
+        animationRef.current = requestAnimationFrame(updateVolume);
+      };
+      updateVolume();
     } catch (err) {
-      console.error('Media error:', err);
+      console.error("Media error:", err);
       const error = err as DOMException;
-      if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
-        setMediaError(language === 'es'
-          ? 'Acceso a cámara/micrófono denegado. Permite los permisos en tu navegador y recarga.'
-          : 'Camera/microphone access denied. Please allow permissions in your browser and reload.');
+      if (
+        error?.name === "NotAllowedError" ||
+        error?.name === "PermissionDeniedError"
+      ) {
+        setMediaError(
+          language === "es"
+            ? "Acceso a cámara/micrófono denegado. Permite los permisos en tu navegador y recarga."
+            : "Camera/microphone access denied. Please allow permissions in your browser and reload.",
+        );
       } else {
-        setMediaError(language === 'es'
-          ? 'No se pudo acceder a la cámara o micrófono. Verifica tus dispositivos.'
-          : 'Could not access camera or microphone. Please check your devices.');
+        setMediaError(
+          language === "es"
+            ? "No se pudo acceder a la cámara o micrófono. Verifica tus dispositivos."
+            : "Could not access camera or microphone. Please check your devices.",
+        );
       }
       // Do NOT proceed — user stays on pre-interview screen and sees the error
       return;
@@ -759,24 +1029,24 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       const allTopicsPayload = topics.map((t, idx) => ({
         label: t.label,
         rubric: t.rubric || null,
-        status: idx === 0 ? 'current' : 'upcoming',
+        status: idx === 0 ? "current" : "upcoming",
       }));
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          currentTopic: topics[0]?.label || '',
+          currentTopic: topics[0]?.label || "",
           allTopics: allTopicsPayload,
           cvData: candidate?.cvData || null,
-          candidateName: candidate?.name || '',
+          candidateName: candidate?.name || "",
           language: language,
-          roleTitle: currentRole?.title || 'Candidate',
+          roleTitle: currentRole?.title || "Candidate",
           roleDescription: `
-            ${currentRole?.description || ''}
-            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ''}
-            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ''}
-            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ''}
+            ${currentRole?.description || ""}
+            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ""}
+            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ""}
+            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ""}
           `.trim(),
           recentMessages: [], // No messages yet — opening phase
           isLastTopic: topics.length <= 1,
@@ -797,29 +1067,42 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       if (data.message) {
         let aiGreeting = data.message;
         // Clean any control tags from the opening
-        aiGreeting = aiGreeting.replace(/\[NEXT_TOPIC\]/g, '').replace(/\[END_INTERVIEW\]/g, '').trim();
-        
+        aiGreeting = aiGreeting
+          .replace(/\[NEXT_TOPIC\]/g, "")
+          .replace(/\[END_INTERVIEW\]/g, "")
+          .trim();
+
         addTranscriptEntry({
-          role: 'assistant',
+          role: "assistant",
           content: aiGreeting,
           timestamp: Date.now(),
         });
         await speakText(aiGreeting);
       } else {
         // Fallback if AI fails
-        const fallbackGreeting = language === 'es'
-          ? `Hola ${candidate.name}, soy Zara, tu entrevistadora para el puesto de ${currentRole?.title}. Esta entrevista durará aproximadamente ${interviewDurationMins} minutos. Comencemos. Cuéntame sobre tu experiencia en ${topics[0]?.label || 'esta área'}.`
-          : `Hi ${candidate.name}, I'm Zara, your interviewer for the ${currentRole?.title} position. This interview will take approximately ${interviewDurationMins} minutes. Let's begin. Tell me about your experience in ${topics[0]?.label || 'this area'}.`;
-        addTranscriptEntry({ role: 'assistant', content: fallbackGreeting, timestamp: Date.now() });
+        const fallbackGreeting =
+          language === "es"
+            ? `Hola ${candidate.name}, soy Zara, tu entrevistadora para el puesto de ${currentRole?.title}. Esta entrevista durará aproximadamente ${interviewDurationMins} minutos. Comencemos. Cuéntame sobre tu experiencia en ${topics[0]?.label || "esta área"}.`
+            : `Hi ${candidate.name}, I'm Zara, your interviewer for the ${currentRole?.title} position. This interview will take approximately ${interviewDurationMins} minutes. Let's begin. Tell me about your experience in ${topics[0]?.label || "this area"}.`;
+        addTranscriptEntry({
+          role: "assistant",
+          content: fallbackGreeting,
+          timestamp: Date.now(),
+        });
         await speakText(fallbackGreeting);
       }
     } catch (error) {
-      console.error('Opening greeting error:', error);
+      console.error("Opening greeting error:", error);
       // Fallback greeting
-      const fallbackGreeting = language === 'es'
-        ? `Hola ${candidate.name}, soy Zara. Comencemos la entrevista para el puesto de ${currentRole?.title}. Cuéntame sobre tu experiencia en ${topics[0]?.label || 'esta área'}.`
-        : `Hi ${candidate.name}, I'm Zara. Let's begin the interview for the ${currentRole?.title} position. Tell me about your experience in ${topics[0]?.label || 'this area'}.`;
-      addTranscriptEntry({ role: 'assistant', content: fallbackGreeting, timestamp: Date.now() });
+      const fallbackGreeting =
+        language === "es"
+          ? `Hola ${candidate.name}, soy Zara. Comencemos la entrevista para el puesto de ${currentRole?.title}. Cuéntame sobre tu experiencia en ${topics[0]?.label || "esta área"}.`
+          : `Hi ${candidate.name}, I'm Zara. Let's begin the interview for the ${currentRole?.title} position. Tell me about your experience in ${topics[0]?.label || "this area"}.`;
+      addTranscriptEntry({
+        role: "assistant",
+        content: fallbackGreeting,
+        timestamp: Date.now(),
+      });
       await speakText(fallbackGreeting);
     }
   };
@@ -837,7 +1120,9 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       setIsAiSpeaking(true);
       setCurrentSubtitle(text);
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch(e){}
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
       }
 
       // Cancel any existing audio
@@ -862,23 +1147,40 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         }
         speakingRef.current = false;
         setIsAiSpeaking(false);
-        setCurrentSubtitle('');
+        setCurrentSubtitle("");
         if (interviewActiveRef.current) {
-          setIsRecording(true);
-          try {
-            recognitionRef.current?.start();
-            // BUG 2 FOLLOW-UP: tell handleCandidateUtterance's finally block not to
-            // redundantly call .start() again once this promise resolves.
-            recognitionRestartedByTTSRef.current = true;
-          } catch(e) {}
+          // BUG 2 FOLLOW-UP: tell handleCandidateUtterance's finally block not to
+          // redundantly call .start() again once this promise resolves.
+          recognitionRestartedByTTSRef.current = true;
+          // ANTI-ECHO FIX: small cool-down before re-opening the mic so any
+          // trailing echo of Zara's own voice (speaker bleed, buffered audio,
+          // browser teardown latency) has fully decayed before we start
+          // listening again. This — combined with always building a FRESH
+          // recognition instance — is what stops her own question from being
+          // transcribed back as if the candidate had said it.
+          setTimeout(() => {
+            if (!interviewActiveRef.current || speakingRef.current) return;
+            setIsRecording(true);
+            try {
+              const fresh = createRecognitionInstance();
+              if (fresh) {
+                recognitionRef.current = fresh;
+                fresh.start();
+              }
+            } catch (e) {}
+          }, 350);
         }
         resolve();
       };
 
-      // SAFETY NET: If TTS hasn't finished after 60 seconds, force-resolve
-      // This prevents the interview from getting permanently stuck
+      // SAFETY NET: If TTS hasn't finished after 35 seconds, force-resolve.
+      // This prevents the interview from getting permanently stuck. (Lowered
+      // from 60s, but kept generous enough for longer spoken answers — the
+      // fetch-level timeout below already handles the common "API/network
+      // hung" case much faster, so this is now truly a last-resort net for
+      // the rare case where audio plays but its `onended` event never fires.)
       ttsTimeoutRef.current = setTimeout(() => {
-        console.warn('TTS safety timeout triggered — forcing speech end');
+        console.warn("TTS safety timeout triggered — forcing speech end");
         if (audioRef.current) {
           audioRef.current.pause();
           audioRef.current = null;
@@ -887,53 +1189,92 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           synthesisRef.current.cancel();
         }
         onFinishSpeaking();
-      }, 60000);
+      }, 35000);
 
-      fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      // Bound the TTS fetch itself so a hung network/API call falls back to
+      // browser speech instead of silently stalling the interview. Set just
+      // above the server's own 25s upstream timeout (see /api/tts) so we
+      // never abort a request that the server was about to finish/handle
+      // gracefully on its own.
+      const ttsController = new AbortController();
+      const ttsFetchTimeout = setTimeout(() => ttsController.abort(), 28000);
+
+      fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, language }),
+        signal: ttsController.signal,
       })
         .then((response) => {
-          console.log('[TTS-FE] fetch status:', response.status, 'ok:', response.ok);
+          clearTimeout(ttsFetchTimeout);
+          console.log(
+            "[TTS-FE] fetch status:",
+            response.status,
+            "ok:",
+            response.ok,
+          );
           if (response.ok) {
             return response.blob();
           }
           throw new Error(`TTS failed with status ${response.status}`);
         })
         .then((audioBlob) => {
-          console.log('[TTS-FE] blob received — size:', audioBlob.size, 'type:', audioBlob.type);
+          console.log(
+            "[TTS-FE] blob received — size:",
+            audioBlob.size,
+            "type:",
+            audioBlob.type,
+          );
           if (audioBlob.size === 0) {
-            console.warn('[TTS-FE] Empty audio blob — falling back');
-            throw new Error('Empty audio blob');
+            console.warn("[TTS-FE] Empty audio blob — falling back");
+            throw new Error("Empty audio blob");
           }
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           audioRef.current = audio;
           audio.onended = () => {
-            console.log('[TTS-FE] Audio playback ended normally');
+            console.log("[TTS-FE] Audio playback ended normally");
             onFinishSpeaking();
           };
           audio.onerror = (e) => {
-            console.warn('[TTS-FE] Audio element error — falling back to browser speech', e);
+            console.warn(
+              "[TTS-FE] Audio element error — falling back to browser speech",
+              e,
+            );
             fallbackSpeech(text, onFinishSpeaking);
           };
-          audio.play()
-            .then(() => console.log('[TTS-FE] Audio play() started successfully'))
+          audio
+            .play()
+            .then(() =>
+              console.log("[TTS-FE] Audio play() started successfully"),
+            )
             .catch((err) => {
-              console.warn('[TTS-FE] Audio play() rejected:', err, '— falling back');
+              console.warn(
+                "[TTS-FE] Audio play() rejected:",
+                err,
+                "— falling back",
+              );
               fallbackSpeech(text, onFinishSpeaking);
             });
         })
         .catch((err) => {
-          console.warn('[TTS-FE] fetch/blob error:', err, '— falling back to browser speech');
+          clearTimeout(ttsFetchTimeout);
+          console.warn(
+            "[TTS-FE] fetch/blob error:",
+            err,
+            "— falling back to browser speech",
+          );
           fallbackSpeech(text, onFinishSpeaking);
         });
     });
   };
 
   const fallbackSpeech = (text: string, onDone: () => void) => {
-    if (!synthesisRef.current) { console.warn('[TTS-FE] No SpeechSynthesis — calling onDone'); onDone(); return; }
+    if (!synthesisRef.current) {
+      console.warn("[TTS-FE] No SpeechSynthesis — calling onDone");
+      onDone();
+      return;
+    }
     synthesisRef.current.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
@@ -942,22 +1283,28 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     utterance.pitch = 1.0;
 
     const voices = synthesisRef.current.getVoices();
-    const preferredVoice = voices.find(
-      (v) => v.lang.startsWith(language) && v.name.includes('Google')
-    ) || voices.find((v) => v.lang.startsWith(language));
-    
+    const preferredVoice =
+      voices.find(
+        (v) => v.lang.startsWith(language) && v.name.includes("Google"),
+      ) || voices.find((v) => v.lang.startsWith(language));
+
     if (preferredVoice) {
       utterance.voice = preferredVoice;
     }
 
-    console.log('[TTS-FE] fallbackSpeech — voice:', preferredVoice?.name || 'default', 'lang:', langCode);
+    console.log(
+      "[TTS-FE] fallbackSpeech — voice:",
+      preferredVoice?.name || "default",
+      "lang:",
+      langCode,
+    );
 
     utterance.onend = () => {
-      console.log('[TTS-FE] fallbackSpeech ended normally');
+      console.log("[TTS-FE] fallbackSpeech ended normally");
       onDone();
     };
     utterance.onerror = (e) => {
-      console.error('[TTS-FE] fallbackSpeech error:', e);
+      console.error("[TTS-FE] fallbackSpeech error:", e);
       onDone();
     };
     synthesisRef.current.speak(utterance);
@@ -978,16 +1325,24 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     if (timerRef.current) clearInterval(timerRef.current);
     if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
     if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
+    if (watchdogIntervalRef.current) clearInterval(watchdogIntervalRef.current);
     if (synthesisRef.current) synthesisRef.current.cancel();
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch(e) {}
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
     }
-    
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch (e) {}
+    }
+
     // Force-clear stuck state
     speakingRef.current = false;
     processingLockRef.current = false;
-    utteranceBufferRef.current = '';
+    utteranceBufferRef.current = "";
     pendingUtterancesRef.current = [];
     setIsAiSpeaking(false);
     setIsProcessing(false);
@@ -998,54 +1353,60 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       clearTimeout(processingTimerRef.current);
       processingTimerRef.current = null;
     }
-    
+
     // Save duration
-    localStorage.setItem('tempDuration', timerSeconds.toString());
+    localStorage.setItem("tempDuration", timerSeconds.toString());
 
     // CRITICAL: Force-save transcript to admin store before transitioning
     // This ensures data is persisted even if InterviewComplete fails
-    const currentSessionId = sessionId || publicResultId || `cand-${Date.now()}`;
+    const currentSessionId =
+      sessionId || publicResultId || `cand-${Date.now()}`;
     if (!sessionId) setSessionId(currentSessionId);
 
-    const exists = candidates.find(c => c.id === currentSessionId);
+    const exists = candidates.find((c) => c.id === currentSessionId);
     if (exists) {
       updateCandidate(currentSessionId, {
         transcript,
         duration: timerSeconds,
-        status: 'in-progress', // Will be updated to 'completed' by InterviewComplete
+        status: "in-progress", // Will be updated to 'completed' by InterviewComplete
       });
     } else {
       addCandidate({
         id: currentSessionId,
         candidate,
         roleId,
-        roleTitle: currentRole?.title || 'Candidate',
+        roleTitle: currentRole?.title || "Candidate",
         date: Date.now(),
-        status: 'in-progress',
+        status: "in-progress",
         transcript,
         duration: timerSeconds,
-        source: publicResultId ? 'public_link' : 'ticket',
+        source: publicResultId ? "public_link" : "ticket",
       });
     }
-    
+
     // Stop recording and upload
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== "inactive"
+    ) {
       mediaRecorderRef.current.onstop = async () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, {
+          type: "video/webm",
+        });
 
         // Temporary in-session fallback — valid only while this tab is open.
         // Will be replaced by the permanent R2 URL below if the upload succeeds.
         const localUrl = URL.createObjectURL(blob);
-        localStorage.setItem('tempVideoUrl', localUrl);
+        localStorage.setItem("tempVideoUrl", localUrl);
 
         try {
           const filename = `recording-${sessionId || Date.now()}.webm`;
-          const contentType = 'video/webm';
+          const contentType = "video/webm";
 
           // Step 1 – ask the API for a presigned PUT URL (tiny JSON, well within Vercel limits)
-          const presignRes = await fetch('/api/upload-video', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const presignRes = await fetch("/api/upload-video", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filename, contentType }),
           });
 
@@ -1053,15 +1414,15 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
             throw new Error(`Presign request failed: ${presignRes.status}`);
           }
 
-          const { uploadUrl, publicUrl } = await presignRes.json() as {
+          const { uploadUrl, publicUrl } = (await presignRes.json()) as {
             uploadUrl: string;
             publicUrl: string;
           };
 
           // Step 2 – PUT the blob directly to R2 (bypasses Vercel entirely)
           const uploadRes = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': contentType },
+            method: "PUT",
+            headers: { "Content-Type": contentType },
             body: blob,
           });
 
@@ -1070,32 +1431,37 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           }
 
           // Replace ephemeral blob: URL with the permanent R2 public URL
-          localStorage.setItem('tempVideoUrl', publicUrl);
+          localStorage.setItem("tempVideoUrl", publicUrl);
         } catch (e) {
-          console.error('R2 Upload failed, keeping local blob URL for this session', e);
+          console.error(
+            "R2 Upload failed, keeping local blob URL for this session",
+            e,
+          );
           // localUrl is still in localStorage — video will work for the current tab only
         }
 
         // Stop camera and screen tracks
         if (videoRef.current?.srcObject) {
-          const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-          tracks.forEach(track => track.stop());
+          const tracks = (
+            videoRef.current.srcObject as MediaStream
+          ).getTracks();
+          tracks.forEach((track) => track.stop());
         }
         if (screenStream) {
-          screenStream.getTracks().forEach(track => track.stop());
+          screenStream.getTracks().forEach((track) => track.stop());
         }
-        setPhase('complete');
+        setPhase("complete");
       };
       mediaRecorderRef.current.stop();
     } else {
       if (videoRef.current?.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach(track => track.stop());
+        tracks.forEach((track) => track.stop());
       }
       if (screenStream) {
-        screenStream.getTracks().forEach(track => track.stop());
+        screenStream.getTracks().forEach((track) => track.stop());
       }
-      setPhase('complete');
+      setPhase("complete");
     }
   };
 
@@ -1107,9 +1473,15 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
       if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
       if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
+      if (watchdogIntervalRef.current)
+        clearInterval(watchdogIntervalRef.current);
       if (synthesisRef.current) synthesisRef.current.cancel();
       if (recognitionRef.current) {
-         try { recognitionRef.current.stop(); } catch(e) {}
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.stop();
+        } catch (e) {}
       }
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
@@ -1118,7 +1490,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const formatTime = (totalSeconds: number) => {
     const m = Math.floor(totalSeconds / 60);
     const s = totalSeconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
   return (
@@ -1140,17 +1512,30 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
               const isPast = idx < currentTopicIndex;
 
               return (
-                <div key={topic.id} className="flex flex-col items-center gap-2">
+                <div
+                  key={topic.id}
+                  className="flex flex-col items-center gap-2"
+                >
                   <span
                     className={`text-xs font-medium tracking-wide transition-colors ${
-                      isActive ? 'text-primary' : isPast ? 'text-primary/60' : 'text-muted/50'
+                      isActive
+                        ? "text-primary"
+                        : isPast
+                          ? "text-primary/60"
+                          : "text-muted/50"
                     }`}
                   >
-                    {topic.label.length > 20 ? topic.label.substring(0, 20) + '...' : topic.label}
+                    {topic.label.length > 20
+                      ? topic.label.substring(0, 20) + "..."
+                      : topic.label}
                   </span>
                   <div
                     className={`h-0.5 rounded-full transition-all duration-500 ${
-                      isActive ? 'w-24 bg-primary' : isPast ? 'w-16 bg-primary/40' : 'w-16 bg-black/10'
+                      isActive
+                        ? "w-24 bg-primary"
+                        : isPast
+                          ? "w-16 bg-primary/40"
+                          : "w-16 bg-black/10"
                     }`}
                   />
                 </div>
@@ -1161,52 +1546,69 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
 
         {hasStarted ? (
           <div className="flex items-center gap-4">
-            <button 
+            <button
               onClick={endInterview}
               className="px-3 py-1.5 rounded-full text-xs font-medium text-danger bg-danger/10 hover:bg-danger/20 transition-colors cursor-pointer"
             >
-              {language === 'es' ? 'Terminar Anticipadamente' : 'End Early'}
+              {language === "es" ? "Terminar Anticipadamente" : "End Early"}
             </button>
             {/* Countdown Timer with color-coded alerts */}
             {(() => {
-              const remaining = Math.max(0, totalDurationSeconds - timerSeconds);
-              const remainPct = totalDurationSeconds > 0 ? remaining / totalDurationSeconds : 1;
-              const isUrgent = !isGracePeriod && remainPct <= 0.10; // last 10%
+              const remaining = Math.max(
+                0,
+                totalDurationSeconds - timerSeconds,
+              );
+              const remainPct =
+                totalDurationSeconds > 0 ? remaining / totalDurationSeconds : 1;
+              const isUrgent = !isGracePeriod && remainPct <= 0.1; // last 10%
               const isWarning = !isGracePeriod && remainPct <= 0.25; // last 25%
               const timerColor = isGracePeriod
-                ? 'text-warning'
+                ? "text-warning"
                 : isUrgent
-                  ? 'text-danger'
+                  ? "text-danger"
                   : isWarning
-                    ? 'text-warning'
-                    : 'text-primary';
+                    ? "text-warning"
+                    : "text-primary";
               const borderColor = isGracePeriod
-                ? 'border-warning/30'
+                ? "border-warning/30"
                 : isUrgent
-                  ? 'border-danger/30'
+                  ? "border-danger/30"
                   : isWarning
-                    ? 'border-warning/30'
-                    : 'border-black/[0.04]';
+                    ? "border-warning/30"
+                    : "border-black/[0.04]";
               const iconColor = isGracePeriod
-                ? 'text-warning'
+                ? "text-warning"
                 : isUrgent
-                  ? 'text-danger'
+                  ? "text-danger"
                   : isWarning
-                    ? 'text-warning'
-                    : 'text-primary';
+                    ? "text-warning"
+                    : "text-primary";
               // In grace mode, show how much extra time has been spent rather than
               // a negative countdown.
-              const extraSeconds = Math.max(0, timerSeconds - totalDurationSeconds);
+              const extraSeconds = Math.max(
+                0,
+                timerSeconds - totalDurationSeconds,
+              );
               return (
-                <div className={`flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow-sm border ${borderColor} transition-colors`}>
-                  <Clock className={`h-4 w-4 ${iconColor} ${isUrgent ? 'animate-pulse' : ''}`} />
+                <div
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow-sm border ${borderColor} transition-colors`}
+                >
+                  <Clock
+                    className={`h-4 w-4 ${iconColor} ${isUrgent ? "animate-pulse" : ""}`}
+                  />
                   <div className="flex flex-col items-end">
-                    <span className={`text-sm font-semibold ${timerColor} tracking-tight tabular-nums`}>
-                      {isGracePeriod ? `+${formatTime(extraSeconds)}` : formatTime(remaining)}
+                    <span
+                      className={`text-sm font-semibold ${timerColor} tracking-tight tabular-nums`}
+                    >
+                      {isGracePeriod
+                        ? `+${formatTime(extraSeconds)}`
+                        : formatTime(remaining)}
                     </span>
                     <span className="text-[10px] text-muted/50 leading-none">
                       {isGracePeriod
-                        ? (language === 'es' ? 'Tiempo extendido' : 'Extended time')
+                        ? language === "es"
+                          ? "Tiempo extendido"
+                          : "Extended time"
                         : `${formatTime(timerSeconds)} / ${formatTime(totalDurationSeconds)}`}
                     </span>
                   </div>
@@ -1224,7 +1626,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         {/* Background AI Orb - only show centered when NOT started */}
         {!hasStarted && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-             <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} />
+            <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} />
           </div>
         )}
 
@@ -1239,7 +1641,10 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
             </h2>
             <ul className="space-y-4 mb-8">
               {t.preInterviewPoints.map((point, idx) => (
-                <li key={idx} className="flex gap-3 text-sm text-muted/90 leading-relaxed">
+                <li
+                  key={idx}
+                  className="flex gap-3 text-sm text-muted/90 leading-relaxed"
+                >
                   <div className="mt-1">
                     <CheckCircle2 className="h-4 w-4 text-primary" />
                   </div>
@@ -1279,7 +1684,9 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                 <div className="flex items-center justify-between px-2 mb-2 mt-1">
                   <div className="flex items-center gap-2 bg-foreground/5 py-1.5 px-3 rounded-full">
                     <Mic className="h-3.5 w-3.5 text-foreground" />
-                    <span className="text-xs font-medium text-foreground">{t.micDefault}</span>
+                    <span className="text-xs font-medium text-foreground">
+                      {t.micDefault}
+                    </span>
                   </div>
                   <div className="flex items-end gap-0.5 h-3 pr-2">
                     {Array.from({ length: 5 }).map((_, i) => (
@@ -1288,7 +1695,10 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                         className="w-1 rounded-full transition-all duration-75"
                         style={{
                           height: `${Math.min(100, Math.max(30, volumeLevel * 100 * (1 + (i % 5) * 0.1)))}%`,
-                          backgroundColor: volumeLevel > 0.05 ? 'var(--color-primary)' : '#e2e8f0',
+                          backgroundColor:
+                            volumeLevel > 0.05
+                              ? "var(--color-primary)"
+                              : "#e2e8f0",
                         }}
                       />
                     ))}
@@ -1315,7 +1725,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                 >
                   <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                   <span className="text-xs font-medium text-success">
-                    {language === 'es' ? 'CV Cargado' : 'CV Loaded'}
+                    {language === "es" ? "CV Cargado" : "CV Loaded"}
                   </span>
                 </motion.div>
               )}
@@ -1331,11 +1741,13 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                       key={`${msg.timestamp}-${idx}`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
+                      className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
                     >
-                      {msg.role === 'assistant' ? (
+                      {msg.role === "assistant" ? (
                         <div className="flex flex-col items-start max-w-lg">
-                          <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 ml-1">Zara</span>
+                          <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 ml-1">
+                            Zara
+                          </span>
                           <p className="text-base font-medium text-foreground leading-snug tracking-tight bg-white/80 px-5 py-3 rounded-2xl rounded-tl-sm backdrop-blur-md shadow-sm border border-white/60">
                             {msg.content}
                           </p>
@@ -1343,7 +1755,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                       ) : (
                         <div className="flex flex-col items-end max-w-lg">
                           <span className="text-xs font-semibold text-muted/70 uppercase tracking-wider block mb-1 mr-1">
-                            {t.you || 'You'}
+                            {t.you || "You"}
                           </span>
                           <p className="text-base font-medium text-white leading-snug tracking-tight bg-primary px-5 py-3 rounded-2xl rounded-tr-sm shadow-sm border border-primary">
                             {msg.content}
@@ -1355,82 +1767,96 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
 
                   {/* Live STT */}
                   {currentSubtitle && !isAiSpeaking && (
-                     <motion.div
-                       key="interim-user"
-                       initial={{ opacity: 0, x: 20 }}
-                       animate={{ opacity: 1, x: 0 }}
-                       exit={{ opacity: 0 }}
-                       className="flex flex-col items-end"
-                     >
-                       <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 mr-1">
-                         {t.you || 'You'} ...
-                       </span>
-                       <p className="text-base font-medium text-white/90 leading-snug tracking-tight bg-primary/80 px-5 py-3 rounded-2xl rounded-tr-sm shadow-sm border border-primary/50 italic max-w-lg">
-                         {currentSubtitle}
-                       </p>
-                     </motion.div>
-                  )}
-                  
-                  {/* Live AI TTS */}
-                  {currentSubtitle && isAiSpeaking && !transcript.some(t => t.content === currentSubtitle) && (
                     <motion.div
-                      key="interim-ai"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="flex flex-col items-start"
+                      key="interim-user"
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="flex flex-col items-end"
                     >
-                      <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 ml-1">Zara</span>
-                      <p className="text-base font-medium text-foreground leading-snug tracking-tight bg-white/80 px-5 py-3 rounded-2xl rounded-tl-sm backdrop-blur-md shadow-sm border border-white/60 animate-pulse max-w-lg">
+                      <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 mr-1">
+                        {t.you || "You"} ...
+                      </span>
+                      <p className="text-base font-medium text-white/90 leading-snug tracking-tight bg-primary/80 px-5 py-3 rounded-2xl rounded-tr-sm shadow-sm border border-primary/50 italic max-w-lg">
                         {currentSubtitle}
                       </p>
                     </motion.div>
                   )}
+
+                  {/* Live AI TTS */}
+                  {currentSubtitle &&
+                    isAiSpeaking &&
+                    !transcript.some((t) => t.content === currentSubtitle) && (
+                      <motion.div
+                        key="interim-ai"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex flex-col items-start"
+                      >
+                        <span className="text-xs font-semibold text-primary/70 uppercase tracking-wider block mb-1 ml-1">
+                          Zara
+                        </span>
+                        <p className="text-base font-medium text-foreground leading-snug tracking-tight bg-white/80 px-5 py-3 rounded-2xl rounded-tl-sm backdrop-blur-md shadow-sm border border-white/60 animate-pulse max-w-lg">
+                          {currentSubtitle}
+                        </p>
+                      </motion.div>
+                    )}
                 </AnimatePresence>
               </div>
 
               {/* Status Pill */}
               <AnimatePresence>
-                 {(isRecording || isProcessing || isAiSpeaking || isTranscribing) && (
-                   <motion.div
-                     initial={{ opacity: 0, scale: 0.9 }}
-                     animate={{ opacity: 1, scale: 1 }}
-                     exit={{ opacity: 0, scale: 0.9 }}
-                     className="self-start flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-black/[0.04]"
-                   >
-                     {isTranscribing && !isProcessing && !isAiSpeaking ? (
-                       <>
-                         <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
-                         <span className="text-xs font-semibold text-warning uppercase tracking-wider">
-                           {language === 'es' ? 'Transcribiendo...' : 'Transcribing...'}
-                         </span>
-                       </>
-                     ) : isRecording ? (
-                       <>
-                         <div className="w-2 h-2 rounded-full bg-danger animate-pulse" />
-                         <span className="text-xs font-semibold text-danger uppercase tracking-wider">{t.recordingPill}</span>
-                       </>
-                     ) : isProcessing ? (
-                       <>
-                         <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
-                           {processingTooLong
-                             ? (language === 'es' ? 'Tardando más de lo normal...' : 'Taking longer than usual...')
-                             : t.processingPill}
-                         </span>
-                       </>
-                     ) : (
-                       <>
-                         <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">{t.waitingPill}</span>
-                       </>
-                     )}
-                   </motion.div>
-                 )}
+                {(isRecording ||
+                  isProcessing ||
+                  isAiSpeaking ||
+                  isTranscribing) && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    className="self-start flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-black/[0.04]"
+                  >
+                    {isTranscribing && !isProcessing && !isAiSpeaking ? (
+                      <>
+                        <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+                        <span className="text-xs font-semibold text-warning uppercase tracking-wider">
+                          {language === "es"
+                            ? "Transcribiendo..."
+                            : "Transcribing..."}
+                        </span>
+                      </>
+                    ) : isRecording ? (
+                      <>
+                        <div className="w-2 h-2 rounded-full bg-danger animate-pulse" />
+                        <span className="text-xs font-semibold text-danger uppercase tracking-wider">
+                          {t.recordingPill}
+                        </span>
+                      </>
+                    ) : isProcessing ? (
+                      <>
+                        <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                        <span className="text-xs font-semibold text-primary uppercase tracking-wider">
+                          {processingTooLong
+                            ? language === "es"
+                              ? "Tardando más de lo normal..."
+                              : "Taking longer than usual..."
+                            : t.processingPill}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                        <span className="text-xs font-semibold text-primary uppercase tracking-wider">
+                          {t.waitingPill}
+                        </span>
+                      </>
+                    )}
+                  </motion.div>
+                )}
               </AnimatePresence>
             </div>
           </div>
         )}
-
       </div>
     </div>
   );

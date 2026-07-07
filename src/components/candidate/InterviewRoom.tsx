@@ -632,8 +632,11 @@ export default function InterviewRoom({
           timestamp: Date.now(),
         });
         await speakText(transitionMsg);
-        processingLockRef.current = false;
         syncAdvanceTopic();
+        // UX FIX: ask the new topic's first real question right away instead
+        // of leaving the candidate with nothing to respond to.
+        await askOpeningQuestionForTopic();
+        processingLockRef.current = false;
       }
       return;
     }
@@ -719,6 +722,9 @@ export default function InterviewRoom({
           });
           await speakText(transitionMsg);
           syncAdvanceTopic();
+          // UX FIX: ask the new topic's first real question right away instead
+          // of leaving the candidate with nothing to respond to.
+          await askOpeningQuestionForTopic();
         }
         processingLockRef.current = false;
         return;
@@ -833,6 +839,9 @@ export default function InterviewRoom({
               endInterview();
             } else {
               syncAdvanceTopic();
+              // UX FIX: ask the new topic's first real question right away
+              // instead of leaving the candidate with nothing to respond to.
+              await askOpeningQuestionForTopic();
             }
           }
         }
@@ -900,6 +909,104 @@ export default function InterviewRoom({
 
   // Keep the ref always pointing to the latest handler
   handleUtteranceRef.current = handleCandidateUtterance;
+
+  // UX FIX: after Zara announces a topic change ("Ok, pasemos al siguiente
+  // tema: X"), immediately ask the FIRST real question of that new topic in
+  // the same automated turn — no waiting for the candidate to say anything
+  // in between. Previously the transition message was a dead end: the mic
+  // reopened and waited for an "answer" to what was really just an
+  // announcement, which confused first-time candidates (they don't know
+  // they're supposed to say something trivial just to unlock the real
+  // question). This runs automatically right after syncAdvanceTopic().
+  const askOpeningQuestionForTopic = async () => {
+    const store = useInterviewStore.getState();
+    const freshTranscript = store.transcript;
+    const freshTopicIndex = store.currentTopicIndex;
+    const freshTopics = store.topics;
+    const freshCurrentTopic = freshTopics[freshTopicIndex];
+    const freshIsLastTopic = freshTopicIndex === freshTopics.length - 1;
+    const freshSessionId = store.sessionId;
+    const freshTimerSeconds = store.timerSeconds;
+
+    try {
+      const allMessages = freshTranscript.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const allTopics = freshTopics.map((t, idx) => ({
+        label: t.label,
+        rubric: t.rubric || null,
+        status:
+          idx < freshTopicIndex
+            ? "completed"
+            : idx === freshTopicIndex
+              ? "current"
+              : "upcoming",
+      }));
+
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentTopic: freshCurrentTopic?.label || "",
+          allTopics,
+          cvData: candidate?.cvData || null,
+          candidateName: candidate?.name || "",
+          language: language,
+          roleTitle: currentRole?.title || "Candidate",
+          roleDescription: `
+            ${currentRole?.description || ""}
+            ${currentRole?.jobType ? `- Tipo de Puesto: ${currentRole.jobType}` : ""}
+            ${currentRole?.location ? `- Ubicación: ${currentRole.location}` : ""}
+            ${currentRole?.salary ? `- Salario: ${currentRole.salary}` : ""}
+          `.trim(),
+          recentMessages: allMessages,
+          isLastTopic: freshIsLastTopic,
+          interviewDuration:
+            Number(currentRole?.interviewDuration) ||
+            Number(useInterviewStore.getState().interviewDuration) ||
+            30,
+          timerSeconds: freshTimerSeconds,
+          currentTopicIndex: freshTopicIndex,
+          topicStartIndex: topicStartIndexRef.current,
+          isClosingPhase: false,
+          isGracePeriod: false,
+          isOpeningPhase: false,
+          sessionId: freshSessionId || "unknown-session",
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(fetchTimeout);
+      const data = await response.json();
+
+      if (data.message) {
+        // Defensive strip: this call's only job is to deliver the opening
+        // question of the (already-advanced) topic. If the model still
+        // emits a control tag here, drop it silently rather than trigger a
+        // second, redundant advance/finish.
+        const aiMessage = (data.message as string)
+          .replace(/\[NEXT_TOPIC\]/g, "")
+          .replace(/\[END_INTERVIEW\]/g, "")
+          .trim();
+        if (aiMessage) {
+          addTranscriptEntry({
+            role: "assistant",
+            content: aiMessage,
+            timestamp: Date.now(),
+          });
+          await speakText(aiMessage);
+        }
+      }
+    } catch (error) {
+      // Non-fatal: if this automated follow-up fails, the candidate can still
+      // speak whenever they're ready and the normal flow picks up from there.
+      console.error("askOpeningQuestionForTopic error:", error);
+    }
+  };
 
   // Start the interview
   const startInterview = async () => {

@@ -25,6 +25,13 @@ interface AdminState {
   // Sincronización con Supabase
   fetchFromSupabase: () => Promise<void>;
   setOrgId: (orgId: string) => void;
+
+  // ─── Sync Queue (ver comentario junto a SYNC_QUEUE_KEY más abajo) ───
+  // Número de escrituras a Supabase que fallaron y quedaron encoladas para reintento.
+  pendingSyncCount: number;
+  // Reintenta todos los items encolados. Se llama automáticamente tras un
+  // fetchFromSupabase() exitoso, y puede llamarse manualmente (botón "Reintentar").
+  retrySyncQueue: () => Promise<void>;
 }
 
 /**
@@ -119,8 +126,79 @@ function candidateFromSupabase(row: Record<string, unknown>): CandidateResult {
 }
 
 /**
+ * ─── Sync Queue: cola de reintento respaldada por localStorage ───
+ *
+ * Esta es la ÚNICA excepción deliberada a la regla "sin localStorage" del store
+ * (ver comentario debajo). Su propósito es acotado: si una escritura a Supabase
+ * falla después de 3 reintentos (blip de red, hiccup de RLS, caída temporal),
+ * NO queremos perder silenciosamente los datos del candidato — el escenario que
+ * causaba que reclutadores no vieran métricas de candidatos que sí completaron
+ * la entrevista.
+ *
+ * Los items fallidos se encolan aquí y se reintentan automáticamente:
+ *   1. Cada vez que este navegador carga con éxito el dashboard de admin
+ *      (ver el final de fetchFromSupabase), y
+ *   2. Manualmente, vía retrySyncQueue() (botón "Reintentar sincronización").
+ *
+ * IMPORTANTE: esto NO resuelve sincronización cross-device de verdad — la cola
+ * vive en el navegador que presenció el fallo. Pero es una mejora real sobre
+ * perder la escritura por completo, y pendingSyncCount se expone para que la UI
+ * avise al admin cuando la sincronización está incompleta, en vez de fallar en
+ * silencio como antes.
+ */
+const SYNC_QUEUE_KEY = 'reclutify_sync_queue';
+const SYNC_QUEUE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 días
+const SYNC_QUEUE_MAX_ITEMS = 200; // cota dura para evitar crecimiento indefinido
+
+interface SyncQueueItem {
+  id: string; // id de la entrada en la cola (no el id del candidato)
+  kind: 'candidate_update' | 'candidate_upsert_with_org' | 'candidate_upsert_needs_org';
+  candidateId: string;
+  // candidate_update: Partial<CandidateResult> en formato Supabase (columnas)
+  // candidate_upsert_with_org: fila completa en formato Supabase (de candidateToSupabase)
+  // candidate_upsert_needs_org: CandidateResult crudo (aún sin orgId resuelto)
+  payload: unknown;
+  createdAt: number;
+  attempts: number;
+  lastError?: string;
+}
+
+function readSyncQueue(): SyncQueueItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SYNC_QUEUE_KEY);
+    return raw ? (JSON.parse(raw) as SyncQueueItem[]) : [];
+  } catch (err) {
+    console.error('[AdminStore] No se pudo leer la cola de sincronización:', err);
+    return [];
+  }
+}
+
+function writeSyncQueue(queue: SyncQueueItem[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+  } catch (err) {
+    console.error('[AdminStore] No se pudo persistir la cola de sincronización:', err);
+  }
+}
+
+function pushToSyncQueue(item: Omit<SyncQueueItem, 'id' | 'createdAt' | 'attempts'>): number {
+  const queue = readSyncQueue();
+  queue.push({
+    ...item,
+    id: `${item.kind}-${item.candidateId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: Date.now(),
+    attempts: 0,
+  });
+  writeSyncQueue(queue);
+  return queue.length;
+}
+
+/**
  * Store de administración — caché en memoria con Supabase como fuente de verdad.
- * SIN persistencia en localStorage para garantizar sincronización cross-device.
+ * SIN persistencia en localStorage para garantizar sincronización cross-device
+ * (con la única excepción, acotada, de la Sync Queue documentada arriba).
  */
 export const useAdminStore = create<AdminState>()(
   (set, get) => ({
@@ -129,6 +207,7 @@ export const useAdminStore = create<AdminState>()(
     orgId: null as string | null,
     loading: false as boolean,
     error: null as string | null,
+    pendingSyncCount: typeof window !== 'undefined' ? readSyncQueue().length : 0,
 
     setOrgId: (orgId: string) => set({ orgId }),
 
@@ -184,6 +263,12 @@ export const useAdminStore = create<AdminState>()(
           roles: rolesData ? rolesData.map(roleFromSupabase) : [],
           candidates: candidatesData ? candidatesData.map(candidateFromSupabase) : [],
           loading: false,
+        });
+
+        // Best-effort: replay any writes that failed to sync in a previous session
+        // from this same browser. Fire-and-forget — never blocks the dashboard load.
+        get().retrySyncQueue().catch((err) => {
+          console.error('[AdminStore] retrySyncQueue (auto) failed:', err);
         });
       } catch (err) {
         console.error('[AdminStore] Error en fetchFromSupabase:', err);
@@ -314,32 +399,51 @@ export const useAdminStore = create<AdminState>()(
                 await new Promise(r => setTimeout(r, attempt * 2000));
                 continue;
               }
-              // Persist for manual retry
-              try {
-                const failedInserts = JSON.parse(localStorage.getItem('reclutify_failed_inserts') || '[]');
-                failedInserts.push({ candidate, orgId: effectiveOrgId, timestamp: Date.now(), error: error.message });
-                localStorage.setItem('reclutify_failed_inserts', JSON.stringify(failedInserts));
-              } catch (storageErr) {
-                console.error('[AdminStore] Could not persist failed insert to localStorage:', storageErr);
-              }
+              // Persist for automatic retry (see retrySyncQueue) instead of a
+              // localStorage key nothing ever reads back.
+              const queueLen = pushToSyncQueue({
+                kind: 'candidate_upsert_with_org',
+                candidateId: candidate.id,
+                payload: candidateToSupabase(candidate, effectiveOrgId),
+                lastError: error.message,
+              });
+              set({ pendingSyncCount: queueLen });
             }
             break; // Success or final failure — exit loop
           } else {
-            // Without orgId we cannot insert — persist for retry when orgId becomes available
+            // Without orgId we cannot insert — queue it so retrySyncQueue can
+            // re-resolve the orgId (via candidate.roleId) once it's available.
             console.warn('[AdminStore] addCandidate: no orgId found for roleId:', candidate.roleId);
-            try {
-              const pendingInserts = JSON.parse(localStorage.getItem('reclutify_pending_inserts') || '[]');
-              pendingInserts.push({ candidate, timestamp: Date.now() });
-              localStorage.setItem('reclutify_pending_inserts', JSON.stringify(pendingInserts));
-            } catch (storageErr) {
-              console.error('[AdminStore] Could not persist pending insert to localStorage:', storageErr);
-            }
-            break; // No point retrying without orgId
+            const queueLen = pushToSyncQueue({
+              kind: 'candidate_upsert_needs_org',
+              candidateId: candidate.id,
+              payload: candidate,
+              lastError: 'No orgId resolved for roleId at insert time',
+            });
+            set({ pendingSyncCount: queueLen });
+            break; // No point retrying without orgId right now
           }
         } catch (err) {
           console.error(`[AdminStore] addCandidate attempt ${attempt}/${maxRetries} exception:`, err);
           if (attempt < maxRetries) {
             await new Promise(r => setTimeout(r, attempt * 2000));
+          } else {
+            // Final attempt threw (e.g. network down) — queue for automatic retry.
+            const orgId = get().orgId;
+            const queueLen = orgId
+              ? pushToSyncQueue({
+                  kind: 'candidate_upsert_with_org',
+                  candidateId: candidate.id,
+                  payload: candidateToSupabase(candidate, orgId),
+                  lastError: String(err),
+                })
+              : pushToSyncQueue({
+                  kind: 'candidate_upsert_needs_org',
+                  candidateId: candidate.id,
+                  payload: candidate,
+                  lastError: String(err),
+                });
+            set({ pendingSyncCount: queueLen });
           }
         }
       }
@@ -380,15 +484,15 @@ export const useAdminStore = create<AdminState>()(
               await new Promise(r => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
               continue;
             }
-            // After all retries failed — persist to localStorage for manual retry
-            try {
-              const failedUpdates = JSON.parse(localStorage.getItem('reclutify_failed_updates') || '[]');
-              failedUpdates.push({ id, updates: supabaseUpdates, timestamp: Date.now(), error: error.message });
-              localStorage.setItem('reclutify_failed_updates', JSON.stringify(failedUpdates));
-            } catch (storageErr) {
-              // localStorage may be unavailable — log but don't crash
-              console.error('[AdminStore] Could not persist failed update to localStorage:', storageErr);
-            }
+            // After all retries failed — queue for automatic retry (see retrySyncQueue)
+            // instead of a localStorage key that nothing ever read back.
+            const queueLen = pushToSyncQueue({
+              kind: 'candidate_update',
+              candidateId: id,
+              payload: supabaseUpdates,
+              lastError: error.message,
+            });
+            set({ pendingSyncCount: queueLen });
             return; // Don't throw — optimistic update already applied
           }
 
@@ -398,17 +502,94 @@ export const useAdminStore = create<AdminState>()(
           if (attempt < maxRetries) {
             await new Promise(r => setTimeout(r, attempt * 2000));
           } else {
-            // Final attempt failed — persist for retry
-            try {
-              const failedUpdates = JSON.parse(localStorage.getItem('reclutify_failed_updates') || '[]');
-              failedUpdates.push({ id, updates: supabaseUpdates, timestamp: Date.now(), error: String(err) });
-              localStorage.setItem('reclutify_failed_updates', JSON.stringify(failedUpdates));
-            } catch (storageErr) {
-              console.error('[AdminStore] Could not persist failed update to localStorage:', storageErr);
-            }
+            // Final attempt failed — queue for automatic retry (see retrySyncQueue)
+            const queueLen = pushToSyncQueue({
+              kind: 'candidate_update',
+              candidateId: id,
+              payload: supabaseUpdates,
+              lastError: String(err),
+            });
+            set({ pendingSyncCount: queueLen });
           }
         }
       }
+    },
+
+    // ─── Reintentar cola de sincronización fallida ───
+    retrySyncQueue: async () => {
+      let queue = readSyncQueue();
+      if (queue.length === 0) {
+        set({ pendingSyncCount: 0 });
+        return;
+      }
+
+      // Drop stale entries — unlikely to still be relevant, and keeps the queue bounded.
+      const now = Date.now();
+      const beforeAge = queue.length;
+      queue = queue.filter((item) => now - item.createdAt < SYNC_QUEUE_MAX_AGE_MS);
+      if (queue.length !== beforeAge) {
+        console.warn(
+          `[AdminStore] retrySyncQueue: dropped ${beforeAge - queue.length} item(s) older than 14 days`
+        );
+      }
+      // Hard cap to prevent unbounded localStorage growth if Supabase is down for a long time.
+      if (queue.length > SYNC_QUEUE_MAX_ITEMS) {
+        console.warn(
+          `[AdminStore] retrySyncQueue: queue exceeded ${SYNC_QUEUE_MAX_ITEMS} items — dropping oldest`
+        );
+        queue = queue.slice(queue.length - SYNC_QUEUE_MAX_ITEMS);
+      }
+
+      const supabase = createClient();
+      const remaining: SyncQueueItem[] = [];
+
+      for (const item of queue) {
+        try {
+          if (item.kind === 'candidate_update') {
+            const { error } = await supabase
+              .from('candidate_results')
+              .update(item.payload as Record<string, unknown>)
+              .eq('id', item.candidateId);
+            if (error) throw error;
+          } else if (item.kind === 'candidate_upsert_with_org') {
+            const { error } = await supabase
+              .from('candidate_results')
+              .upsert(item.payload as Record<string, unknown>);
+            if (error) throw error;
+          } else {
+            // candidate_upsert_needs_org — try to resolve the orgId again before upserting.
+            const candidate = item.payload as CandidateResult;
+            let effectiveOrgId = get().orgId;
+            if (!effectiveOrgId) {
+              const { data: roleData } = await supabase
+                .from('roles')
+                .select('org_id')
+                .eq('id', candidate.roleId)
+                .single();
+              effectiveOrgId = roleData?.org_id || null;
+            }
+            if (!effectiveOrgId) {
+              throw new Error('orgId still unresolved for roleId ' + candidate.roleId);
+            }
+            const { error } = await supabase
+              .from('candidate_results')
+              .upsert(candidateToSupabase(candidate, effectiveOrgId));
+            if (error) throw error;
+          }
+          console.log(`[AdminStore] retrySyncQueue: item ${item.id} synced successfully`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[AdminStore] retrySyncQueue: item ${item.id} failed again:`, message);
+          remaining.push({ ...item, attempts: item.attempts + 1, lastError: message });
+        }
+      }
+
+      writeSyncQueue(remaining);
+      set({ pendingSyncCount: remaining.length });
+      // NOTE: no need to re-fetch from Supabase here — the local `candidates`/`roles`
+      // state already reflects these writes via the optimistic updates that queued
+      // them in the first place. This also avoids a retrySyncQueue <-> fetchFromSupabase
+      // call cycle (fetchFromSupabase triggers an automatic retrySyncQueue on load).
     },
   })
 );

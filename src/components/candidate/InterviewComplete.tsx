@@ -27,6 +27,7 @@ export default function InterviewComplete() {
     // Additional guard: use sessionStorage to survive component re-mounts
     // (React Strict Mode, navigation, hot reload) within the same browser session
     const currentSessionId = sessionId || `cand-${Date.now()}`;
+    if (!sessionId) setSessionId(currentSessionId);
     const evalKey = `reclutify_evaluated_${currentSessionId}`;
     if (typeof window !== 'undefined' && sessionStorage.getItem(evalKey)) {
       hasEvaluatedRef.current = true;
@@ -56,8 +57,9 @@ export default function InterviewComplete() {
 
       // STEP 1: Immediately ensure the candidate exists in the pipeline with transcript
       // This guarantees data is saved even if the evaluation API fails
+      // NOTE: currentSessionId reuses the value computed once in the outer effect
+      // scope above, so it always matches the sessionStorage guard key.
       const durationStr = localStorage.getItem('tempDuration');
-      const currentSessionId = sessionId || `cand-${Date.now()}`;
       
       const existingCandidate = candidates.find(c => c.id === currentSessionId);
       if (!existingCandidate) {
@@ -71,7 +73,6 @@ export default function InterviewComplete() {
           transcript,
           duration: durationStr ? parseInt(durationStr, 10) : 0,
         });
-        if (!sessionId) setSessionId(currentSessionId);
       }
 
       // STEP 2: Try evaluation with retries

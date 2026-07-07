@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, ArrowUpRight, Clock, CheckCircle2, AlertCircle, Bot, Loader2, ArrowUpDown } from 'lucide-react';
+import { Search, ArrowUpRight, Clock, CheckCircle2, AlertCircle, AlertTriangle, Bot, Loader2, ArrowUpDown } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useRoles } from '@/hooks/useRoles';
@@ -20,21 +20,23 @@ export default function PipelinePage() {
   useCandidates();
 
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
+  const [evalErrorId, setEvalErrorId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showCompare, setShowCompare] = useState(false);
 
   const handleProcessPartial = async (candidate: CandidateResult) => {
     setEvaluatingId(candidate.id);
+    setEvalErrorId(null);
     try {
       const role = roles.find(r => r.id === candidate.roleId);
       const response = await fetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          transcript: candidate.transcript, 
-          topics: role?.topics || [], 
-          candidateName: candidate.candidate.name, 
+        body: JSON.stringify({
+          transcript: candidate.transcript,
+          topics: role?.topics || [],
+          candidateName: candidate.candidate.name,
           language,
           roleTitle: candidate.roleTitle,
           roleDescription: `
@@ -45,15 +47,31 @@ export default function PipelinePage() {
           `.trim()
         }),
       });
+
+      // BUG FIX: the previous version never checked response.ok nor validated
+      // the shape of the payload. A failed /api/evaluate call (e.g. 500, or a
+      // JSON-parse failure upstream) returns { error: '...' } with no
+      // overallScore/recommendation -- that was being saved as if it were a
+      // real evaluation and marked 'completed', silently corrupting the report.
+      if (!response.ok) {
+        throw new Error(`Evaluation API returned ${response.status}`);
+      }
       const data = await response.json();
       const evalData = data.evaluation || data;
-      
+      if (!evalData || typeof evalData.overallScore !== 'number') {
+        throw new Error('Evaluation response missing overallScore');
+      }
+
       updateCandidate(candidate.id, {
         status: 'completed',
         evaluation: evalData,
       });
     } catch (err) {
       console.error('Manual eval error', err);
+      setEvalErrorId(candidate.id);
+      // Make sure the candidate is left in a visibly-distinguishable state
+      // (not silently stuck as 'in-progress') so it's clear a retry is needed.
+      updateCandidate(candidate.id, { status: 'pending-evaluation' });
     } finally {
       setEvaluatingId(null);
     }
@@ -96,6 +114,13 @@ export default function PipelinePage() {
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/10 text-warning text-xs font-medium">
             <Clock className="h-3 w-3" />
             {language === 'es' ? 'En Progreso' : 'In Progress'}
+          </span>
+        );
+      case 'pending-evaluation':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-600 text-xs font-medium">
+            <AlertTriangle className="h-3 w-3" />
+            {language === 'es' ? 'Evaluación Fallida' : 'Evaluation Failed'}
           </span>
         );
       default:
@@ -314,19 +339,28 @@ export default function PipelinePage() {
                   )}
                 </td>
                 <td className="px-6 py-4 text-right">
-                  {candidate.status === 'in-progress' && !candidate.evaluation && (
-                    <button
-                      onClick={() => handleProcessPartial(candidate)}
-                      disabled={evaluatingId === candidate.id}
-                      className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-primary-light text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-                    >
-                      {evaluatingId === candidate.id ? (
-                         <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                         <Bot className="h-3 w-3" />
+                  {(candidate.status === 'in-progress' || candidate.status === 'pending-evaluation') && !candidate.evaluation && (
+                    <div className="flex flex-col items-end gap-1">
+                      <button
+                        onClick={() => handleProcessPartial(candidate)}
+                        disabled={evaluatingId === candidate.id}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-primary-light text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+                      >
+                        {evaluatingId === candidate.id ? (
+                           <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                           <Bot className="h-3 w-3" />
+                        )}
+                        {candidate.status === 'pending-evaluation'
+                          ? (language === 'es' ? 'Re-evaluar' : 'Re-evaluate')
+                          : (language === 'es' ? 'Evaluar Abandono' : 'Evaluate Dropout')}
+                      </button>
+                      {evalErrorId === candidate.id && (
+                        <span className="text-[10px] text-danger">
+                          {language === 'es' ? 'Error al evaluar. Intenta de nuevo.' : 'Evaluation failed. Try again.'}
+                        </span>
                       )}
-                      {language === 'es' ? 'Evaluar Abandono' : 'Evaluate Dropout'}
-                    </button>
+                    </div>
                   )}
                   {candidate.evaluation && (
                     <Link

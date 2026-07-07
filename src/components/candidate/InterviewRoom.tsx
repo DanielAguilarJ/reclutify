@@ -78,12 +78,20 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => {});
   // FIX 9: Mutex to prevent concurrent SpeechRecognition restart attempts
   const restartingRef = useRef<boolean>(false);
-  // BUG 1 FIX: Queue utterances that arrive while processingLock is active
-  const pendingUtteranceRef = useRef<string>('');
+  // BUG 1 FIX: Queue utterances that arrive while processingLock is active.
+  // Uses an array (not a single string) so that if the candidate speaks more
+  // than once while locked, ALL fragments are preserved and merged instead of
+  // earlier ones being silently overwritten/lost.
+  const pendingUtterancesRef = useRef<string[]>([]);
   // BUG 1 FIX: Track if transcription is actively buffering (for UI indicator)
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [processingTooLong, setProcessingTooLong] = useState(false);
   const processingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // BUG 2 FOLLOW-UP: Tracks whether speakText() already restarted SpeechRecognition
+  // for the current handleCandidateUtterance() call, so the finally block doesn't
+  // redundantly call recognitionRef.current.start() a second time (which throws a
+  // silently-swallowed InvalidStateError on every turn).
+  const recognitionRestartedByTTSRef = useRef<boolean>(false);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -260,16 +268,24 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                 utteranceBufferRef.current = '';
                 setIsTranscribing(false);
 
-                // BUG 1 FIX: Minimum length validation — don't send tiny fragments
-                if (fullUtterance.length < 10) {
-                  console.warn('[STT] Utterance too short, skipping:', fullUtterance);
+                // BUG 1 FOLLOW-UP: Only drop pure noise (empty/near-empty fragments).
+                // A hard 10-character cutoff used to silently swallow short but VALID
+                // answers ("Si", "No", "No se", "Correcto") with zero feedback, which
+                // recreated the "I spoke and nothing happened" symptom for legitimate
+                // short answers. Real short-answer handling (rephrase the question, or
+                // advance topic after 2 consecutive vague answers) already exists inside
+                // handleCandidateUtterance below — let it decide instead of guessing here.
+                if (fullUtterance.length < 2) {
+                  console.warn('[STT] Empty/noise fragment, skipping:', fullUtterance);
                   return;
                 }
 
-                // BUG 1 FIX: If processingLock is active, queue instead of discard
+                // BUG 1 FIX: If processingLock is active, queue instead of discard.
+                // Utterances that arrive while locked are appended (not overwritten)
+                // so nothing the candidate says while the system is busy is lost.
                 if (processingLockRef.current || speakingRef.current) {
                   console.log('[STT] Lock active — queuing utterance for later processing');
-                  pendingUtteranceRef.current = fullUtterance;
+                  pendingUtterancesRef.current.push(fullUtterance);
                   return;
                 }
 
@@ -328,6 +344,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     // Hard guard: block if AI is speaking, processing, or another call is in flight
     if (!text.trim() || processingLockRef.current || speakingRef.current) return;
     processingLockRef.current = true; // Acquire lock — released in finally block
+    recognitionRestartedByTTSRef.current = false; // Reset — set by speakText() if it restarts SR
 
     // ═══ READ FRESH STATE FROM STORE (avoid stale closure) ═══
     const store = useInterviewStore.getState();
@@ -610,18 +627,22 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         clearTimeout(processingTimerRef.current);
         processingTimerRef.current = null;
       }
-      // BUG 2 FIX: Always restart recognition after processing completes
-      if (interviewActiveRef.current && !speakingRef.current) {
+      // BUG 2 FIX: Always restart recognition after processing completes — but only
+      // if speakText() didn't already do it (avoids a redundant .start() call that
+      // throws a silently-swallowed InvalidStateError on every single turn).
+      if (interviewActiveRef.current && !speakingRef.current && !recognitionRestartedByTTSRef.current) {
         setIsRecording(true);
         try { recognitionRef.current?.start(); } catch(e) {}
       }
-      // BUG 1 FIX: Process pending utterance that arrived while lock was active
-      if (pendingUtteranceRef.current && !speakingRef.current) {
-        const pending = pendingUtteranceRef.current;
-        pendingUtteranceRef.current = '';
+      // BUG 1 FIX: Process pending utterance(s) that arrived while lock was active.
+      // Multiple queued fragments are merged into a single utterance — they were very
+      // likely part of the same continuous answer, just split by processing timing.
+      if (pendingUtterancesRef.current.length > 0 && !speakingRef.current) {
+        const pending = pendingUtterancesRef.current.join(' ').trim();
+        pendingUtterancesRef.current = [];
         // Use setTimeout to avoid recursive lock acquisition in same tick
         setTimeout(() => {
-          if (!processingLockRef.current && !speakingRef.current) {
+          if (!processingLockRef.current && !speakingRef.current && pending) {
             handleUtteranceRef.current(pending);
           }
         }, 100);
@@ -846,6 +867,9 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           setIsRecording(true);
           try {
             recognitionRef.current?.start();
+            // BUG 2 FOLLOW-UP: tell handleCandidateUtterance's finally block not to
+            // redundantly call .start() again once this promise resolves.
+            recognitionRestartedByTTSRef.current = true;
           } catch(e) {}
         }
         resolve();
@@ -964,7 +988,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     speakingRef.current = false;
     processingLockRef.current = false;
     utteranceBufferRef.current = '';
-    pendingUtteranceRef.current = '';
+    pendingUtterancesRef.current = [];
     setIsAiSpeaking(false);
     setIsProcessing(false);
     setIsRecording(false);

@@ -7,6 +7,7 @@ import { createClient } from '@/utils/supabase/server';
 import { getUserOrganizations, getActiveOrganizationId } from '@/app/actions/organizations';
 import AdminSidebarNav from './AdminSidebarNav';
 import MobileAdminNav from './MobileAdminNav';
+import SyncStatusBanner from '@/components/admin/SyncStatusBanner';
 
 // Forzar rendering dinámico — el layout necesita auth de Supabase
 export const dynamic = 'force-dynamic';
@@ -101,7 +102,10 @@ export default async function AdminLayout({
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto md:ml-[264px] pt-14 md:pt-0">
-        <div className="p-4 md:p-8">{children}</div>
+        <div className="p-4 md:p-8">
+          <SyncStatusBanner />
+          {children}
+        </div>
       </main>
     </div>
   );

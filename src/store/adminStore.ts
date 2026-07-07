@@ -165,8 +165,8 @@ export const useAdminStore = create<AdminState>()(
           .eq('org_id', orgId)
           .order('created_at', { ascending: false });
 
-        if (rolesError && process.env.NODE_ENV === 'development') {
-          console.error('Error cargando roles:', rolesError);
+        if (rolesError) {
+          console.error('[AdminStore] Error cargando roles:', rolesError);
         }
 
         // Cargar resultados de candidatos
@@ -176,8 +176,8 @@ export const useAdminStore = create<AdminState>()(
           .eq('org_id', orgId)
           .order('date', { ascending: false });
 
-        if (candError && process.env.NODE_ENV === 'development') {
-          console.error('Error cargando candidatos:', candError);
+        if (candError) {
+          console.error('[AdminStore] Error cargando candidatos:', candError);
         }
 
         set({
@@ -186,9 +186,7 @@ export const useAdminStore = create<AdminState>()(
           loading: false,
         });
       } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error en fetchFromSupabase:', err);
-        }
+        console.error('[AdminStore] Error en fetchFromSupabase:', err);
         set({ error: 'Error cargando datos', loading: false });
       }
     },
@@ -209,13 +207,11 @@ export const useAdminStore = create<AdminState>()(
             .from('roles')
             .upsert(roleToSupabase(role, orgId));
 
-          if (error && process.env.NODE_ENV === 'development') {
-            console.error('Error guardando rol en Supabase:', error);
+          if (error) {
+            console.error('[AdminStore] Error guardando rol en Supabase:', error);
           }
         } catch (err) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error('Error sincronizando rol:', err);
-          }
+          console.error('[AdminStore] Error sincronizando rol:', err);
         }
       }
     },
@@ -249,13 +245,11 @@ export const useAdminStore = create<AdminState>()(
             .update(supabaseUpdates)
             .eq('id', id);
 
-          if (error && process.env.NODE_ENV === 'development') {
-            console.error('Error actualizando rol en Supabase:', error);
+          if (error) {
+            console.error('[AdminStore] Error actualizando rol en Supabase:', error);
           }
         } catch (err) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error('Error sincronizando actualización de rol:', err);
-          }
+          console.error('[AdminStore] Error sincronizando actualización de rol:', err);
         }
       }
     },
@@ -275,13 +269,11 @@ export const useAdminStore = create<AdminState>()(
             .delete()
             .eq('id', id);
 
-          if (error && process.env.NODE_ENV === 'development') {
-            console.error('Error eliminando rol en Supabase:', error);
+          if (error) {
+            console.error('[AdminStore] Error eliminando rol en Supabase:', error);
           }
         } catch (err) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error('Error sincronizando eliminación de rol:', err);
-          }
+          console.error('[AdminStore] Error sincronizando eliminación de rol:', err);
         }
       }
     },
@@ -294,68 +286,127 @@ export const useAdminStore = create<AdminState>()(
 
       // Sincronizar con Supabase — funciona con o sin orgId
       // (candidatos sin autenticar también insertan resultados)
-      try {
-        const supabase = createClient();
-        const orgId = get().orgId;
+      const maxRetries = 3;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const supabase = createClient();
+          const orgId = get().orgId;
 
-        // Intentar obtener orgId del rol si no lo tenemos
-        let effectiveOrgId = orgId;
-        if (!effectiveOrgId) {
-          const { data: roleData } = await supabase
-            .from('roles')
-            .select('org_id')
-            .eq('id', candidate.roleId)
-            .single();
-          effectiveOrgId = roleData?.org_id || null;
-        }
-
-        if (effectiveOrgId) {
-          const { error } = await supabase
-            .from('candidate_results')
-            .upsert(candidateToSupabase(candidate, effectiveOrgId));
-
-          if (error && process.env.NODE_ENV === 'development') {
-            console.error('Error guardando candidato en Supabase:', error);
+          // Intentar obtener orgId del rol si no lo tenemos
+          let effectiveOrgId = orgId;
+          if (!effectiveOrgId) {
+            const { data: roleData } = await supabase
+              .from('roles')
+              .select('org_id')
+              .eq('id', candidate.roleId)
+              .single();
+            effectiveOrgId = roleData?.org_id || null;
           }
-        }
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error sincronizando candidato:', err);
+
+          if (effectiveOrgId) {
+            const { error } = await supabase
+              .from('candidate_results')
+              .upsert(candidateToSupabase(candidate, effectiveOrgId));
+
+            if (error) {
+              console.error(`[AdminStore] addCandidate attempt ${attempt}/${maxRetries} failed:`, error);
+              if (attempt < maxRetries) {
+                await new Promise(r => setTimeout(r, attempt * 2000));
+                continue;
+              }
+              // Persist for manual retry
+              try {
+                const failedInserts = JSON.parse(localStorage.getItem('reclutify_failed_inserts') || '[]');
+                failedInserts.push({ candidate, orgId: effectiveOrgId, timestamp: Date.now(), error: error.message });
+                localStorage.setItem('reclutify_failed_inserts', JSON.stringify(failedInserts));
+              } catch (storageErr) {
+                console.error('[AdminStore] Could not persist failed insert to localStorage:', storageErr);
+              }
+            }
+            break; // Success or final failure — exit loop
+          } else {
+            // Without orgId we cannot insert — persist for retry when orgId becomes available
+            console.warn('[AdminStore] addCandidate: no orgId found for roleId:', candidate.roleId);
+            try {
+              const pendingInserts = JSON.parse(localStorage.getItem('reclutify_pending_inserts') || '[]');
+              pendingInserts.push({ candidate, timestamp: Date.now() });
+              localStorage.setItem('reclutify_pending_inserts', JSON.stringify(pendingInserts));
+            } catch (storageErr) {
+              console.error('[AdminStore] Could not persist pending insert to localStorage:', storageErr);
+            }
+            break; // No point retrying without orgId
+          }
+        } catch (err) {
+          console.error(`[AdminStore] addCandidate attempt ${attempt}/${maxRetries} exception:`, err);
+          if (attempt < maxRetries) {
+            await new Promise(r => setTimeout(r, attempt * 2000));
+          }
         }
       }
     },
 
     // ─── Actualizar candidato: Supabase + store local ───
     updateCandidate: async (id: string, updates: Partial<CandidateResult>) => {
+      // Optimistic update — local state updates immediately
       set((state: AdminState) => ({
         candidates: state.candidates.map((c) =>
           c.id === id ? { ...c, ...updates } : c
         ),
       }));
 
-      try {
-        const supabase = createClient();
-        // Construir actualizaciones para Supabase
-        const supabaseUpdates: Record<string, unknown> = {};
-        if (updates.status !== undefined) supabaseUpdates.status = updates.status;
-        if (updates.evaluation !== undefined) supabaseUpdates.evaluation = updates.evaluation;
-        if (updates.transcript !== undefined) supabaseUpdates.transcript = updates.transcript;
-        if (updates.duration !== undefined) supabaseUpdates.duration = updates.duration;
-        if (updates.videoUrl !== undefined) supabaseUpdates.video_url = updates.videoUrl;
+      // Construir actualizaciones para Supabase
+      const supabaseUpdates: Record<string, unknown> = {};
+      if (updates.status !== undefined) supabaseUpdates.status = updates.status;
+      if (updates.evaluation !== undefined) supabaseUpdates.evaluation = updates.evaluation;
+      if (updates.transcript !== undefined) supabaseUpdates.transcript = updates.transcript;
+      if (updates.duration !== undefined) supabaseUpdates.duration = updates.duration;
+      if (updates.videoUrl !== undefined) supabaseUpdates.video_url = updates.videoUrl;
 
-        if (Object.keys(supabaseUpdates).length > 0) {
+      if (Object.keys(supabaseUpdates).length === 0) return;
+
+      // Retry with exponential backoff — 3 attempts
+      const maxRetries = 3;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const supabase = createClient();
           const { error } = await supabase
             .from('candidate_results')
             .update(supabaseUpdates)
             .eq('id', id);
 
-          if (error && process.env.NODE_ENV === 'development') {
-            console.error('Error actualizando candidato en Supabase:', error);
+          if (error) {
+            console.error(`[AdminStore] updateCandidate attempt ${attempt}/${maxRetries} failed:`, error);
+            if (attempt < maxRetries) {
+              await new Promise(r => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
+              continue;
+            }
+            // After all retries failed — persist to localStorage for manual retry
+            try {
+              const failedUpdates = JSON.parse(localStorage.getItem('reclutify_failed_updates') || '[]');
+              failedUpdates.push({ id, updates: supabaseUpdates, timestamp: Date.now(), error: error.message });
+              localStorage.setItem('reclutify_failed_updates', JSON.stringify(failedUpdates));
+            } catch (storageErr) {
+              // localStorage may be unavailable — log but don't crash
+              console.error('[AdminStore] Could not persist failed update to localStorage:', storageErr);
+            }
+            return; // Don't throw — optimistic update already applied
           }
-        }
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error sincronizando actualización de candidato:', err);
+
+          break; // Success — exit retry loop
+        } catch (err) {
+          console.error(`[AdminStore] updateCandidate attempt ${attempt}/${maxRetries} exception:`, err);
+          if (attempt < maxRetries) {
+            await new Promise(r => setTimeout(r, attempt * 2000));
+          } else {
+            // Final attempt failed — persist for retry
+            try {
+              const failedUpdates = JSON.parse(localStorage.getItem('reclutify_failed_updates') || '[]');
+              failedUpdates.push({ id, updates: supabaseUpdates, timestamp: Date.now(), error: String(err) });
+              localStorage.setItem('reclutify_failed_updates', JSON.stringify(failedUpdates));
+            } catch (storageErr) {
+              console.error('[AdminStore] Could not persist failed update to localStorage:', storageErr);
+            }
+          }
         }
       }
     },

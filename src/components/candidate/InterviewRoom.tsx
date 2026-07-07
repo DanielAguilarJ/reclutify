@@ -78,6 +78,12 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => {});
   // FIX 9: Mutex to prevent concurrent SpeechRecognition restart attempts
   const restartingRef = useRef<boolean>(false);
+  // BUG 1 FIX: Queue utterances that arrive while processingLock is active
+  const pendingUtteranceRef = useRef<string>('');
+  // BUG 1 FIX: Track if transcription is actively buffering (for UI indicator)
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [processingTooLong, setProcessingTooLong] = useState(false);
+  const processingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const currentTopic = topics[currentTopicIndex];
   const isLastTopic = currentTopicIndex === topics.length - 1;
@@ -247,14 +253,28 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
               const finalText = event.results[i][0].transcript;
               // DEBOUNCE: Accumulate final fragments and wait for silence
               utteranceBufferRef.current += (utteranceBufferRef.current ? ' ' : '') + finalText;
+              setIsTranscribing(true);
               if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
               utteranceTimerRef.current = setTimeout(() => {
                 const fullUtterance = utteranceBufferRef.current.trim();
                 utteranceBufferRef.current = '';
-                if (fullUtterance) {
-                  // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
-                  handleUtteranceRef.current(fullUtterance);
+                setIsTranscribing(false);
+
+                // BUG 1 FIX: Minimum length validation — don't send tiny fragments
+                if (fullUtterance.length < 10) {
+                  console.warn('[STT] Utterance too short, skipping:', fullUtterance);
+                  return;
                 }
+
+                // BUG 1 FIX: If processingLock is active, queue instead of discard
+                if (processingLockRef.current || speakingRef.current) {
+                  console.log('[STT] Lock active — queuing utterance for later processing');
+                  pendingUtteranceRef.current = fullUtterance;
+                  return;
+                }
+
+                // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
+                handleUtteranceRef.current(fullUtterance);
               }, 1500);
             } else {
               interimTranscript += event.results[i][0].transcript;
@@ -412,6 +432,13 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     setCurrentSubtitle('');
     setIsRecording(false);
     setIsProcessing(true);
+    
+    // BUG 2 FIX: Detect if processing takes too long (>15s) — show retry option
+    setProcessingTooLong(false);
+    if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
+    processingTimerRef.current = setTimeout(() => {
+      setProcessingTooLong(true);
+    }, 15000);
 
     // Stop recognition while processing
     if (recognitionRef.current) {
@@ -471,6 +498,10 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         status: idx < freshTopicIndex ? 'completed' : idx === freshTopicIndex ? 'current' : 'upcoming',
       }));
 
+      // BUG 2 FIX: AbortController with 30s timeout to prevent infinite hangs
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -501,7 +532,10 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
           isOpeningPhase: false,
           sessionId: freshSessionId || 'unknown-session',
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(fetchTimeout);
 
       const data = await response.json();
       if (data.message) {
@@ -553,11 +587,45 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
         }
       }
 
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Chat error:', error);
+      
+      // BUG 2 FIX: On timeout or network failure, inform the candidate instead of silent hang
+      const isAbort = error instanceof Error && error.name === 'AbortError';
+      const errorMsg = language === 'es'
+        ? (isAbort
+          ? 'Hubo un problema de conexión. ¿Podrías repetir tu respuesta?'
+          : 'Ocurrió un error temporal. ¿Podrías repetir lo que dijiste?')
+        : (isAbort
+          ? 'There was a connection timeout. Could you repeat your answer?'
+          : 'A temporary error occurred. Could you repeat what you said?');
+      
+      addTranscriptEntry({ role: 'assistant', content: errorMsg, timestamp: Date.now() });
+      await speakText(errorMsg);
     } finally {
       setIsProcessing(false);
       processingLockRef.current = false;
+      setProcessingTooLong(false);
+      if (processingTimerRef.current) {
+        clearTimeout(processingTimerRef.current);
+        processingTimerRef.current = null;
+      }
+      // BUG 2 FIX: Always restart recognition after processing completes
+      if (interviewActiveRef.current && !speakingRef.current) {
+        setIsRecording(true);
+        try { recognitionRef.current?.start(); } catch(e) {}
+      }
+      // BUG 1 FIX: Process pending utterance that arrived while lock was active
+      if (pendingUtteranceRef.current && !speakingRef.current) {
+        const pending = pendingUtteranceRef.current;
+        pendingUtteranceRef.current = '';
+        // Use setTimeout to avoid recursive lock acquisition in same tick
+        setTimeout(() => {
+          if (!processingLockRef.current && !speakingRef.current) {
+            handleUtteranceRef.current(pending);
+          }
+        }, 100);
+      }
     }
   };
 
@@ -896,9 +964,16 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
     speakingRef.current = false;
     processingLockRef.current = false;
     utteranceBufferRef.current = '';
+    pendingUtteranceRef.current = '';
     setIsAiSpeaking(false);
     setIsProcessing(false);
     setIsRecording(false);
+    setIsTranscribing(false);
+    setProcessingTooLong(false);
+    if (processingTimerRef.current) {
+      clearTimeout(processingTimerRef.current);
+      processingTimerRef.current = null;
+    }
     
     // Save duration
     localStorage.setItem('tempDuration', timerSeconds.toString());
@@ -1007,6 +1082,7 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
       if (timerRef.current) clearInterval(timerRef.current);
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
       if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
+      if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
       if (synthesisRef.current) synthesisRef.current.cancel();
       if (recognitionRef.current) {
          try { recognitionRef.current.stop(); } catch(e) {}
@@ -1290,14 +1366,21 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
 
               {/* Status Pill */}
               <AnimatePresence>
-                 {(isRecording || isProcessing || isAiSpeaking) && (
+                 {(isRecording || isProcessing || isAiSpeaking || isTranscribing) && (
                    <motion.div
                      initial={{ opacity: 0, scale: 0.9 }}
                      animate={{ opacity: 1, scale: 1 }}
                      exit={{ opacity: 0, scale: 0.9 }}
                      className="self-start flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-black/[0.04]"
                    >
-                     {isRecording ? (
+                     {isTranscribing && !isProcessing && !isAiSpeaking ? (
+                       <>
+                         <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+                         <span className="text-xs font-semibold text-warning uppercase tracking-wider">
+                           {language === 'es' ? 'Transcribiendo...' : 'Transcribing...'}
+                         </span>
+                       </>
+                     ) : isRecording ? (
                        <>
                          <div className="w-2 h-2 rounded-full bg-danger animate-pulse" />
                          <span className="text-xs font-semibold text-danger uppercase tracking-wider">{t.recordingPill}</span>
@@ -1305,7 +1388,11 @@ export default function InterviewRoom({ roleId, publicResultId }: { roleId: stri
                      ) : isProcessing ? (
                        <>
                          <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">{t.processingPill}</span>
+                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
+                           {processingTooLong
+                             ? (language === 'es' ? 'Tardando más de lo normal...' : 'Taking longer than usual...')
+                             : t.processingPill}
+                         </span>
                        </>
                      ) : (
                        <>

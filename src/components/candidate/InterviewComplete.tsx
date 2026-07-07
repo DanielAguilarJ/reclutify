@@ -23,7 +23,21 @@ export default function InterviewComplete() {
   useEffect(() => {
     // Prevent double evaluation on React strict mode remounts
     if (hasEvaluatedRef.current) return;
+    
+    // Additional guard: use sessionStorage to survive component re-mounts
+    // (React Strict Mode, navigation, hot reload) within the same browser session
+    const currentSessionId = sessionId || `cand-${Date.now()}`;
+    const evalKey = `reclutify_evaluated_${currentSessionId}`;
+    if (typeof window !== 'undefined' && sessionStorage.getItem(evalKey)) {
+      hasEvaluatedRef.current = true;
+      setIsEvaluating(false);
+      return;
+    }
+    
     hasEvaluatedRef.current = true;
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(evalKey, 'true');
+    }
     
     let isMounted = true;
     const evaluateInterview = async () => {

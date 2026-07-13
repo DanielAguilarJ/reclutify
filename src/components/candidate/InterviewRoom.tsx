@@ -73,6 +73,17 @@ export default function InterviewRoom({
   const audioRef = useRef<HTMLAudioElement | null>(null); // current audio element
   const interviewActiveRef = useRef<boolean>(false); // tracks if interview is active for safe SR restart
   const ttsTimeoutRef = useRef<NodeJS.Timeout | null>(null); // safety timeout for stuck TTS
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  // Tracks the current AudioContext so it can be closed when the interview ends
+  // or the component unmounts — prevents ghost AudioContext instances.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  // Tracks the last TTS object URL so it can be revoked when no longer needed,
+  // preventing memory accumulation across multiple questions.
+  const currentAudioUrlRef = useRef<string | null>(null);
+  // Throttle the volume RAF loop — prevents up to 60 setState/s on the component.
+  const lastVolUpdateRef = useRef<number>(0);
+  const lastVolValueRef = useRef<number>(0);
   // FIX 3: Prevents double nextTopic() when timer force-advance and speakText() resolve simultaneously
   const topicAdvancingRef = useRef<boolean>(false);
   // FIX 5: Client-side dead-end detection — counts consecutive empty/evasive answers
@@ -477,9 +488,6 @@ export default function InterviewRoom({
         clearInterval(watchdogIntervalRef.current);
     };
   }, [restartRecognition]);
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
 
   // Attach stream to video element AFTER the DOM renders the <video> tag
   useEffect(() => {
@@ -1019,9 +1027,6 @@ export default function InterviewRoom({
     if (!existingSessionId) setSessionId(guaranteedSessionId);
 
     try {
-      const videoConstraints: MediaTrackConstraints | boolean = selectedCameraId
-        ? { deviceId: { exact: selectedCameraId } }
-        : true;
       // Explicit echo/noise constraints (most browsers default to these, but
       // some devices/platforms don't) — reduces the chance of Zara's own
       // voice leaking back into the mic through the speakers.
@@ -1038,7 +1043,22 @@ export default function InterviewRoom({
             autoGainControl: true,
           };
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
+        // Constrain camera to 360p/15–20fps for both preview and recording.
+        // This significantly reduces CPU/GPU load on low-power machines while
+        // still providing sufficient quality for facial expressions and gestures.
+        // Screen share (screenStream) is unaffected — it uses its own track.
+        video: selectedCameraId
+          ? {
+              deviceId: { exact: selectedCameraId },
+              width: { ideal: 640, max: 854 },
+              height: { ideal: 360, max: 480 },
+              frameRate: { ideal: 15, max: 20 },
+            }
+          : {
+              width: { ideal: 640, max: 854 },
+              height: { ideal: 360, max: 480 },
+              frameRate: { ideal: 15, max: 20 },
+            },
         audio: audioConstraints,
       });
       streamRef.current = stream;
@@ -1069,9 +1089,15 @@ export default function InterviewRoom({
         }
 
         const recordingStream = new MediaStream(tracks);
-        const mediaRecorder = new MediaRecorder(recordingStream, {
-          mimeType: "video/webm",
-        });
+        // Prefer VP8/Opus for lower CPU cost vs VP9 on older/weaker hardware.
+        // Fall back to the browser default if the codec pair is not supported.
+        const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
+          'video/webm;codecs=vp8,opus'
+        )
+          ? { mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 500_000 }
+          : { mimeType: 'video/webm' };
+
+        const mediaRecorder = new MediaRecorder(recordingStream, recorderOptions);
         mediaRecorderRef.current = mediaRecorder;
 
         mediaRecorder.ondataavailable = (event) => {
@@ -1079,13 +1105,17 @@ export default function InterviewRoom({
             recordedChunksRef.current.push(event.data);
           }
         };
-        mediaRecorder.start(1000);
+        // Collect chunks every 5s instead of every 1s — reduces ondataavailable
+        // event frequency 5× without affecting the final recording quality.
+        mediaRecorder.start(5000);
       } catch (e) {
         console.error("MediaRecorder error:", e);
       }
 
-      // setup Audio Analyser for the bottom widget
+      // Setup Audio Analyser for the bottom widget
       const audioCtx = new AudioContext();
+      // Save to ref so we can close it in endInterview() and component cleanup.
+      audioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -1093,13 +1123,21 @@ export default function InterviewRoom({
       analyserRef.current = analyser;
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const updateVolume = () => {
-        analyser.getByteFrequencyData(dataArray);
-        const maxVol = Math.max(...dataArray);
-        setVolumeLevel(maxVol / 255);
+      // Throttled volume loop: fire at most ~10 fps and only update state when
+      // the level changes by more than 3% — avoids up to 60 setState/s.
+      const updateVolume = (now: number) => {
+        if (now - lastVolUpdateRef.current > 100) {
+          analyser.getByteFrequencyData(dataArray);
+          const next = Math.max(...dataArray) / 255;
+          if (Math.abs(next - lastVolValueRef.current) > 0.03) {
+            setVolumeLevel(next);
+            lastVolValueRef.current = next;
+          }
+          lastVolUpdateRef.current = now;
+        }
         animationRef.current = requestAnimationFrame(updateVolume);
       };
-      updateVolume();
+      animationRef.current = requestAnimationFrame(updateVolume);
     } catch (err) {
       console.error("Media error:", err);
       const error = err as DOMException;
@@ -1336,11 +1374,19 @@ export default function InterviewRoom({
             console.warn("[TTS-FE] Empty audio blob — falling back");
             throw new Error("Empty audio blob");
           }
+          // Revoke any previous object URL before creating a new one —
+          // prevents silent memory accumulation across questions.
+          if (currentAudioUrlRef.current) {
+            URL.revokeObjectURL(currentAudioUrlRef.current);
+          }
           const audioUrl = URL.createObjectURL(audioBlob);
+          currentAudioUrlRef.current = audioUrl;
           const audio = new Audio(audioUrl);
           audioRef.current = audio;
           audio.onended = () => {
             console.log("[TTS-FE] Audio playback ended normally");
+            URL.revokeObjectURL(audioUrl);
+            if (currentAudioUrlRef.current === audioUrl) currentAudioUrlRef.current = null;
             onFinishSpeaking();
           };
           audio.onerror = (e) => {
@@ -1348,6 +1394,8 @@ export default function InterviewRoom({
               "[TTS-FE] Audio element error — falling back to browser speech",
               e,
             );
+            URL.revokeObjectURL(audioUrl);
+            if (currentAudioUrlRef.current === audioUrl) currentAudioUrlRef.current = null;
             fallbackSpeech(text, onFinishSpeaking);
           };
           audio
@@ -1361,6 +1409,8 @@ export default function InterviewRoom({
                 err,
                 "— falling back",
               );
+              URL.revokeObjectURL(audioUrl);
+              if (currentAudioUrlRef.current === audioUrl) currentAudioUrlRef.current = null;
               fallbackSpeech(text, onFinishSpeaking);
             });
         })
@@ -1438,6 +1488,16 @@ export default function InterviewRoom({
       audioRef.current.pause();
       audioRef.current = null;
     }
+    // Revoke any live TTS object URL to free memory.
+    if (currentAudioUrlRef.current) {
+      URL.revokeObjectURL(currentAudioUrlRef.current);
+      currentAudioUrlRef.current = null;
+    }
+    // Close the AudioContext created in startInterview.
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.onend = null;
@@ -1500,6 +1560,9 @@ export default function InterviewRoom({
         const blob = new Blob(recordedChunksRef.current, {
           type: "video/webm",
         });
+        // Free the chunk RAM immediately after creating the blob — prevents
+        // accumulated video data from lingering in memory post-interview.
+        recordedChunksRef.current = [];
 
         // Temporary in-session fallback — valid only while this tab is open.
         // Will be replaced by the permanent R2 URL below if the upload succeeds.
@@ -1591,6 +1654,15 @@ export default function InterviewRoom({
         } catch (e) {}
       }
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      // Release AudioContext and any lingering TTS object URL on unmount.
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+      }
+      if (currentAudioUrlRef.current) {
+        URL.revokeObjectURL(currentAudioUrlRef.current);
+        currentAudioUrlRef.current = null;
+      }
     };
   }, []);
 
@@ -1599,6 +1671,16 @@ export default function InterviewRoom({
     const s = totalSeconds % 60;
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
+
+  // Detect low-power hardware and activate performance mode for AiOrb.
+  // Blur-animated rings are skipped, cutting GPU/CPU load significantly on
+  // machines with ≤4 CPU cores or ≤4 GB RAM.
+  const performanceMode =
+    typeof navigator !== 'undefined' &&
+    (
+      (navigator.hardwareConcurrency != null && navigator.hardwareConcurrency <= 4) ||
+      ((navigator as any).deviceMemory != null && (navigator as any).deviceMemory <= 4)
+    );
 
   return (
     <div className="fixed inset-0 bg-[#eef2ff] flex flex-col font-sans overflow-hidden">
@@ -1733,7 +1815,7 @@ export default function InterviewRoom({
         {/* Background AI Orb - only show centered when NOT started */}
         {!hasStarted && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} />
+            <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} performanceMode={performanceMode} />
           </div>
         )}
 
@@ -1778,7 +1860,7 @@ export default function InterviewRoom({
             {/* LEFT COLUMN: Orb + Camera */}
             <div className="w-[40%] h-full flex flex-col items-center justify-center relative">
               <div className="pointer-events-none">
-                <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} />
+                <AiOrb isSpeaking={isAiSpeaking} isProcessing={isProcessing} performanceMode={performanceMode} />
               </div>
 
               {/* Camera Widget - below the orb */}

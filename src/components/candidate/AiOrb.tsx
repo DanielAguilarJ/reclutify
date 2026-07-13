@@ -1,75 +1,82 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 
 interface AiOrbProps {
   isSpeaking: boolean;
   isProcessing: boolean;
+  /** When true, skip the expensive infinite blur animations for low-power machines. */
+  performanceMode?: boolean;
 }
 
-export default function AiOrb({ isSpeaking, isProcessing }: AiOrbProps) {
+export default function AiOrb({ isSpeaking, isProcessing, performanceMode = false }: AiOrbProps) {
+  // Also respect the OS-level "prefers-reduced-motion" setting regardless of hardware.
+  const prefersReduced = useReducedMotion();
+  const lite = performanceMode || prefersReduced;
+
   return (
     <div className="relative flex items-center justify-center">
-      {/* Outer blurred ring (purple/blue glow) */}
-      <motion.div
-        className="absolute rounded-full filter blur-xl"
-        style={{
-          width: 140,
-          height: 140,
-          background: 'linear-gradient(135deg, rgba(168,85,247,0.4) 0%, rgba(59,130,246,0.6) 100%)',
-        }}
-        animate={
-          isSpeaking
-            ? {
-                scale: [1, 1.4, 1],
-                opacity: [0.6, 0.9, 0.6],
-              }
-            : {
-                scale: [1, 1.1, 1],
-                opacity: [0.4, 0.6, 0.4],
-              }
-        }
-        transition={{
-          duration: isSpeaking ? 1.5 : 3,
-          repeat: Infinity,
-          ease: 'easeInOut',
-        }}
-      />
+      {lite ? (
+        /* ── Lite mode: single static gradient ring, no blur, no RAF cost ── */
+        <div
+          className="absolute rounded-full"
+          style={{
+            width: 130,
+            height: 130,
+            background: isSpeaking
+              ? 'linear-gradient(135deg, rgba(168,85,247,0.35) 0%, rgba(59,130,246,0.55) 100%)'
+              : 'linear-gradient(135deg, rgba(168,85,247,0.18) 0%, rgba(59,130,246,0.28) 100%)',
+          }}
+        />
+      ) : (
+        <>
+          {/* Outer blurred ring (purple/blue glow) */}
+          <motion.div
+            className="absolute rounded-full filter blur-xl"
+            style={{
+              width: 140,
+              height: 140,
+              background: 'linear-gradient(135deg, rgba(168,85,247,0.4) 0%, rgba(59,130,246,0.6) 100%)',
+            }}
+            animate={
+              isSpeaking
+                ? { scale: [1, 1.4, 1], opacity: [0.6, 0.9, 0.6] }
+                : { scale: [1, 1.1, 1], opacity: [0.4, 0.6, 0.4] }
+            }
+            transition={{
+              duration: isSpeaking ? 1.5 : 3,
+              repeat: Infinity,
+              ease: 'easeInOut',
+            }}
+          />
 
-      {/* Secondary blurred ring */}
-      <motion.div
-        className="absolute rounded-full filter blur-lg"
-        style={{
-          width: 110,
-          height: 110,
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.5) 0%, rgba(59,130,246,0.8) 100%)',
-        }}
-        animate={
-          isSpeaking
-            ? {
-                scale: [1, 1.3, 1],
-                opacity: [0.8, 1, 0.8],
-              }
-            : {
-                scale: [1, 1.05, 1],
-                opacity: [0.5, 0.7, 0.5],
-              }
-        }
-        transition={{
-          duration: isSpeaking ? 1.2 : 2.5,
-          repeat: Infinity,
-          ease: 'easeInOut',
-          delay: 0.2,
-        }}
-      />
+          {/* Secondary blurred ring */}
+          <motion.div
+            className="absolute rounded-full filter blur-lg"
+            style={{
+              width: 110,
+              height: 110,
+              background: 'linear-gradient(135deg, rgba(99,102,241,0.5) 0%, rgba(59,130,246,0.8) 100%)',
+            }}
+            animate={
+              isSpeaking
+                ? { scale: [1, 1.3, 1], opacity: [0.8, 1, 0.8] }
+                : { scale: [1, 1.05, 1], opacity: [0.5, 0.7, 0.5] }
+            }
+            transition={{
+              duration: isSpeaking ? 1.2 : 2.5,
+              repeat: Infinity,
+              ease: 'easeInOut',
+              delay: 0.2,
+            }}
+          />
+        </>
+      )}
 
-      {/* Main white orb container */}
+      {/* Main white orb container — always rendered */}
       <motion.div
         className="relative z-10 flex items-center justify-center rounded-full bg-white shadow-lg border border-black/[0.04]"
-        style={{
-          width: 80,
-          height: 80,
-        }}
+        style={{ width: 80, height: 80 }}
         animate={
           isProcessing
             ? { rotate: [0, 5, -5, 0] }
@@ -79,7 +86,7 @@ export default function AiOrb({ isSpeaking, isProcessing }: AiOrbProps) {
         }
         transition={
           isProcessing
-            ? { duration: 0.5, repeat: Infinity }
+            ? { duration: lite ? 1 : 0.5, repeat: Infinity }
             : {
                 duration: isSpeaking ? 1.5 : 3,
                 repeat: Infinity,

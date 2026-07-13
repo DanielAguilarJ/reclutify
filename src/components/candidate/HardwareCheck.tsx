@@ -45,9 +45,15 @@ export default function HardwareCheck() {
   const recognitionRef = useRef<any>(null);
   
   const streamRef = useRef<MediaStream | null>(null);
+  // Separate ref for the raw mic MediaStream so it can be stopped independently
+  // of the camera stream and the AudioContext (Bug 25 extension fix).
+  const micStreamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const animationRef = useRef<number>(0);
+  // Throttle the volume RAF loop to ~10 fps — prevents up to 60 setState/s.
+  const lastVolUpdateRef = useRef<number>(0);
+  const lastVolValueRef = useRef<number>(0);
 
   const startCamera = useCallback(async (deviceId?: string) => {
     try {
@@ -79,9 +85,17 @@ export default function HardwareCheck() {
   const startMic = useCallback(async (deviceId?: string) => {
     try {
       setMicError(null);
+      // Stop the previous raw mic stream (not just the AudioContext) before
+      // grabbing a new one — prevents two concurrent mic tracks competing.
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((tk) => tk.stop());
+        micStreamRef.current = null;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: deviceId ? { deviceId: { exact: deviceId } } : true,
       });
+      // Save the raw stream so we can stop it on unmount and on device change.
+      micStreamRef.current = stream;
       // Bug 25 fix: close any prior AudioContext before opening a new one and
       // keep a ref so we can release it on unmount (preventing the leaked
       // context from competing with the one InterviewRoom creates next).
@@ -98,13 +112,21 @@ export default function HardwareCheck() {
       analyserRef.current = analyser;
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const updateVolume = () => {
-        analyser.getByteFrequencyData(dataArray);
-        const maxVol = Math.max(...dataArray);
-        setVolumeLevel(maxVol / 255);
+      // Throttled volume loop: update at most ~10 fps and only when the level
+      // changes by more than 3% — avoids up to 60 setState/s on the component.
+      const updateVolume = (now: number) => {
+        if (now - lastVolUpdateRef.current > 100) {
+          analyser.getByteFrequencyData(dataArray);
+          const next = Math.max(...dataArray) / 255;
+          if (Math.abs(next - lastVolValueRef.current) > 0.03) {
+            setVolumeLevel(next);
+            lastVolValueRef.current = next;
+          }
+          lastVolUpdateRef.current = now;
+        }
         animationRef.current = requestAnimationFrame(updateVolume);
       };
-      updateVolume();
+      animationRef.current = requestAnimationFrame(updateVolume);
       setMicReady(true);
       // Persist the selected mic device ID
       const actualDeviceId = deviceId || stream.getAudioTracks()[0]?.getSettings()?.deviceId || null;
@@ -143,6 +165,11 @@ export default function HardwareCheck() {
     return () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((tk) => tk.stop());
+      }
+      // Also stop the raw mic stream (separate from the camera stream).
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((tk) => tk.stop());
+        micStreamRef.current = null;
       }
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);

@@ -630,22 +630,49 @@ Return ONLY valid JSON, no markdown.`
     }
 
     const startTime = Date.now();
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://reclutify.com',
-        'X-Title': 'Reclutify AI Interviewer',
-      },
-      body: JSON.stringify({
-        model: 'x-ai/grok-4.20',
-        messages: modelMessages,
-        reasoning: { enabled: true },
-        temperature: 0.7,
-        max_tokens: 400,
-      }),
-    });
+
+    // ─── Server-side timeout on the OpenRouter call ───
+    // Prevents the API route from hanging indefinitely if OpenRouter is slow.
+    // The client already has a 30s AbortController; this 20s guard fires first
+    // so the candidate gets a clean 504 instead of a silent hang.
+    const openrouterController = new AbortController();
+    const openrouterTimeout = setTimeout(() => openrouterController.abort(), 20000);
+
+    let response: Response;
+    try {
+      response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://reclutify.com',
+          'X-Title': 'Reclutify AI Interviewer',
+        },
+        body: JSON.stringify({
+          model: 'x-ai/grok-4.20',
+          messages: modelMessages,
+          // reasoning removed — adds 3–8s latency per turn with negligible benefit
+          // for a real-time live interview. Reserved for async evaluation tasks.
+          temperature: 0.7,
+          max_tokens: paceConfig.maxTokensHint || 300,
+        }),
+        signal: openrouterController.signal,
+      });
+    } catch (fetchErr: unknown) {
+      clearTimeout(openrouterTimeout);
+      const isAbort = fetchErr instanceof Error && fetchErr.name === 'AbortError';
+      if (isAbort) {
+        console.error('[chat] OpenRouter fetch timed out after 20s');
+        return NextResponse.json(
+          { error: 'AI response timeout — please try again' },
+          { status: 504 }
+        );
+      }
+      throw fetchErr; // re-throw unexpected errors to the outer try/catch
+    } finally {
+      clearTimeout(openrouterTimeout);
+    }
+
     const durationMs = Date.now() - startTime;
 
     if (!response.ok) {
@@ -745,19 +772,19 @@ Return ONLY valid JSON, no markdown.`
     aiMessage = aiMessage.replace(/^\[INSTRUCTION[^\]]*\].*?\n/i, '').trim();
     aiMessage = aiMessage.replace(/^\[SYSTEM INSTRUCTION[^\]]*\].*?\n/i, '').trim();
 
-    // ===== Module 5: Sentiment Analysis (runs in parallel — non-blocking) =====
-    // BUG FIX #4: Sentiment was running AFTER the main AI call, adding 1-3s latency.
-    // Now we fire it concurrently. The promise was started before the main AI call.
-    let sentiment = null;
+    // ===== Sentiment Analysis — fire-and-forget (non-blocking) =====
+    // Sentiment runs in the background; we no longer await it before replying
+    // to the candidate. This removes 1–3s of extra latency per turn.
+    // NOTE: sentiment will be null in the frontend response. Admin-side display
+    // of confidence/evasion signals is a known temporary loss until a background
+    // persistence path is added (store to telemetry by sessionId + turnIndex).
     if (sentimentPromise) {
-      try {
-        sentiment = await sentimentPromise;
-      } catch (err) {
-        console.error('Sentiment analysis error (non-blocking):', err);
-      }
+      sentimentPromise.catch((err) => {
+        console.error('[Sentiment] Background error:', err);
+      });
     }
 
-    return NextResponse.json({ message: aiMessage, sentiment });
+    return NextResponse.json({ message: aiMessage, sentiment: null });
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.error('Chat API error:', err);

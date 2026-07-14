@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Clock, Mic, CheckCircle2, AlertCircle } from "lucide-react";
+import { Clock, Mic, CheckCircle2, AlertCircle, Square } from "lucide-react";
 import { useInterviewStore } from "@/store/interviewStore";
 import { useAdminStore } from "@/store/adminStore";
 import { useAppStore } from "@/store/appStore";
@@ -90,35 +90,27 @@ export default function InterviewRoom({
   const consecutiveEmptyRef = useRef<number>(0);
   // FIX 6: Tracks where the current topic started in the transcript (for hard-limit guard)
   const topicStartIndexRef = useRef<number>(0);
-  // FIX 7: Debounce speech recognition — accumulate fragments before processing
+  // Manual candidate turn: recognition may produce several final fragments, but
+  // nothing is submitted until the candidate explicitly presses "Finish answer".
   const utteranceBufferRef = useRef<string>("");
-  const utteranceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const candidateInterimRef = useRef<string>("");
+  const candidateTurnActiveRef = useRef<boolean>(false);
+  const candidateTurnSubmissionPendingRef = useRef<boolean>(false);
+  const candidateTurnSubmissionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const completeCandidateTurnRef = useRef<() => void>(() => {});
   const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
-  // FIX 8: Ref to always point to the latest handleCandidateUtterance — solves stale closure
+  // Ref to always point to the latest handleCandidateUtterance — solves stale closure
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(
     async () => {},
   );
-  // FIX 9: Mutex to prevent concurrent SpeechRecognition restart attempts
+  // Mutex to prevent concurrent SpeechRecognition restart attempts
   const restartingRef = useRef<boolean>(false);
-  // BUG 1 FIX: Queue utterances that arrive while processingLock is active.
-  // Uses an array (not a single string) so that if the candidate speaks more
-  // than once while locked, ALL fragments are preserved and merged instead of
-  // earlier ones being silently overwritten/lost.
-  const pendingUtterancesRef = useRef<string[]>([]);
-  // BUG 1 FIX: Track if transcription is actively buffering (for UI indicator)
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [speechInputError, setSpeechInputError] = useState<string | null>(null);
   const [processingTooLong, setProcessingTooLong] = useState(false);
   const processingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // BUG 2 FOLLOW-UP: Tracks whether speakText() already restarted SpeechRecognition
-  // for the current handleCandidateUtterance() call, so the finally block doesn't
-  // redundantly call recognitionRef.current.start() a second time (which throws a
-  // silently-swallowed InvalidStateError on every turn).
-  const recognitionRestartedByTTSRef = useRef<boolean>(false);
-  // ANTI-FREEZE / ANTI-ECHO FIX: tracks whether the native recognition object is
-  // actually running right now (via onstart/onend), and the timestamp of the last
-  // recognition event of any kind. A watchdog uses these to detect a recognition
-  // instance that has silently died (a known Chrome issue after many start/stop
-  // cycles) and force it back to life instead of leaving the interview frozen.
+  // Tracks whether the native recognition object is actually running. The
+  // watchdog can recover it, but only during a turn explicitly opened by the user.
   const recognitionRunningRef = useRef<boolean>(false);
   const lastRecognitionEventAtRef = useRef<number>(Date.now());
   const watchdogIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -193,7 +185,6 @@ export default function InterviewRoom({
   useEffect(() => {
     topicStartIndexRef.current = useInterviewStore.getState().transcript.length;
     consecutiveEmptyRef.current = 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTopicIndex]);
 
   // Sync to Admin Pipeline as "in-progress" automatically — ALWAYS save progress
@@ -227,7 +218,6 @@ export default function InterviewRoom({
     } else {
       updateCandidate(currentSessionId, { transcript, duration: timerSeconds });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcript, hasStarted]);
 
   // Timer hard-stop: only fires when EITHER
@@ -249,7 +239,9 @@ export default function InterviewRoom({
     if (
       (naturalEnd || safetyCap) &&
       !speakingRef.current &&
-      !processingLockRef.current
+      !processingLockRef.current &&
+      !candidateTurnActiveRef.current &&
+      !candidateTurnSubmissionPendingRef.current
     ) {
       console.log(
         `[Timer Hard Stop] ${safetyCap ? "Safety cap (2×)" : "All topics covered"} — ending interview`,
@@ -265,19 +257,14 @@ export default function InterviewRoom({
       });
       speakText(closingMsg).then(() => endInterview());
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerSeconds, hasStarted, allTopicsCovered]);
 
-  // Single source of truth: should the mic ACTUALLY be capturing candidate
-  // speech right now? Only when the interview is active, Zara is not talking,
-  // AND we're not mid-flight processing the previous answer. Using this
-  // everywhere (instead of ad-hoc checks) closes the race where the mic used
-  // to get switched back on while we were still waiting for the AI's reply —
-  // which is what let her own TTS voice get picked up and transcribed as if
-  // the candidate had said it.
+  // Recognition is active only inside a turn explicitly opened by the candidate.
+  // Silence never closes or submits a turn; the candidate owns that decision.
   const shouldBeListening = useCallback(() => {
     return (
       interviewActiveRef.current &&
+      candidateTurnActiveRef.current &&
       !speakingRef.current &&
       !processingLockRef.current
     );
@@ -307,78 +294,32 @@ export default function InterviewRoom({
 
     rec.onresult = (event: any) => {
       lastRecognitionEventAtRef.current = Date.now();
+      if (!candidateTurnActiveRef.current && !candidateTurnSubmissionPendingRef.current) return;
+
       let interimTranscript = "";
       for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const fragment = event.results[i][0].transcript.trim();
+        if (!fragment) continue;
+
         if (event.results[i].isFinal) {
-          const finalText = event.results[i][0].transcript;
-          // DEBOUNCE: Accumulate final fragments and wait for silence
           utteranceBufferRef.current +=
-            (utteranceBufferRef.current ? " " : "") + finalText;
-          setIsTranscribing(true);
-          if (utteranceTimerRef.current)
-            clearTimeout(utteranceTimerRef.current);
-          utteranceTimerRef.current = setTimeout(() => {
-            const fullUtterance = utteranceBufferRef.current.trim();
-            utteranceBufferRef.current = "";
-            setIsTranscribing(false);
-
-            // BUG 1 FOLLOW-UP: Only drop pure noise (empty/near-empty fragments).
-            // A hard 10-character cutoff used to silently swallow short but VALID
-            // answers ("Si", "No", "No se", "Correcto") with zero feedback, which
-            // recreated the "I spoke and nothing happened" symptom for legitimate
-            // short answers. Real short-answer handling (rephrase the question, or
-            // advance topic after 2 consecutive vague answers) already exists inside
-            // handleCandidateUtterance below — let it decide instead of guessing here.
-            if (fullUtterance.length < 2) {
-              console.warn(
-                "[STT] Empty/noise fragment, skipping:",
-                fullUtterance,
-              );
-              return;
-            }
-
-            // ECHO GUARD (critical fix): audio captured while Zara is actively
-            // speaking can ONLY be mic feedback from her own TTS voice coming out
-            // of the speakers — never the candidate. Treating it as an answer is
-            // exactly the "Zara answers her own questions" bug. Always discard it.
-            if (speakingRef.current) {
-              console.warn(
-                "[STT] Discarding fragment captured while AI is speaking (echo guard):",
-                fullUtterance,
-              );
-              return;
-            }
-
-            // BUG 1 FIX: If processingLock is active, queue instead of discard.
-            // Utterances that arrive while locked are appended (not overwritten)
-            // so nothing the candidate says while the system is busy is lost.
-            if (processingLockRef.current) {
-              console.log(
-                "[STT] Lock active — queuing utterance for later processing",
-              );
-              pendingUtterancesRef.current.push(fullUtterance);
-              return;
-            }
-
-            // FIX 8: Call via ref to always use the latest handler (avoids stale closure)
-            handleUtteranceRef.current(fullUtterance);
-          }, 1500);
-        } else if (!speakingRef.current) {
-          // Same echo guard applied to the live interim preview shown under the
-          // orb — never show Zara's own words as if the candidate were saying them.
-          interimTranscript += event.results[i][0].transcript;
-          const preview = utteranceBufferRef.current
-            ? utteranceBufferRef.current + " " + interimTranscript
-            : interimTranscript;
-          setCurrentSubtitle(preview);
+            (utteranceBufferRef.current ? " " : "") + fragment;
+        } else {
+          interimTranscript += (interimTranscript ? " " : "") + fragment;
         }
       }
+
+      candidateInterimRef.current = interimTranscript;
+      const preview = [utteranceBufferRef.current, interimTranscript]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (!speakingRef.current) setCurrentSubtitle(preview);
     };
 
-    // Auto-restart on recoverable errors
+    // Recover browser-level recognition failures without closing the candidate's turn.
     rec.onerror = (event: any) => {
       lastRecognitionEventAtRef.current = Date.now();
-      // no-speech is not a real error — onend will handle restart
       if (event.error === "no-speech") return;
       console.error("Speech recognition error:", event.error);
       const fatalErrors = [
@@ -386,22 +327,37 @@ export default function InterviewRoom({
         "service-not-allowed",
         "language-not-supported",
       ];
-      if (!fatalErrors.includes(event.error)) {
-        restartRecognition();
+      if (fatalErrors.includes(event.error)) {
+        candidateTurnActiveRef.current = false;
+        candidateTurnSubmissionPendingRef.current = false;
+        setIsRecording(false);
+        setIsTranscribing(false);
+        setSpeechInputError(
+          language === "es"
+            ? "No se pudo usar el reconocimiento de voz. Revisa el permiso del micrófono e inténtalo de nuevo."
+            : "Voice recognition could not be used. Check microphone permission and try again.",
+        );
+        return;
       }
+      restartRecognition();
     };
 
-    // KEY FIX: Auto-restart when recognition silently ends — but ONLY if we
-    // should actually be listening right now (not speaking, not processing).
-    // The old check only looked at `speakingRef`, so the mic got switched back
-    // on while we were still waiting for the AI's reply, well before the next
-    // speakText() call — that stray listening window is what picked up Zara's
-    // own TTS audio and fed it back in as a fake candidate answer.
     rec.onend = () => {
       recognitionRunningRef.current = false;
       lastRecognitionEventAtRef.current = Date.now();
-      if (shouldBeListening()) {
-        console.log("SpeechRecognition ended unexpectedly — restarting...");
+      if (candidateTurnSubmissionPendingRef.current) {
+        // Let the last onresult event land before assembling and submitting the turn.
+        setTimeout(() => completeCandidateTurnRef.current(), 0);
+      } else if (shouldBeListening()) {
+        // Preserve a non-final fragment before replacing the browser recognition
+        // instance. This keeps a browser restart from cutting the candidate off.
+        const pendingInterim = candidateInterimRef.current.trim();
+        if (pendingInterim) {
+          utteranceBufferRef.current +=
+            (utteranceBufferRef.current ? " " : "") + pendingInterim;
+          candidateInterimRef.current = "";
+        }
+        console.log("SpeechRecognition ended during the manual turn — recovering...");
         setTimeout(() => restartRecognition(), 300);
       }
     };
@@ -417,6 +373,13 @@ export default function InterviewRoom({
     if (!shouldBeListening()) return;
     if (restartingRef.current) return; // Prevent concurrent restarts
     restartingRef.current = true;
+
+    const pendingInterim = candidateInterimRef.current.trim();
+    if (pendingInterim) {
+      utteranceBufferRef.current +=
+        (utteranceBufferRef.current ? " " : "") + pendingInterim;
+      candidateInterimRef.current = "";
+    }
 
     const oldRec = recognitionRef.current;
     if (oldRec) {
@@ -511,7 +474,6 @@ export default function InterviewRoom({
     if (!text.trim() || processingLockRef.current || speakingRef.current)
       return;
     processingLockRef.current = true; // Acquire lock — released in finally block
-    recognitionRestartedByTTSRef.current = false; // Reset — set by speakText() if it restarts SR
 
     // ═══ READ FRESH STATE FROM STORE (avoid stale closure) ═══
     const store = useInterviewStore.getState();
@@ -882,41 +844,120 @@ export default function InterviewRoom({
         clearTimeout(processingTimerRef.current);
         processingTimerRef.current = null;
       }
-      // BUG 2 FIX: Always restart recognition after processing completes — but only
-      // if speakText() didn't already do it (avoids a redundant .start() call that
-      // throws a silently-swallowed InvalidStateError on every single turn).
-      if (
-        interviewActiveRef.current &&
-        !speakingRef.current &&
-        !recognitionRestartedByTTSRef.current
-      ) {
-        setIsRecording(true);
-        try {
-          const fresh = createRecognitionInstance();
-          if (fresh) {
-            recognitionRef.current = fresh;
-            fresh.start();
-          }
-        } catch (e) {}
-      }
-      // BUG 1 FIX: Process pending utterance(s) that arrived while lock was active.
-      // Multiple queued fragments are merged into a single utterance — they were very
-      // likely part of the same continuous answer, just split by processing timing.
-      if (pendingUtterancesRef.current.length > 0 && !speakingRef.current) {
-        const pending = pendingUtterancesRef.current.join(" ").trim();
-        pendingUtterancesRef.current = [];
-        // Use setTimeout to avoid recursive lock acquisition in same tick
-        setTimeout(() => {
-          if (!processingLockRef.current && !speakingRef.current && pending) {
-            handleUtteranceRef.current(pending);
-          }
-        }, 100);
-      }
+      // The next listening turn is opened only by an explicit candidate click.
     }
   };
 
   // Keep the ref always pointing to the latest handler
   handleUtteranceRef.current = handleCandidateUtterance;
+
+  const completeCandidateTurn = () => {
+    if (!candidateTurnSubmissionPendingRef.current) return;
+    candidateTurnSubmissionPendingRef.current = false;
+    if (candidateTurnSubmissionTimerRef.current) {
+      clearTimeout(candidateTurnSubmissionTimerRef.current);
+      candidateTurnSubmissionTimerRef.current = null;
+    }
+
+    const fullUtterance = [
+      utteranceBufferRef.current,
+      candidateInterimRef.current,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    utteranceBufferRef.current = "";
+    candidateInterimRef.current = "";
+    setCurrentSubtitle("");
+    setIsTranscribing(false);
+
+    if (fullUtterance.length < 2) {
+      setSpeechInputError(
+        language === "es"
+          ? "No alcanzamos a escuchar una respuesta. Pulsa el botón e inténtalo de nuevo; tu turno no avanzó."
+          : "We couldn't hear an answer. Press the button and try again; your turn was not advanced.",
+      );
+      return;
+    }
+
+    setSpeechInputError(null);
+    void handleUtteranceRef.current(fullUtterance);
+  };
+  completeCandidateTurnRef.current = completeCandidateTurn;
+
+  const startCandidateTurn = () => {
+    if (
+      !interviewActiveRef.current ||
+      speakingRef.current ||
+      processingLockRef.current ||
+      isAiSpeaking ||
+      isProcessing ||
+      isTranscribing
+    ) {
+      return;
+    }
+
+    setSpeechInputError(null);
+    setCurrentSubtitle("");
+    utteranceBufferRef.current = "";
+    candidateInterimRef.current = "";
+    candidateTurnSubmissionPendingRef.current = false;
+    candidateTurnActiveRef.current = true;
+    lastRecognitionEventAtRef.current = Date.now();
+
+    const previousRecognition = recognitionRef.current;
+    if (previousRecognition) {
+      try {
+        previousRecognition.onend = null;
+        previousRecognition.onerror = null;
+        previousRecognition.stop();
+      } catch (e) {}
+    }
+
+    try {
+      const fresh = createRecognitionInstance();
+      if (!fresh) {
+        throw new Error("SpeechRecognition is not supported");
+      }
+      recognitionRef.current = fresh;
+      fresh.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error("Could not start the candidate's voice turn:", error);
+      candidateTurnActiveRef.current = false;
+      setIsRecording(false);
+      setSpeechInputError(
+        language === "es"
+          ? "Tu navegador no pudo iniciar el reconocimiento de voz. Revisa el permiso del micrófono e inténtalo de nuevo."
+          : "Your browser could not start voice recognition. Check microphone permission and try again.",
+      );
+    }
+  };
+
+  const finishCandidateTurn = () => {
+    if (!candidateTurnActiveRef.current) return;
+
+    candidateTurnActiveRef.current = false;
+    candidateTurnSubmissionPendingRef.current = true;
+    setIsRecording(false);
+    setIsTranscribing(true);
+
+    // Some browsers deliver the last final recognition result only after stop().
+    // onend submits immediately; this timeout is a fallback for broken onend events.
+    candidateTurnSubmissionTimerRef.current = setTimeout(
+      () => completeCandidateTurnRef.current(),
+      1200,
+    );
+
+    try {
+      recognitionRef.current?.stop();
+    } catch (error) {
+      console.warn("Could not stop SpeechRecognition cleanly:", error);
+      completeCandidateTurnRef.current();
+    }
+  };
 
   // UX FIX: after Zara announces a topic change ("Ok, pasemos al siguiente
   // tema: X"), immediately ask the FIRST real question of that new topic in
@@ -1262,6 +1303,8 @@ export default function InterviewRoom({
       }
       speakingRef.current = true;
 
+      candidateTurnActiveRef.current = false;
+      setIsRecording(false);
       setIsAiSpeaking(true);
       setCurrentSubtitle(text);
       if (recognitionRef.current) {
@@ -1293,28 +1336,9 @@ export default function InterviewRoom({
         speakingRef.current = false;
         setIsAiSpeaking(false);
         setCurrentSubtitle("");
-        if (interviewActiveRef.current) {
-          // BUG 2 FOLLOW-UP: tell handleCandidateUtterance's finally block not to
-          // redundantly call .start() again once this promise resolves.
-          recognitionRestartedByTTSRef.current = true;
-          // ANTI-ECHO FIX: small cool-down before re-opening the mic so any
-          // trailing echo of Zara's own voice (speaker bleed, buffered audio,
-          // browser teardown latency) has fully decayed before we start
-          // listening again. This — combined with always building a FRESH
-          // recognition instance — is what stops her own question from being
-          // transcribed back as if the candidate had said it.
-          setTimeout(() => {
-            if (!interviewActiveRef.current || speakingRef.current) return;
-            setIsRecording(true);
-            try {
-              const fresh = createRecognitionInstance();
-              if (fresh) {
-                recognitionRef.current = fresh;
-                fresh.start();
-              }
-            } catch (e) {}
-          }, 350);
-        }
+        // The microphone remains closed. The candidate decides when to open
+        // the next turn after Zara has completely finished speaking.
+        setIsRecording(false);
         resolve();
       };
 
@@ -1476,12 +1500,16 @@ export default function InterviewRoom({
   };
 
   const endInterview = () => {
-    // Disable auto-restart of SpeechRecognition
     interviewActiveRef.current = false;
+    candidateTurnActiveRef.current = false;
+    candidateTurnSubmissionPendingRef.current = false;
 
     if (timerRef.current) clearInterval(timerRef.current);
     if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
-    if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
+    if (candidateTurnSubmissionTimerRef.current) {
+      clearTimeout(candidateTurnSubmissionTimerRef.current);
+      candidateTurnSubmissionTimerRef.current = null;
+    }
     if (watchdogIntervalRef.current) clearInterval(watchdogIntervalRef.current);
     if (synthesisRef.current) synthesisRef.current.cancel();
     if (audioRef.current) {
@@ -1510,7 +1538,7 @@ export default function InterviewRoom({
     speakingRef.current = false;
     processingLockRef.current = false;
     utteranceBufferRef.current = "";
-    pendingUtterancesRef.current = [];
+    candidateInterimRef.current = "";
     setIsAiSpeaking(false);
     setIsProcessing(false);
     setIsRecording(false);
@@ -1639,9 +1667,12 @@ export default function InterviewRoom({
   useEffect(() => {
     return () => {
       interviewActiveRef.current = false;
+      candidateTurnActiveRef.current = false;
+      candidateTurnSubmissionPendingRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
-      if (utteranceTimerRef.current) clearTimeout(utteranceTimerRef.current);
+      if (candidateTurnSubmissionTimerRef.current)
+        clearTimeout(candidateTurnSubmissionTimerRef.current);
       if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
       if (watchdogIntervalRef.current)
         clearInterval(watchdogIntervalRef.current);
@@ -1991,6 +2022,68 @@ export default function InterviewRoom({
                       </motion.div>
                     )}
                 </AnimatePresence>
+              </div>
+
+              {/* Manual voice control — the candidate owns the full duration of each answer. */}
+              <div className="flex flex-col items-start gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={isRecording ? finishCandidateTurn : startCandidateTurn}
+                  disabled={!isRecording && (isAiSpeaking || isProcessing || isTranscribing)}
+                  className={`min-w-[250px] inline-flex items-center justify-center gap-3 px-6 py-3.5 rounded-full text-sm font-semibold text-white shadow-lg transition-all focus:outline-none focus-visible:ring-4 cursor-pointer disabled:cursor-not-allowed disabled:shadow-none ${
+                    isRecording
+                      ? "bg-danger hover:bg-danger/90 shadow-danger/20 focus-visible:ring-danger/20"
+                      : isAiSpeaking || isProcessing || isTranscribing
+                        ? "bg-slate-400/70"
+                        : "bg-primary hover:bg-primary-hover shadow-primary/25 focus-visible:ring-primary/20"
+                  }`}
+                  aria-pressed={isRecording}
+                >
+                  {isRecording ? (
+                    <>
+                      <Square className="h-4 w-4 fill-current" />
+                      {language === "es" ? "Terminar respuesta" : "Finish answer"}
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="h-5 w-5" />
+                      {isAiSpeaking
+                        ? language === "es"
+                          ? "Zara está hablando"
+                          : "Zara is speaking"
+                        : isProcessing || isTranscribing
+                          ? language === "es"
+                            ? "Procesando respuesta"
+                            : "Processing answer"
+                          : language === "es"
+                            ? "Pulsa para hablar"
+                            : "Press to speak"}
+                    </>
+                  )}
+                </button>
+                <p className={`text-xs font-medium ${isRecording ? "text-danger" : "text-muted"}`}>
+                  {isRecording
+                    ? language === "es"
+                      ? "Habla con libertad. Los silencios no detendrán tu respuesta; pulsa el botón cuando termines."
+                      : "Speak freely. Pauses will not stop your answer; press the button when you finish."
+                    : isAiSpeaking
+                      ? language === "es"
+                        ? "Espera a que Zara termine para abrir tu micrófono."
+                        : "Wait for Zara to finish before opening your microphone."
+                      : isProcessing || isTranscribing
+                        ? language === "es"
+                          ? "Estamos enviando tu intervención completa a Zara."
+                          : "We are sending your complete answer to Zara."
+                        : language === "es"
+                          ? "Tú decides cuándo empieza y termina cada intervención."
+                          : "You decide when each answer starts and ends."}
+                </p>
+                {speechInputError && (
+                  <div className="flex items-start gap-2 text-xs font-medium text-danger bg-danger/10 border border-danger/20 rounded-xl px-3 py-2 max-w-lg">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{speechInputError}</span>
+                  </div>
+                )}
               </div>
 
               {/* Status Pill */}

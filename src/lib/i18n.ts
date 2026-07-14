@@ -127,7 +127,7 @@ export const dictionaries = {
       'Please note that the recording of your AI interview will be saved and may be shared with recruiters & hiring managers for potential roles.',
       'This interview is monitored and detects any cheating behaviors through our proctoring system and human reviews. Please remain on the same tab and avoid using external tools (including AI agents), as this will affect your final results.',
       "Feel free to ask clarifying questions during the interview, but avoid repeating the question out loud so it doesn't get counted as part of your answer.",
-      "A long pause will indicate to Zara that you've finished your answer and are ready to move on to the next question."
+      "After Zara finishes speaking, press 'Speak' to open your turn. You can pause and continue for as long as you need; press 'Finish answer' only when you're ready to send your complete response."
     ],
     startInterviewBtn: 'Sounds good, start interview',
 
@@ -418,7 +418,7 @@ export const dictionaries = {
       'Ten en cuenta que la grabación de tu entrevista con IA será guardada y podrá ser compartida con reclutadores para posibles roles.',
       'Esta entrevista es monitoreada y detecta comportamientos de trampa a través de nuestro sistema de supervisión y revisiones humanas. Mantente en la misma pestaña y evita herramientas externas.',
       'Siéntete libre de hacer preguntas aclaratorias durante la entrevista, pero evita repetir la pregunta en voz alta para que no cuente como tu respuesta.',
-      'Una pausa larga le indicará a Zara que has terminado tu respuesta y estás listo para la siguiente pregunta.'
+      "Cuando Zara termine de hablar, pulsa 'Hablar' para abrir tu turno. Puedes hacer pausas y continuar todo el tiempo que necesites; pulsa 'Terminar respuesta' solo cuando quieras enviar tu intervención completa."
     ],
     startInterviewBtn: 'Suena bien, comenzar entrevista',
 

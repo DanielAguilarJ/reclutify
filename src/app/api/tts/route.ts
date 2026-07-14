@@ -21,14 +21,19 @@ export async function POST(req: Request) {
     console.log('[TTS] Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
     console.log('[TTS] Language:', language);
 
-    // GPT Audio Mini voice mapping (OpenAI voices via OpenRouter):
-    // Female voices: nova, shimmer, coral, sage, alloy
-    // 'coral' is OpenAI's recommended voice for natural, warm conversational agents
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'coral';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'coral';
+    // Microsoft MAI-Voice-2 (Azure AI Speech) voice mapping.
+    // NOTE: 'openai/gpt-audio-mini' is NOT a valid model for OpenRouter's
+    // /api/v1/audio/speech endpoint (it only supports Chat Completions/Realtime),
+    // which is why it previously returned 502 Bad Gateway from upstream.
+    // Verified via GET https://openrouter.ai/api/v1/models?output_modalities=speech
+    // — only 8 models actually support this TTS endpoint, and mai-voice-2 is the
+    // one with dedicated, high-fidelity, natural-sounding female voices for both
+    // Spanish and English (Azure Neural, non-robotic).
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'es-MX-Valeria:MAI-Voice-2';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'en-US-Harper:MAI-Voice-2';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    console.log('[TTS] Model: openai/gpt-audio-mini, Voice:', selectedVoice);
+    console.log('[TTS] Model: microsoft/mai-voice-2, Voice:', selectedVoice);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
@@ -41,7 +46,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'openai/gpt-audio-mini',
+          model: 'microsoft/mai-voice-2',
           input: text,
           voice: selectedVoice,
           response_format: 'mp3',

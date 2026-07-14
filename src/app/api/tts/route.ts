@@ -21,14 +21,14 @@ export async function POST(req: Request) {
     console.log('[TTS] Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
     console.log('[TTS] Language:', language);
 
-    // Kokoro 82M voice mapping:
-    // ef_ = español female, em_ = español male
-    // af_ = american female, am_ = american male
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'ef_dora';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'af_nova';
+    // GPT Audio Mini voice mapping (OpenAI voices via OpenRouter):
+    // Female voices: nova, shimmer, coral, sage, alloy
+    // 'coral' is OpenAI's recommended voice for natural, warm conversational agents
+    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'coral';
+    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'coral';
     const selectedVoice = language === 'es' ? voiceEs : voiceEn;
 
-    console.log('[TTS] Model: hexgrad/kokoro-82m, Voice:', selectedVoice);
+    console.log('[TTS] Model: openai/gpt-audio-mini, Voice:', selectedVoice);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'hexgrad/kokoro-82m',
+          model: 'openai/gpt-audio-mini',
           input: text,
           voice: selectedVoice,
           response_format: 'mp3',

@@ -51,7 +51,11 @@ export default function InterviewRoom({
     screenStream,
     selectedCameraId,
     selectedMicId,
+    interviewMode,
   } = useInterviewStore();
+
+  const activeInterviewMode = currentRole?.interviewMode || interviewMode || 'restricted';
+  const isInternalInterview = activeInterviewMode === 'internal';
 
   const { language } = useAppStore();
   const { candidates, addCandidate, updateCandidate } = useAdminStore();
@@ -745,6 +749,7 @@ export default function InterviewRoom({
           isGracePeriod: freshIsGracePeriod,
           isOpeningPhase: false,
           sessionId: freshSessionId || "unknown-session",
+          interviewMode: activeInterviewMode,
         }),
         signal: controller.signal,
       });
@@ -1025,6 +1030,7 @@ export default function InterviewRoom({
           isGracePeriod: false,
           isOpeningPhase: false,
           sessionId: freshSessionId || "unknown-session",
+          interviewMode: activeInterviewMode,
         }),
         signal: controller.signal,
       });
@@ -1119,7 +1125,12 @@ export default function InterviewRoom({
       // Start video recording
       try {
         const tracks: MediaStreamTrack[] = [];
-        if (screenStream && screenStream.getVideoTracks().length > 0) {
+        const shouldRecordScreen =
+          activeInterviewMode === 'restricted' &&
+          screenStream &&
+          screenStream.getVideoTracks().length > 0;
+
+        if (shouldRecordScreen) {
           tracks.push(screenStream.getVideoTracks()[0]);
         } else if (stream.getVideoTracks().length > 0) {
           tracks.push(stream.getVideoTracks()[0]);
@@ -1246,6 +1257,7 @@ export default function InterviewRoom({
           isClosingPhase: false,
           isOpeningPhase: true, // Signal the API this is the opening
           sessionId: guaranteedSessionId,
+          interviewMode: activeInterviewMode,
         }),
       });
 
@@ -1872,6 +1884,15 @@ export default function InterviewRoom({
                 </li>
               ))}
             </ul>
+            {isInternalInterview && (
+              <div className="mb-5 p-3 rounded-xl bg-primary/5 border border-primary/20">
+                <p className="text-xs text-muted leading-relaxed">
+                  {language === 'es'
+                    ? 'Modo interno: no se solicitará pantalla completa ni compartir pantalla. Se grabará cámara y audio.'
+                    : 'Internal mode: fullscreen and screen sharing will not be requested. Camera and audio will be recorded.'}
+                </p>
+              </div>
+            )}
             <button
               onClick={startInterview}
               className="w-full py-3.5 rounded-full bg-primary text-white font-medium text-sm hover:bg-primary-hover transition-colors flex items-center justify-center shadow-lg shadow-primary/25 cursor-pointer"

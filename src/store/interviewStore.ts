@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Candidate, Topic, TranscriptEntry, InterviewPhase } from '@/types';
+import type { Candidate, Topic, TranscriptEntry, InterviewPhase, InterviewMode } from '@/types';
 
 interface InterviewState {
   phase: InterviewPhase;
@@ -15,6 +15,7 @@ interface InterviewState {
   roleId: string | null;
   screenStream: MediaStream | null;
   interviewDuration: number; // Duración de la entrevista en minutos
+  interviewMode: InterviewMode;
   selectedCameraId: string | null;
   selectedMicId: string | null;
 
@@ -33,6 +34,7 @@ interface InterviewState {
   setRoleId: (roleId: string | null) => void;
   setScreenStream: (stream: MediaStream | null) => void;
   setInterviewDuration: (minutes: number) => void;
+  setInterviewMode: (mode: InterviewMode) => void;
   setSelectedCameraId: (id: string | null) => void;
   setSelectedMicId: (id: string | null) => void;
   reset: () => void;
@@ -53,6 +55,7 @@ const initialState = {
   roleId: null,
   screenStream: null,
   interviewDuration: 30, // Default: 30 minutos
+  interviewMode: 'restricted' as InterviewMode,
   selectedCameraId: null,
   selectedMicId: null,
 };
@@ -82,6 +85,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
   setSessionId: (sessionId) => set({ sessionId }),
   setRoleId: (roleId) => set({ roleId }),
   setInterviewDuration: (interviewDuration) => set({ interviewDuration }),
+  setInterviewMode: (interviewMode) => set({ interviewMode }),
   setScreenStream: (screenStream) => set({ screenStream }),
   setSelectedCameraId: (selectedCameraId) => set({ selectedCameraId }),
   setSelectedMicId: (selectedMicId) => set({ selectedMicId }),

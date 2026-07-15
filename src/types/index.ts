@@ -93,6 +93,8 @@ export interface Evaluation {
   biasFlags?: BiasFlag[];
 }
 
+export type InterviewMode = 'restricted' | 'internal';
+
 export interface Role {
   id: string;
   title: string;
@@ -103,6 +105,7 @@ export interface Role {
   salary?: string;
   jobType?: string;
   interviewDuration?: number; // Duración de la entrevista en minutos (default: 30)
+  interviewMode?: InterviewMode;
   isPublished?: boolean;
   publishedAt?: number;
   publicToken?: string; // Token para enlace público/general de entrevista

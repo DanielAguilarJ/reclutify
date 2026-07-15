@@ -7,6 +7,7 @@ import DetailsForm from '@/components/candidate/DetailsForm';
 import InterviewOverview from '@/components/candidate/InterviewOverview';
 
 import HardwareCheck from '@/components/candidate/HardwareCheck';
+import QuickDeviceSetup from '@/components/candidate/QuickDeviceSetup';
 import InterviewRoom from '@/components/candidate/InterviewRoom';
 import InterviewComplete from '@/components/candidate/InterviewComplete';
 import { useInterviewStore } from '@/store/interviewStore';
@@ -17,7 +18,7 @@ import { dictionaries } from '@/lib/i18n';
 import { createClient } from '@/utils/supabase/client';
 import { ShieldX, Clock, CheckCircle2 } from 'lucide-react';
 
-import type { Role, Topic } from '@/types';
+import type { Role, Topic, InterviewMode } from '@/types';
 import type { InterviewTicket } from '@/types';
 
 type TicketStatus = 'loading' | 'valid' | 'invalid' | 'used' | 'expired';
@@ -30,7 +31,7 @@ export default function TicketInterviewPage({
   const { token } = use(params);
   const { getTicketByToken, markTicketUsed, fetchTicketByToken, syncMarkUsed } = useTicketStore();
   const { roles } = useAdminStore();
-  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration } = useInterviewStore();
+  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode } = useInterviewStore();
   const { language, setLanguage } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
@@ -70,12 +71,14 @@ export default function TicketInterviewPage({
             if (payload.t && payload.r) {
               const currentTickets = useTicketStore.getState().tickets;
               const currentRoles = useAdminStore.getState().roles;
+              const payloadRole = payload.r as Role;
+              payloadRole.interviewMode = payloadRole.interviewMode || 'restricted';
               
               if (!currentTickets.find((t) => t.token === token)) {
                 useTicketStore.setState({ tickets: [payload.t, ...currentTickets] });
               }
-              if (!currentRoles.find((r: Role) => r.id === payload.r.id)) {
-                useAdminStore.setState({ roles: [payload.r, ...currentRoles] });
+              if (!currentRoles.find((r: Role) => r.id === payloadRole.id)) {
+                useAdminStore.setState({ roles: [payloadRole, ...currentRoles] });
               }
               currentTicket = payload.t as InterviewTicket;
             }
@@ -123,6 +126,7 @@ export default function TicketInterviewPage({
               salary: roleData.salary || undefined,
               jobType: roleData.job_type || undefined,
               interviewDuration: roleData.interview_duration ?? 30,
+              interviewMode: ((roleData.interview_mode as string) || 'restricted') as InterviewMode,
               topics: roleData.topics || [],
               createdAt: new Date(roleData.created_at).getTime(),
             };
@@ -142,6 +146,7 @@ export default function TicketInterviewPage({
         setLocalRoleId(role.id);
         setRoleId(role.id);
         setInterviewDuration(role.interviewDuration ?? 30);
+        setInterviewMode(role.interviewMode || 'restricted');
         setCandidateName(currentTicket.candidateName);
 
         // Fetch the org's plan_tier for white-label branding
@@ -287,7 +292,12 @@ export default function TicketInterviewPage({
         <AnimatePresence mode="wait">
           {phase === 'details' && <DetailsForm key="details" />}
           {phase === 'overview' && <InterviewOverview key="overview" />}
-          {phase === 'hardware' && <HardwareCheck key="hardware" />}
+          {phase === 'hardware' &&
+            (interviewMode === 'internal' ? (
+              <QuickDeviceSetup key="quick-hardware" />
+            ) : (
+              <HardwareCheck key="hardware" />
+            ))}
 
           {phase === 'complete' && <InterviewComplete key="complete" />}
         </AnimatePresence>

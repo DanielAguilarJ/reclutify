@@ -23,7 +23,7 @@ export async function getPublishedJobs(params: {
 
   let query = supabase
     .from('roles')
-    .select('id, org_id, title, description, location, salary, job_type, topics, published_at, organizations(name, slug, logo_url)', { count: 'exact' })
+    .select('id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)', { count: 'exact' })
     .eq('is_published', true)
     .order('published_at', { ascending: false, nullsFirst: false })
     .range(offset, offset + perPage - 1);
@@ -72,7 +72,7 @@ export async function getJobById(roleId: string): Promise<JobListing | null> {
 
   const { data, error } = await supabase
     .from('roles')
-    .select('id, org_id, title, description, location, salary, job_type, topics, published_at, organizations(name, slug, logo_url)')
+    .select('id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)')
     .eq('id', roleId)
     .eq('is_published', true)
     .single();

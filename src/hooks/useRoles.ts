@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useAdminStore } from '@/store/adminStore';
 import { createClient } from '@/utils/supabase/client';
-import type { Role } from '@/types';
+import type { Role, InterviewMode } from '@/types';
 
 /**
  * Hook que sincroniza los roles con Supabase:
@@ -95,10 +95,12 @@ function roleFromPayload(row: Record<string, unknown>): Role {
     salary: (row.salary as string) || undefined,
     jobType: (row.job_type as string) || undefined,
     interviewDuration: (row.interview_duration as number) ?? 30,
+    interviewMode: ((row.interview_mode as string) || 'restricted') as InterviewMode,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     topics: (row.topics as any) || [],
     createdAt: new Date(row.created_at as string).getTime(),
     isPublished: (row.is_published as boolean) ?? false,
     publishedAt: row.published_at ? new Date(row.published_at as string).getTime() : undefined,
+    publicToken: (row.public_token as string) || undefined,
   };
 }

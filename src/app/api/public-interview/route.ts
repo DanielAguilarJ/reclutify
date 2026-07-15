@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   // Buscar rol por public_token
   const { data: role, error } = await supabase
     .from('roles')
-    .select('id, title, description, location, salary, job_type, interview_duration, topics, org_id')
+    .select('id, title, description, location, salary, job_type, interview_duration, interview_mode, topics, org_id')
     .eq('public_token', token)
     .single();
 
@@ -67,6 +67,7 @@ export async function GET(req: NextRequest) {
       salary: role.salary,
       jobType: role.job_type,
       interviewDuration: role.interview_duration ?? 30,
+      interviewMode: role.interview_mode || 'restricted',
       topics: role.topics || [],
       orgId: role.org_id,
     },
@@ -107,7 +108,7 @@ export async function POST(req: NextRequest) {
   // Validar token y obtener rol
   const { data: role, error: roleError } = await supabase
     .from('roles')
-    .select('id, title, org_id, interview_duration, topics')
+    .select('id, title, org_id, interview_duration, interview_mode, topics')
     .eq('public_token', token)
     .single();
 
@@ -152,6 +153,7 @@ export async function POST(req: NextRequest) {
     roleId: role.id,
     roleTitle: role.title,
     interviewDuration: role.interview_duration ?? 30,
+    interviewMode: role.interview_mode || 'restricted',
     topics: role.topics || [],
   });
 }

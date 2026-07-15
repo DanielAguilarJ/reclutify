@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from('roles')
       .select(
-        'id, org_id, title, description, location, salary, job_type, topics, published_at, organizations(name, slug, logo_url)',
+        'id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)',
         { count: 'exact' }
       )
       .eq('is_published', true)

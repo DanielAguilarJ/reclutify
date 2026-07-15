@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Role, CandidateResult } from "@/types";
+import type { Role, CandidateResult, InterviewMode } from "@/types";
 import { createClient } from "@/utils/supabase/client";
 
 // ─── Tipos de estado del store ───
@@ -50,6 +50,7 @@ function roleToSupabase(role: Role, orgId: string) {
     salary: role.salary || null,
     job_type: role.jobType || null,
     interview_duration: role.interviewDuration ?? 30,
+    interview_mode: role.interviewMode || 'restricted',
     topics: role.topics,
     created_at: new Date(role.createdAt).toISOString(),
     is_published: role.isPublished ?? false,
@@ -72,6 +73,7 @@ function roleFromSupabase(row: Record<string, unknown>): Role {
     salary: (row.salary as string) || undefined,
     jobType: (row.job_type as string) || undefined,
     interviewDuration: (row.interview_duration as number) ?? 30,
+    interviewMode: ((row.interview_mode as string) || 'restricted') as InterviewMode,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     topics: (row.topics as any) || [],
     createdAt: new Date(row.created_at as string).getTime(),
@@ -385,6 +387,8 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
           supabaseUpdates.job_type = updates.jobType;
         if (updates.interviewDuration !== undefined)
           supabaseUpdates.interview_duration = updates.interviewDuration;
+        if (updates.interviewMode !== undefined)
+          supabaseUpdates.interview_mode = updates.interviewMode;
         if (updates.topics !== undefined)
           supabaseUpdates.topics = updates.topics;
         if (updates.isPublished !== undefined)

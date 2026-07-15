@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Logo from '@/components/ui/Logo';
 import InterviewOverview from '@/components/candidate/InterviewOverview';
 import HardwareCheck from '@/components/candidate/HardwareCheck';
+import QuickDeviceSetup from '@/components/candidate/QuickDeviceSetup';
 import InterviewRoom from '@/components/candidate/InterviewRoom';
 import InterviewComplete from '@/components/candidate/InterviewComplete';
 import { useInterviewStore } from '@/store/interviewStore';
@@ -12,7 +13,7 @@ import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 import { Loader2, ShieldX, User, Mail, Phone, Linkedin, ArrowRight, Link2, Briefcase, MapPin } from 'lucide-react';
 
-import type { Topic } from '@/types';
+import type { Topic, InterviewMode } from '@/types';
 
 type PageStatus = 'loading' | 'valid' | 'invalid' | 'registering' | 'registered';
 
@@ -24,6 +25,7 @@ interface RoleData {
   salary?: string;
   jobType?: string;
   interviewDuration: number;
+  interviewMode?: InterviewMode;
   topics: Topic[];
   orgId?: string;
 }
@@ -39,7 +41,7 @@ export default function PublicInterviewPage({
   params: Promise<{ publicToken: string }>;
 }) {
   const { publicToken } = use(params);
-  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration } = useInterviewStore();
+  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode } = useInterviewStore();
   const { language } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
@@ -130,6 +132,7 @@ export default function PublicInterviewPage({
       setTopics(topics);
       setRoleId(data.roleId);
       setInterviewDuration(data.interviewDuration);
+      setInterviewMode((data.interviewMode || roleData?.interviewMode || 'restricted') as InterviewMode);
       setCandidate({
         name: name.trim(),
         email: email.trim(),
@@ -144,7 +147,7 @@ export default function PublicInterviewPage({
     } finally {
       setSubmitting(false);
     }
-  }, [publicToken, name, email, phone, linkedinUrl, es, setTopics, setRoleId, setInterviewDuration, setCandidate, setPhase]);
+  }, [publicToken, name, email, phone, linkedinUrl, es, setTopics, setRoleId, setInterviewDuration, setInterviewMode, roleData, setCandidate, setPhase]);
 
   // ─── Loading state ───
   if (pageStatus === 'loading') {
@@ -368,7 +371,12 @@ export default function PublicInterviewPage({
       <main className="flex-1 flex items-center justify-center px-6 pb-12">
         <AnimatePresence mode="wait">
           {phase === 'overview' && <InterviewOverview key="overview" />}
-          {phase === 'hardware' && <HardwareCheck key="hardware" />}
+          {phase === 'hardware' &&
+            (interviewMode === 'internal' ? (
+              <QuickDeviceSetup key="quick-hardware" />
+            ) : (
+              <HardwareCheck key="hardware" />
+            ))}
           {phase === 'complete' && <InterviewComplete key="complete" />}
         </AnimatePresence>
       </main>

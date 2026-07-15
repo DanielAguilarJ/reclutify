@@ -7,7 +7,7 @@ import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 
 export default function InterviewOverview() {
-  const { topics, setPhase, candidate, interviewDuration } = useInterviewStore();
+  const { topics, setPhase, candidate, interviewDuration, interviewMode } = useInterviewStore();
   const { language } = useAppStore();
   const t = dictionaries[language];
 
@@ -65,7 +65,12 @@ export default function InterviewOverview() {
 
         <div className="p-4 rounded-xl bg-background border border-border/50 mb-6">
           <p className="text-xs text-muted leading-relaxed">
-            <strong className="text-foreground">{t.beforeStarting}</strong> {t.beforeStartingText}
+            <strong className="text-foreground">{t.beforeStarting}</strong>{' '}
+            {interviewMode === 'internal'
+              ? language === 'es'
+                ? 'Esta es una entrevista interna rápida. Solo seleccionaremos cámara y micrófono; no se pedirá pantalla completa ni compartir pantalla. La sesión será grabada.'
+                : 'This is a fast internal interview. You will only select camera and microphone; no fullscreen or screen sharing will be required. The session will be recorded.'
+              : t.beforeStartingText}
           </p>
         </div>
 
@@ -74,7 +79,11 @@ export default function InterviewOverview() {
           className="w-full flex items-center justify-center gap-2 py-3 px-6 rounded-full bg-primary
             text-white font-medium text-sm hover:bg-primary-hover transition-colors cursor-pointer"
         >
-          {t.continueHardware}
+          {interviewMode === 'internal'
+            ? language === 'es'
+              ? 'Seleccionar dispositivos'
+              : 'Select devices'
+            : t.continueHardware}
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>

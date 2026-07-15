@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       isClosingPhase = false,
       isGracePeriod = false,
       sessionId,
+      interviewMode = 'restricted',
       isOpeningPhase: clientOpeningPhase = false,
     } = rawBody;
 
@@ -442,11 +443,36 @@ This is question ${zaraQuestionsInCurrentTopic + 1} of ${maxQuestionsHardLimit} 
 ${rubricGuidance ? 'Vary the angle from the previous question (see EVALUATION GUIDE above).' : ''}`;
     }
 
+    const isInternalInterview = interviewMode === 'internal';
+
+    const interviewModeBlock = isInternalInterview
+      ? `
+INTERVIEW MODE: INTERNAL
+This is an internal interview or internal mobility conversation.
+Adapt your behavior:
+- Keep the process lighter, faster and more conversational.
+- Do not mention screen sharing, fullscreen, proctoring or hardware verification.
+- Assume the candidate may already know the company context.
+- Prioritize role readiness, motivation, collaboration, growth potential and concrete examples.
+- Still evaluate rigorously using the rubric.
+- Mention that the session is being recorded only if naturally relevant, not repeatedly.
+`
+      : `
+INTERVIEW MODE: RESTRICTED
+This is a structured external/restricted interview.
+Adapt your behavior:
+- Keep the interview formal, structured and assessment-oriented.
+- Do not apologize for security checks.
+- Focus on objective evaluation, consistency and role fit.
+`;
+
     // ─── SYSTEM PROMPT v2.0 ───
     const systemPrompt = `You are Zara, a Senior HR Recruiter at a top-tier corporation conducting a professional structured interview.
 You are an EXPERT interviewer trained in behavioral interviewing techniques (STAR method), technical assessment, and candidate evaluation.
 
 YOUR IDENTITY: Professional, warm but focused, efficient. You make candidates feel respected while extracting maximum signal from every answer.
+
+${interviewModeBlock}
 
 JOB INFO:
 - Title: ${roleTitle}

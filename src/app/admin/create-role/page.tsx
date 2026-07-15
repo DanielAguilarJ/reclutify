@@ -8,7 +8,7 @@ import { useAppStore } from '@/store/appStore';
 import { useTicketStore } from '@/store/ticketStore';
 import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
-import type { Role, Topic, TopicRubric } from '@/types';
+import type { Role, Topic, TopicRubric, InterviewMode } from '@/types';
 import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
 import { PLAN_LIMITS, type PlanTier } from '@/lib/stripe';
@@ -218,6 +218,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     location: role.location || '',
     description: role.description || '',
     interviewDuration: role.interviewDuration ?? 30,
+    interviewMode: role.interviewMode || 'restricted' as InterviewMode,
   });
   const [editedTopics, setEditedTopics] = useState<Topic[]>([...role.topics]);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -260,6 +261,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
     editedRole.location !== (role.location || '') ||
     editedRole.description !== (role.description || '') ||
     editedRole.interviewDuration !== (role.interviewDuration ?? 30) ||
+    editedRole.interviewMode !== (role.interviewMode || 'restricted') ||
     JSON.stringify(editedTopics) !== JSON.stringify(role.topics);
 
   // ─── Topic editing handlers ───
@@ -329,6 +331,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
           jobType: editedRole.jobType,
           language,
           interviewDuration: editedRole.interviewDuration,
+          interviewMode: editedRole.interviewMode,
         }),
       });
       const data = await response.json();
@@ -370,6 +373,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
           jobType: editedRole.jobType,
           language,
           interviewDuration: editedRole.interviewDuration,
+          interviewMode: editedRole.interviewMode,
           singleCriterion: { name: topic.label, weight: topic.rubric?.weight || 5 },
         }),
       });
@@ -472,10 +476,50 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
             className="w-20 px-3 py-1.5 rounded-lg border border-border bg-background text-foreground text-sm
               focus:outline-none focus:ring-2 focus:ring-primary/30 text-center"
           />
-          <span className="text-xs text-muted">
-            {language === 'es' ? 'min (personalizado)' : 'min (custom)'}
-          </span>
         </div>
+      </div>
+
+      {/* ─── Modo de Entrevista ─── */}
+      <div>
+        <label className="block text-xs font-medium text-muted mb-1">
+          {language === 'es' ? 'Modo de Entrevista' : 'Interview Mode'}
+        </label>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setEditedRole({ ...editedRole, interviewMode: 'restricted' })}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
+              editedRole.interviewMode === 'restricted'
+                ? 'bg-primary text-white border-primary'
+                : 'bg-background border-border text-muted hover:border-primary/30'
+            }`}
+          >
+            {language === 'es' ? 'Restringido' : 'Restricted'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setEditedRole({ ...editedRole, interviewMode: 'internal' })}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
+              editedRole.interviewMode === 'internal'
+                ? 'bg-primary text-white border-primary'
+                : 'bg-background border-border text-muted hover:border-primary/30'
+            }`}
+          >
+            {language === 'es' ? 'Interno' : 'Internal'}
+          </button>
+        </div>
+
+        <p className="text-[10px] text-muted mt-1 leading-relaxed">
+          {editedRole.interviewMode === 'internal'
+            ? language === 'es'
+              ? 'Sin verificación de micrófono, sin pantalla completa y sin compartir pantalla. Graba cámara y audio.'
+              : 'No microphone test, no fullscreen and no screen sharing. Records camera and audio.'
+            : language === 'es'
+              ? 'Flujo completo con verificación, pantalla compartida y pantalla completa.'
+              : 'Full flow with hardware check, screen sharing and fullscreen.'}
+        </p>
       </div>
 
       {/* ─── Duration Change Banner ─── */}
@@ -808,6 +852,7 @@ function RoleEditor({ role, onRemove }: { role: Role; onRemove: () => void }) {
                    location: role.location || '',
                    description: role.description || '',
                    interviewDuration: role.interviewDuration ?? 30,
+                   interviewMode: role.interviewMode || 'restricted',
                  });
                  setEditedTopics([...role.topics]);
                  setShowRegeneratePrompt(false);
@@ -883,6 +928,7 @@ export default function CreateRolePage() {
   const [generationLanguage, setGenerationLanguage] = useState<'es' | 'en'>(language === 'es' ? 'es' : 'en');
   const [candidateEmails, setCandidateEmails] = useState<string>('');
   const [interviewDuration, setInterviewDuration] = useState<number>(30);
+  const [interviewMode, setInterviewMode] = useState<InterviewMode>('restricted');
   
   // Topics state (now with rubric data)
   const [topics, setTopics] = useState<TopicDraft[]>([]);
@@ -918,6 +964,7 @@ export default function CreateRolePage() {
           jobType,
           language: generationLanguage,
           interviewDuration,
+          interviewMode,
         }),
       });
       const data = await response.json();
@@ -959,6 +1006,7 @@ export default function CreateRolePage() {
           jobType,
           language: generationLanguage,
           interviewDuration,
+          interviewMode,
           customTopics: topics.map(t => ({ label: t.label, weight: t.rubric?.weight })),
         }),
       });
@@ -1066,6 +1114,7 @@ export default function CreateRolePage() {
       location: location || undefined,
       salary: salary || undefined,
       interviewDuration,
+      interviewMode,
       topics: roleTopics,
       createdAt: Date.now(),
       publicToken,
@@ -1098,7 +1147,7 @@ export default function CreateRolePage() {
         await syncAddTicket(ticket);
         
         // 3. Construir URL con datos embebidos (cross-device trick)
-        const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration };
+        const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration, interviewMode };
         const dPayload = JSON.stringify({ t: ticket, r: role });
         const dParam = typeof window !== 'undefined' ? `?d=${btoa(unescape(encodeURIComponent(dPayload)))}` : '';
         const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
@@ -1154,6 +1203,7 @@ export default function CreateRolePage() {
       setLocation('');
       setSalary('');
       setInterviewDuration(30);
+      setInterviewMode('restricted');
       setTopics([]);
       setCandidateEmails('');
       setSuccess(false);
@@ -1318,6 +1368,53 @@ export default function CreateRolePage() {
                   </div>
                 </motion.div>
               )}
+
+              {/* ─── Modo de Entrevista ─── */}
+              <div className="mb-5">
+                <label className="block text-xs font-medium text-foreground mb-2">
+                  {language === 'es' ? 'Modo de Entrevista' : 'Interview Mode'}
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setInterviewMode('restricted')}
+                    className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                      interviewMode === 'restricted'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-foreground hover:border-primary/30'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold mb-1">
+                      {language === 'es' ? 'Restringido' : 'Restricted'}
+                    </div>
+                    <p className="text-xs text-muted leading-relaxed">
+                      {language === 'es'
+                        ? 'Requiere cámara, micrófono, compartir pantalla y pantalla completa. Ideal para candidatos externos.'
+                        : 'Requires camera, microphone, screen sharing and fullscreen. Ideal for external candidates.'}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setInterviewMode('internal')}
+                    className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                      interviewMode === 'internal'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-foreground hover:border-primary/30'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold mb-1">
+                      {language === 'es' ? 'Interno' : 'Internal'}
+                    </div>
+                    <p className="text-xs text-muted leading-relaxed">
+                      {language === 'es'
+                        ? 'Flujo rápido: sin prueba de micrófono, sin pantalla completa y sin compartir pantalla. Se graba cámara y audio.'
+                        : 'Fast flow: no microphone test, no fullscreen and no screen sharing. Camera and audio are recorded.'}
+                    </p>
+                  </button>
+                </div>
+              </div>
 
               {/* ─── Duración de la Entrevista ─── */}
               <div className="mb-5">
@@ -1649,6 +1746,11 @@ export default function CreateRolePage() {
                               AI Rubric
                             </span>
                           )}
+                          <span className="ml-1.5 text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full font-sans">
+                            {role.interviewMode === 'internal'
+                              ? language === 'es' ? 'Interno' : 'Internal'
+                              : language === 'es' ? 'Restringido' : 'Restricted'}
+                          </span>
                         </p>
                       </div>
                       {/* Copy public link button */}

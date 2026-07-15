@@ -10,6 +10,7 @@ export interface JobListing {
   location: string | null;
   salary: string | null;
   job_type: string | null;
+  interview_mode?: 'restricted' | 'internal';
   topics: { id: string; label: string }[] | null;
   published_at: string;
   organizations: {

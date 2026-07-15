@@ -21,7 +21,7 @@ function getDepthGuidance(minutes: number): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const { jobTitle, description, jobType, language, customTopics, singleCriterion, interviewDuration } = await req.json();
+    const { jobTitle, description, jobType, language, customTopics, singleCriterion, interviewDuration, interviewMode = 'restricted' } = await req.json();
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -33,12 +33,41 @@ export async function POST(req: NextRequest) {
 
     const lang = language === 'es' ? 'Spanish (Español)' : 'English';
 
+    const isInternalInterview = interviewMode === 'internal';
+
+    const modeGuidance = isInternalInterview
+      ? `
+INTERVIEW MODE: INTERNAL
+Generate the rubric for an internal interview or internal mobility process.
+Focus more on:
+- Readiness for the new role
+- Cross-functional collaboration
+- Company/context familiarity
+- Motivation for internal movement
+- Growth potential
+- Leadership and ownership signals
+Avoid overly generic external screening topics.
+Prefer fewer, sharper criteria when duration is short.
+`
+      : `
+INTERVIEW MODE: RESTRICTED
+Generate the rubric for a structured external/restricted interview.
+Focus on:
+- Objective role fit
+- Technical or functional competence
+- Behavioral evidence
+- Communication clarity
+- Risk signals and consistency
+`;
+
     let systemPrompt: string;
     let userMessage: string;
 
     if (singleCriterion && singleCriterion.name) {
       // Mode: SINGLE CRITERION — generate rubric for one specific criterion
       systemPrompt = `You are an expert HR consultant. Generate evaluation criteria for ONE specific interview topic.
+
+${modeGuidance}
 
 Return a JSON object with:
 - "label": "${singleCriterion.name}" (keep as-is)
@@ -64,6 +93,8 @@ CRITICAL: All text values MUST be in ${lang}.`;
       
       systemPrompt = `You are an expert HR consultant. A recruiter has defined custom interview topics for the role "${jobTitle}". 
 Your job is to ENRICH each topic with evaluation criteria and an importance weight.
+
+${modeGuidance}
 
 INTERVIEW DURATION: ${durationMinutes} minutes (${customTopics.length} topics means ~${Math.round((durationMinutes * 0.8) / customTopics.length)} min per topic)
 
@@ -93,6 +124,8 @@ CRITICAL: All text values MUST be in ${lang}.`;
       systemPrompt = `You are an expert HR consultant who works with companies across ALL industries — tech, healthcare, education, retail, manufacturing, finance, hospitality, media, and more.
 
 Given a job posting and interview duration, generate interview topics that are HIGHLY SPECIFIC to this role and industry. Each topic must include evaluation criteria.
+
+${modeGuidance}
 
 INTERVIEW DURATION: ${durationMinutes} minutes
 RECOMMENDED TOPIC COUNT: ${recommendedCount} topics

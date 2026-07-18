@@ -1,21 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
 import {
   evaluateTrainingModuleSchema,
   openEndedGradingSchema,
+  trainingQuestionAdminSchema,
 } from '@/lib/training/contracts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-type EvaluationQuestion = {
-  question: string;
-  type: 'multiple_choice' | 'open_ended' | 'true_false';
-  options?: string[];
-  correctAnswer: string;
-  explanation?: string;
-};
+const questionsSchema = z.array(trainingQuestionAdminSchema);
 
 export async function POST(req: NextRequest) {
   try {
@@ -45,8 +41,12 @@ export async function POST(req: NextRequest) {
       .eq('program_id', employee.program_id)
       .maybeSingle();
 
-    if (modError || !moduleData) {
-      console.error('[Evaluate API] Module load error:', modError);
+    if (modError) {
+      console.error('[Evaluate API] Module load query error:', modError);
+      return NextResponse.json({ error: 'Could not load evaluation' }, { status: 500 });
+    }
+
+    if (!moduleData) {
       return NextResponse.json({ error: 'Assigned module not found' }, { status: 404 });
     }
 
@@ -58,7 +58,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const questions = (moduleData.evaluation_questions ?? []) as EvaluationQuestion[];
+    // Validar preguntas obtenidas de la base de datos usando Zod
+    const validatedQuestions = questionsSchema.safeParse(moduleData.evaluation_questions);
+    if (!validatedQuestions.success) {
+      console.error('[Evaluate API] Loaded questions failed Zod validation:', validatedQuestions.error.flatten());
+      return NextResponse.json({ error: 'Evaluation data is corrupt' }, { status: 500 });
+    }
+
+    const questions = validatedQuestions.data;
     if (questions.length === 0) {
       return NextResponse.json({ error: 'This module has no evaluation questions' }, { status: 400 });
     }
@@ -92,14 +99,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Construir mapa índice -> respuesta (ya validado que existen todos)
+    // Construir mapa índice -> respuesta
     const answers: Record<number, string> = {};
     for (const item of rawAnswers) {
       answers[item.questionIndex] = item.answer;
     }
 
     // 5. Calificar respuestas
-    const deterministicResults: { index: number; correct: boolean; explanation?: string }[] = [];
+    const deterministicResults: { index: number; correct: boolean }[] = [];
     const openEndedToEvaluate: {
       index: number;
       question: string;
@@ -109,7 +116,7 @@ export async function POST(req: NextRequest) {
 
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
-      const answerGiven = answers[i]; // ya validado que existe
+      const answerGiven = answers[i];
 
       if (q.type === 'multiple_choice' || q.type === 'true_false') {
         const expected = String(q.correctAnswer ?? '').trim().toLowerCase();
@@ -117,7 +124,6 @@ export async function POST(req: NextRequest) {
         deterministicResults.push({
           index: i,
           correct: expected === given,
-          explanation: q.explanation ?? '',
         });
       } else if (q.type === 'open_ended') {
         openEndedToEvaluate.push({
@@ -129,7 +135,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const openEndedResults: { index: number; correct: boolean; explanation: string }[] = [];
+    const openEndedResults: { index: number; correct: boolean }[] = [];
 
     if (openEndedToEvaluate.length > 0) {
       const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -160,21 +166,36 @@ Return JSON:
 }
 Respond ONLY with valid JSON.`;
 
-      const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://reclutify.com',
-          'X-Title': 'Reclutify Training Center',
-        },
-        body: JSON.stringify({
-          model: TRAINING_AI_MODEL,
-          messages: [{ role: 'user', content: aiPrompt }],
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+      let aiResponse: Response;
+      try {
+        aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reclutify.com',
+            'X-Title': 'Reclutify Training Center',
+          },
+          body: JSON.stringify({
+            model: TRAINING_AI_MODEL,
+            messages: [{ role: 'user', content: aiPrompt }],
+            temperature: 0.1,
+            response_format: { type: 'json_object' },
+          }),
+          signal: controller.signal,
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.error('[Evaluate API] OpenRouter timed out');
+          return NextResponse.json({ error: 'AI grading timed out. Please try again.' }, { status: 504 });
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!aiResponse.ok) {
         console.error('[Evaluate API] AI grading service returned error');
@@ -201,11 +222,27 @@ Respond ONLY with valid JSON.`;
         return NextResponse.json({ error: 'AI grading service is unavailable' }, { status: 502 });
       }
 
+      const expectedIndexes = openEndedToEvaluate.map((item) => item.index);
+      const receivedIndexes = gradingResult.data.evaluations.map((item) => item.index);
+      const receivedSet = new Set(receivedIndexes);
+
+      const inconsistent =
+        receivedSet.size !== receivedIndexes.length ||
+        receivedIndexes.length !== expectedIndexes.length ||
+        expectedIndexes.some((index) => !receivedSet.has(index));
+
+      if (inconsistent) {
+        console.error('[Evaluate API] AI grading returned inconsistent indexes:', receivedIndexes, expectedIndexes);
+        return NextResponse.json(
+          { error: 'AI grading returned inconsistent question indexes' },
+          { status: 502 }
+        );
+      }
+
       for (const grading of gradingResult.data.evaluations) {
         openEndedResults.push({
           index: grading.index,
           correct: grading.correct,
-          explanation: grading.explanation,
         });
       }
     }
@@ -214,12 +251,12 @@ Respond ONLY with valid JSON.`;
     const allResults = [...deterministicResults, ...openEndedResults].sort((a, b) => a.index - b.index);
     const correctCount = allResults.filter((r) => r.correct).length;
     const score = Math.round((correctCount / questions.length) * 100);
-    // 7. Construir feedback público (sin correctAnswer)
+
+    // 7. Construir feedback público (sin correctAnswer ni explanation)
     const publicDetails = allResults.map((result) => ({
       question: questions[result.index]?.question ?? 'Question',
       correct: result.correct,
       userAnswer: answers[result.index],
-      explanation: result.explanation ?? '',
     }));
 
     const detailFeedback = {
@@ -228,13 +265,12 @@ Respond ONLY with valid JSON.`;
     };
 
     // 8. Llamar a la RPC transaccional finalize_training_evaluation
-    // Guardar preguntas completas (con correctAnswer) server-side solamente
     const { data: rpcResult, error: rpcError } = await admin.rpc(
       'finalize_training_evaluation',
       {
         p_employee_id: employee.id,
         p_module_id: moduleId,
-        p_questions: questions, // guardadas server-side, no se envían al cliente
+        p_questions: questions,
         p_answers: answers,
         p_score: score,
         p_feedback: JSON.stringify(detailFeedback),
@@ -242,9 +278,9 @@ Respond ONLY with valid JSON.`;
     );
 
     if (rpcError) {
-      console.error('[Evaluate API] SQL RPC evaluation failed:', rpcError);
+      console.error('[Evaluate API] SQL RPC finalize evaluation failed:', rpcError);
       return NextResponse.json(
-        { error: rpcError.message || 'Failed to record evaluation' },
+        { error: 'Failed to record evaluation results' },
         { status: 500 }
       );
     }
@@ -261,7 +297,6 @@ Respond ONLY with valid JSON.`;
     });
   } catch (error: unknown) {
     console.error('[Evaluate API] Unexpected error:', error);
-    const message = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

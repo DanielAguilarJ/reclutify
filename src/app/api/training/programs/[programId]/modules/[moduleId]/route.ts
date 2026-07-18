@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
+import {
+  updateManualTrainingModuleSchema,
+  manualTrainingModuleSchema,
+} from '@/lib/training/contracts';
 
 export const runtime = 'nodejs';
 
@@ -40,19 +44,56 @@ export async function PATCH(
       );
     }
 
-    const body = await request.json();
-    const {
-      title,
-      description,
-      content,
-      durationEstimate,
-      evaluationEnabled,
-      evaluationQuestions,
-      sourceDocumentIds,
-    } = body;
+    // Validar body parcial
+    const bodyJson = await request.json();
+    const partialResult = updateManualTrainingModuleSchema.safeParse(bodyJson);
+
+    if (!partialResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request',
+          issues: partialResult.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    // Fusionar con el módulo actual
+    const candidateModule = {
+      title: partialResult.data.title ?? targetModule.title,
+      description:
+        partialResult.data.description !== undefined
+          ? partialResult.data.description ?? undefined
+          : targetModule.description ?? undefined,
+      content: partialResult.data.content ?? targetModule.content,
+      durationEstimate:
+        partialResult.data.durationEstimate ?? targetModule.durationEstimate,
+      evaluationEnabled:
+        partialResult.data.evaluationEnabled ?? targetModule.evaluationEnabled,
+      evaluationQuestions:
+        partialResult.data.evaluationQuestions ??
+        targetModule.evaluationQuestions,
+      sourceDocumentIds:
+        partialResult.data.sourceDocumentIds ??
+        targetModule.sourceDocumentIds,
+    };
+
+    // Validar módulo completo fusionado
+    const completeResult = manualTrainingModuleSchema.safeParse(candidateModule);
+    if (!completeResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid resulting module',
+          issues: completeResult.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const validatedModule = completeResult.data;
 
     // 4. Validar documentos fuente
-    const docIds = Array.isArray(sourceDocumentIds) ? sourceDocumentIds : targetModule.sourceDocumentIds;
+    const docIds = validatedModule.sourceDocumentIds;
     if (docIds.length > 0) {
       const { data: assocs } = await admin
         .from('training_program_documents')
@@ -76,23 +117,14 @@ export async function PATCH(
       if (m.id === moduleId) {
         return {
           id: m.id,
-          title: title !== undefined ? title : m.title,
-          description: description !== undefined ? description || null : m.description,
-          content: content !== undefined ? content || { sections: [] } : m.content,
+          title: validatedModule.title,
+          description: validatedModule.description ?? null,
+          content: validatedModule.content,
           sortOrder: m.sortOrder,
-          durationEstimate:
-            durationEstimate !== undefined
-              ? Math.max(1, Number(durationEstimate) || 30)
-              : m.durationEstimate,
-          evaluationEnabled:
-            evaluationEnabled !== undefined ? !!evaluationEnabled : m.evaluationEnabled,
-          evaluationQuestions:
-            evaluationQuestions !== undefined
-              ? Array.isArray(evaluationQuestions)
-                ? evaluationQuestions
-                : []
-              : m.evaluationQuestions,
-          sourceDocumentIds: docIds,
+          durationEstimate: validatedModule.durationEstimate,
+          evaluationEnabled: validatedModule.evaluationEnabled,
+          evaluationQuestions: validatedModule.evaluationQuestions,
+          sourceDocumentIds: validatedModule.sourceDocumentIds,
         };
       }
       return m;
@@ -107,11 +139,12 @@ export async function PATCH(
       success: true,
       module: editedModule,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API Manual Module Edit] Unexpected error:', err);
+    const message = err instanceof Error ? err.message : 'Unauthorized';
     return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
+      { error: message },
+      { status: 500 }
     );
   }
 }
@@ -164,11 +197,12 @@ export async function DELETE(
     await replaceDraftModules(admin, user.id, programId, updatedModulesList);
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API Manual Module Delete] Unexpected error:', err);
+    const message = err instanceof Error ? err.message : 'Unauthorized';
     return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
+      { error: message },
+      { status: 500 }
     );
   }
 }

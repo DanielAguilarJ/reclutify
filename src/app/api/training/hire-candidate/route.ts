@@ -241,11 +241,12 @@ Respond ONLY with valid JSON.`;
       trainingUrl,
       emailSent,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[Hire API] Unexpected error:', err);
+    const message = err instanceof Error ? err.message : 'Unauthorized';
     return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
+      { error: message },
+      { status: 500 }
     );
   }
 }

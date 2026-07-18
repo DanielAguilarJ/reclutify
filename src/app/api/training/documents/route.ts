@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
-import { documentAiAnalysisSchema } from '@/lib/training/contracts';
+import {
+  documentAiAnalysisSchema,
+  trainingDocumentUploadMetadataSchema,
+} from '@/lib/training/contracts';
 import {
   sanitizeTrainingFileName,
   sha256,
@@ -16,24 +19,43 @@ export const maxDuration = 300;
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const programId = formData.get('programId') as string;
-    const scope = (formData.get('scope') as 'role' | 'organization') || 'role';
-    const files = formData.getAll('files') as File[];
 
-    if (!programId) {
-      return NextResponse.json({ error: 'programId is required' }, { status: 400 });
+    const metadataResult = trainingDocumentUploadMetadataSchema.safeParse({
+      programId: formData.get('programId'),
+      scope: formData.get('scope') ?? 'role',
+    });
+
+    if (!metadataResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid upload metadata',
+          issues: metadataResult.error.flatten(),
+        },
+        { status: 400 }
+      );
     }
 
-    if (!files || files.length === 0) {
+    const { programId, scope } = metadataResult.data;
+
+    const rawFiles = formData.getAll('files');
+    if (!rawFiles || rawFiles.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
     }
 
     // Limitar lote a máximo 5 archivos
-    if (files.length > 5) {
+    if (rawFiles.length > 5) {
       return NextResponse.json(
         { error: 'A maximum of 5 files is allowed per request' },
         { status: 400 }
       );
+    }
+
+    const files: File[] = [];
+    for (const raw of rawFiles) {
+      if (!(raw instanceof File)) {
+        return NextResponse.json({ error: 'All upload elements must be files' }, { status: 400 });
+      }
+      files.push(raw);
     }
 
     // 1. Validar administrador del programa
@@ -164,13 +186,16 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          // Analizar con AI si está listo
+          // Analizar con AI si está listo (con timeout de 45 segundos)
           let aiSummary = '';
           let aiTopics: unknown[] = [];
           const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
           const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
 
           if (docStatus === 'ready' && OPENROUTER_API_KEY && extractedText.trim().length >= 50) {
+            const aiController = new AbortController();
+            const aiTimeoutId = setTimeout(() => aiController.abort(), 45000);
+
             try {
               const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                 method: 'POST',
@@ -209,6 +234,7 @@ ${extractedText.substring(0, 30000)}`,
                   temperature: 0.1,
                   response_format: { type: 'json_object' },
                 }),
+                signal: aiController.signal,
               });
 
               if (aiResponse.ok) {
@@ -231,8 +257,14 @@ ${extractedText.substring(0, 30000)}`,
                   console.warn('[Upload API] AI analysis did not match schema, skipping');
                 }
               }
-            } catch (aiErr) {
-              console.error('[Upload API] AI analysis failed, continuing without it:', aiErr);
+            } catch (aiErr: unknown) {
+              if (aiErr instanceof Error && aiErr.name === 'AbortError') {
+                console.error('[Upload API] AI analysis timed out for file:', file.name);
+              } else {
+                console.error('[Upload API] AI analysis failed, continuing without it:', aiErr);
+              }
+            } finally {
+              clearTimeout(aiTimeoutId);
             }
           }
 
@@ -265,7 +297,6 @@ ${extractedText.substring(0, 30000)}`,
             // Rollback de Storage
             await admin.storage.from('training-documents').remove([storagePath]);
 
-            // En caso de conflicto de clave única (código 23505), intentar recuperar el documento duplicado ya persistido
             if (insertDocError.code === '23505') {
               const retryDuplicate = await getExistingDuplicate();
               if (retryDuplicate.data) {
@@ -310,7 +341,6 @@ ${extractedText.substring(0, 30000)}`,
         }
 
         // 3. Crear asociación en training_program_documents
-        // Comprobar si ya existe
         const { data: existingAssoc } = await admin
           .from('training_program_documents')
           .select('*')
@@ -339,7 +369,6 @@ ${extractedText.substring(0, 30000)}`,
             });
 
           if (assocError) {
-            // Si es un documento nuevo y falla la relación, hacemos rollback
             if (!isExisting) {
               await admin.from('training_documents').delete().eq('id', documentId);
               await admin.storage.from('training-documents').remove([finalDocRow.storage_path as string]);

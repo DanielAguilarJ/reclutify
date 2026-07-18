@@ -2,21 +2,33 @@
 
 import { use, useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   ArrowLeft,
   Send,
   CheckCircle2,
   XCircle,
   Clock,
-  Sparkles,
   Award,
   ChevronRight,
   AlertCircle,
   BookMarked,
 } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
-import { useTrainingStore } from '@/store/trainingStore';
+import { useTrainingStore, type EvaluationFeedback, type EvaluationDetail } from '@/store/trainingStore';
+import type { TrainingQuestionPublic } from '@/types';
+
+type BootstrapStatus = 'idle' | 'loading' | 'ready' | 'failed';
+
+interface CitationType {
+  fileName: string;
+  snippet: string;
+}
+
+interface SectionType {
+  title: string;
+  body: string;
+}
 
 export default function TrainingModulePage({
   params,
@@ -37,7 +49,7 @@ export default function TrainingModulePage({
     completeModuleWithoutEvaluation,
     startModuleChat,
     sendModuleMessage,
-    updateProgress,
+    incrementTimeSpent,
   } = useTrainingStore();
 
   const [input, setInput] = useState('');
@@ -45,18 +57,16 @@ export default function TrainingModulePage({
   const [evaluationComplete, setEvaluationComplete] = useState(false);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [initialized, setInitialized] = useState(false);
+  const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>('idle');
 
   // Estados locales para la nueva interfaz de evaluación
   const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [evaluationFeedback, setEvaluationFeedback] = useState<any>(null);
+  const [evaluationFeedback, setEvaluationFeedback] = useState<EvaluationFeedback | null>(null);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [submittingEvaluation, setSubmittingEvaluation] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const elapsedRef = useRef<NodeJS.Timeout | null>(null);
 
   const currentModule = modules.find((m) => m.id === moduleId);
   const moduleProgress = progress.find((p) => p.moduleId === moduleId);
@@ -66,46 +76,59 @@ export default function TrainingModulePage({
 
   // Auto-scroll to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (typeof messagesEndRef.current?.scrollIntoView === 'function') {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
   // Initialize module and start tutor session
   useEffect(() => {
-    if (!employee || initialized) return;
+    if (!employee || bootstrapStatus !== 'idle') return;
 
     const init = async () => {
-      // Si el módulo no está iniciado, iniciarlo en el servidor
-      if (moduleProgress?.status === 'available' || moduleProgress?.status === 'locked') {
-        await startModule(moduleId);
-      }
+      setBootstrapStatus('loading');
+      try {
+        const currentProgress = progress.find((p) => p.moduleId === moduleId);
+        if (!currentProgress || currentProgress.status === 'locked') {
+          router.push('/training/center');
+          return;
+        }
 
-      if (messages.length > 0) {
-        setInitialized(true);
-        return;
-      }
+        if (currentProgress.status === 'available') {
+          await startModule(moduleId);
+        }
 
-      // Enviar solicitud de inicio al tutor del módulo
-      await startModuleChat(moduleId);
-      setInitialized(true);
+        if (messages.length === 0) {
+          await startModuleChat(moduleId);
+        }
+
+        setBootstrapStatus('ready');
+      } catch (err: unknown) {
+        console.error('[Page Bootstrap] Initialization error:', err);
+        setBootstrapStatus('failed');
+        setError(err instanceof Error ? err.message : 'Failed to initialize module');
+      }
     };
 
     init();
-  }, [employee, moduleId, initialized, messages.length, moduleProgress?.status, startModule, startModuleChat]);
+  }, [employee, moduleId, bootstrapStatus, progress, startModule, startModuleChat, messages.length, router]);
 
-  // Elapsed timer increment and sync every minute
+  // Increment timer every minute under visibility constraint
   useEffect(() => {
-    elapsedRef.current = setInterval(() => {
-      setElapsed((prev) => {
-        const next = prev + 1;
-        updateProgress(moduleId, { timeSpent: 1 });
-        return next;
-      });
+    if (!moduleProgress || moduleProgress.status !== 'in_progress' || isEvaluating || evaluationComplete) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        incrementTimeSpent(moduleId, 1).catch((err) => {
+          console.error('[Timer] Failed to increment timeSpent:', err);
+        });
+      }
     }, 60000);
 
-    return () => {
-      if (elapsedRef.current) clearInterval(elapsedRef.current);
-    };
-  }, [moduleId, updateProgress]);
+    return () => clearInterval(interval);
+  }, [moduleId, moduleProgress?.status, isEvaluating, evaluationComplete, incrementTimeSpent]);
 
   // Send chat message
   const handleSend = useCallback(async () => {
@@ -113,7 +136,11 @@ export default function TrainingModulePage({
     const userText = input.trim();
     setInput('');
     setError(null);
-    await sendModuleMessage(moduleId, userText);
+    try {
+      await sendModuleMessage(moduleId, userText);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to send message');
+    }
   }, [input, aiSpeaking, employee, sendModuleMessage, moduleId]);
 
   // Enviar evaluación al endpoint seguro
@@ -139,8 +166,9 @@ export default function TrainingModulePage({
       setEvaluationFeedback(result.feedback);
       setEvaluationComplete(true);
       setIsEvaluating(false);
-    } catch (err: any) {
-      setEvaluationError(err.message || 'Error grading evaluation');
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Error grading evaluation';
+      setEvaluationError(errMsg);
     } finally {
       setSubmittingEvaluation(false);
     }
@@ -156,8 +184,9 @@ export default function TrainingModulePage({
       } else {
         setError(language === 'es' ? 'No se pudo completar el módulo' : 'Failed to complete module');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Failed to complete module';
+      setError(errMsg);
     } finally {
       setSubmittingEvaluation(false);
     }
@@ -166,7 +195,7 @@ export default function TrainingModulePage({
   const showEvaluationSuccessFeedback = () => {
     setFinalScore(100);
     setEvaluationFeedback({
-      passed: true,
+      score: 100,
       details: [],
     });
     setEvaluationComplete(true);
@@ -182,6 +211,34 @@ export default function TrainingModulePage({
     setEvaluationError(null);
   };
 
+  if (bootstrapStatus === 'loading') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-[#00D3D8] border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  if (bootstrapStatus === 'failed') {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex flex-col items-center gap-3 text-center max-w-md">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <h3 className="text-sm font-semibold">
+            {language === 'es' ? 'Error al Cargar Módulo' : 'Error Loading Module'}
+          </h3>
+          <p className="text-xs text-muted">{error}</p>
+          <button
+            onClick={() => router.push('/training/center')}
+            className="mt-2 px-4 py-2 bg-[#00D3D8] text-white text-xs font-semibold rounded-lg hover:bg-[#00B8BD] transition-colors"
+          >
+            {language === 'es' ? 'Volver al Centro' : 'Back to Center'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!employee || !currentModule) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -191,10 +248,6 @@ export default function TrainingModulePage({
   }
 
   const totalSections = currentModule.content?.sections?.length || 0;
-  const coveredSections = Math.min(
-    totalSections,
-    Math.max(1, Math.floor(messages.filter((m) => m.role === 'assistant').length / 2))
-  );
 
   return (
     <div className="h-screen bg-background flex flex-col animate-in fade-in duration-500 text-foreground">
@@ -221,20 +274,20 @@ export default function TrainingModulePage({
               <div className="flex items-center gap-2 mt-0.5">
                 {totalSections > 0 && (
                   <span className="text-xs text-muted">
-                    {coveredSections}/{totalSections}{' '}
-                    {language === 'es' ? 'secciones' : 'sections'}
+                    {totalSections}{' '}
+                    {language === 'es' ? 'secciones de lectura' : 'reading sections'}
                   </span>
                 )}
                 <span className="text-xs text-muted flex items-center gap-0.5">
                   <Clock className="w-3 h-3" />
-                  {elapsed} min
+                  {moduleProgress?.timeSpent ?? 0} min
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {!isEvaluating && !evaluationComplete && (
+            {!isCompleted && !isEvaluating && !evaluationComplete && (
               <>
                 {currentModule.evaluationEnabled ? (
                   <button
@@ -291,17 +344,13 @@ export default function TrainingModulePage({
             {currentModule.content?.sections && currentModule.content.sections.length > 0 && (
               <div>
                 <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2">
-                  {language === 'es' ? 'Secciones' : 'Sections'}
+                  {language === 'es' ? 'Lista de Lectura' : 'Reading List'}
                 </h3>
                 <div className="space-y-1.5">
-                  {currentModule.content.sections.map((section: any, i: number) => (
+                  {currentModule.content.sections.map((section: SectionType, i: number) => (
                     <div key={i} className="flex items-start gap-2 py-1.5">
-                      {i < coveredSections ? (
-                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" />
-                      ) : (
-                        <div className="w-3.5 h-3.5 rounded-full border border-border/50 mt-0.5 flex-shrink-0" />
-                      )}
-                      <span className={`text-xs ${i < coveredSections ? '' : 'text-muted'}`}>
+                      <BookMarked className="w-3.5 h-3.5 text-muted mt-0.5 flex-shrink-0" />
+                      <span className="text-xs text-muted">
                         {section.title}
                       </span>
                     </div>
@@ -333,7 +382,7 @@ export default function TrainingModulePage({
                 </div>
 
                 <div className="space-y-6">
-                  {currentModule.evaluationQuestions.map((q: any, idx: number) => (
+                  {currentModule.evaluationQuestions.map((q: TrainingQuestionPublic, idx: number) => (
                     <motion.div
                       key={idx}
                       initial={{ opacity: 0, y: 10 }}
@@ -350,7 +399,7 @@ export default function TrainingModulePage({
                       {/* Múltiple opción / Verdadero Falso */}
                       {(q.type === 'multiple_choice' || q.type === 'true_false') && (
                         <div className="grid gap-2 pl-7">
-                          {(q.options || []).map((opt: string, optIdx: number) => (
+                           {(q.options || []).map((opt: string, optIdx: number) => (
                             <label
                               key={optIdx}
                               className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
@@ -457,14 +506,14 @@ export default function TrainingModulePage({
                   )}
                 </div>
 
-                {/* Detalle de preguntas y feedback */}
+                {/* Detalle de preguntas y feedback (sin correctAnswer y explanation) */}
                 {currentModule.evaluationEnabled && (
                   <div className="space-y-4">
                     <h3 className="text-xs font-semibold text-muted uppercase tracking-wider pl-1">
                       {language === 'es' ? 'Revisión de Preguntas' : 'Questions Review'}
                     </h3>
 
-                    {(evaluationFeedback.details || []).map((det: any, idx: number) => (
+                    {(evaluationFeedback.details || []).map((det: EvaluationDetail, idx: number) => (
                       <div
                         key={idx}
                         className={`p-4 rounded-xl border ${
@@ -487,17 +536,6 @@ export default function TrainingModulePage({
                                 {det.userAnswer}
                               </strong>
                             </p>
-                            {!det.correct && (
-                              <p className="text-xs">
-                                <span className="text-muted">{language === 'es' ? 'Respuesta esperada: ' : 'Expected answer: '}</span>
-                                <strong className="text-foreground">{det.correctAnswer}</strong>
-                              </p>
-                            )}
-                            {det.explanation && (
-                              <p className="text-xs text-muted italic leading-relaxed pt-1.5 border-t border-border/20">
-                                {det.explanation}
-                              </p>
-                            )}
                           </div>
                         </div>
                       </div>
@@ -554,7 +592,7 @@ export default function TrainingModulePage({
                                   <BookMarked className="w-3.5 h-3.5 text-[#00D3D8]" />
                                   {language === 'es' ? 'Documentos de referencia:' : 'Sources:'}
                                 </p>
-                                {msg.citations.map((cite: any, ci: number) => (
+                                {msg.citations.map((cite: CitationType, ci: number) => (
                                   <div
                                     key={ci}
                                     className="text-[11px] bg-background/50 border border-border/20 rounded px-2.5 py-1 text-muted"

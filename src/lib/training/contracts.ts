@@ -111,7 +111,9 @@ export const trainingSectionSchema = z
   })
   .strict();
 
-export const trainingQuestionAdminSchema = z
+// ─── Base reutilizable para preguntas (invariantes estrictas) ───
+
+const baseQuestionSchema = z
   .object({
     question: z.string().trim().min(1).max(2_000),
     type: z.enum(['multiple_choice', 'open_ended', 'true_false']),
@@ -122,27 +124,146 @@ export const trainingQuestionAdminSchema = z
     explanation: z.string().trim().max(2_000).optional(),
   })
   .strict()
-  .superRefine((question, context) => {
-    if (question.type === 'multiple_choice') {
-      if (!question.options || question.options.length < 2) {
+  .superRefine((q, context) => {
+    // 1. multiple_choice
+    if (q.type === 'multiple_choice') {
+      if (!q.options) {
         context.addIssue({
           code: 'custom',
           path: ['options'],
-          message: 'multiple_choice questions must have at least 2 options',
+          message: 'multiple_choice questions must have options array',
+        });
+        return;
+      }
+      if (q.options.length < 2 || q.options.length > 20) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'multiple_choice questions must have between 2 and 20 options',
+        });
+      }
+      const trimmedOpts = q.options.map(o => o.trim());
+      const uniqueOpts = new Set(trimmedOpts);
+      if (uniqueOpts.size !== trimmedOpts.length) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'options must be unique after trimming',
+        });
+      }
+      const trimmedCorrect = q.correctAnswer.trim();
+      if (!trimmedOpts.includes(trimmedCorrect)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['correctAnswer'],
+          message: 'correctAnswer must match one of the options (case-sensitive, trimmed)',
+        });
+      }
+    }
+
+    // 2. true_false
+    if (q.type === 'true_false') {
+      if (!q.options) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'true_false questions must have options array',
+        });
+        return;
+      }
+      if (q.options.length !== 2) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'true_false questions must have exactly 2 options',
+        });
+      }
+      const trimmedOpts = q.options.map(o => o.trim());
+      const uniqueOpts = new Set(trimmedOpts);
+      if (uniqueOpts.size !== trimmedOpts.length) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'options must be unique after trimming',
+        });
+      }
+      const trimmedCorrect = q.correctAnswer.trim();
+      if (!trimmedOpts.includes(trimmedCorrect)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['correctAnswer'],
+          message: 'correctAnswer must match one of the options (case-sensitive, trimmed)',
+        });
+      }
+    }
+
+    // 3. open_ended
+    if (q.type === 'open_ended') {
+      if (q.options && q.options.length > 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options'],
+          message: 'open_ended questions must not have options',
         });
       }
     }
   });
 
-export const manualTrainingModuleSchema = z
+export const trainingQuestionAdminSchema = baseQuestionSchema;
+
+// Validador de invariantes de módulos comunes
+const validateModuleInvariants = (mod: {
+  title: string;
+  sections?: Array<{ title: string; body: string; keyPoints: string[] }> | null;
+  content?: { sections: Array<{ title: string; body: string; keyPoints: string[] }> } | null;
+  evaluationEnabled: boolean;
+  evaluationQuestions: unknown[];
+  sourceDocumentIds: string[];
+}, context: z.RefinementCtx) => {
+  const sections = mod.content?.sections ?? mod.sections;
+  if (!sections || sections.length < 1) {
+    context.addIssue({
+      code: 'custom',
+      path: [mod.content ? 'content' : 'sections'],
+      message: 'A module must have at least one section',
+    });
+  }
+
+  if (mod.evaluationEnabled) {
+    if (!mod.evaluationQuestions || mod.evaluationQuestions.length < 1) {
+      context.addIssue({
+        code: 'custom',
+        path: ['evaluationQuestions'],
+        message: 'evaluationQuestions must contain at least one question when evaluationEnabled is true',
+      });
+    }
+  } else {
+    if (mod.evaluationQuestions && mod.evaluationQuestions.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['evaluationQuestions'],
+        message: 'evaluationQuestions must be empty when evaluationEnabled is false',
+      });
+    }
+  }
+
+  const uniqueDocIds = new Set(mod.sourceDocumentIds);
+  if (uniqueDocIds.size !== mod.sourceDocumentIds.length) {
+    context.addIssue({
+      code: 'custom',
+      path: ['sourceDocumentIds'],
+      message: 'Duplicate source document IDs are not allowed',
+    });
+  }
+};
+
+const manualTrainingModuleBase = z
   .object({
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().max(5_000).optional(),
     content: z
       .object({
-        sections: z
-          .array(trainingSectionSchema)
-          .max(100),
+        sections: z.array(trainingSectionSchema).max(100),
       })
       .strict(),
     durationEstimate: z.number().int().min(1).max(480),
@@ -152,7 +273,10 @@ export const manualTrainingModuleSchema = z
   })
   .strict();
 
-export const updateManualTrainingModuleSchema = manualTrainingModuleSchema
+export const manualTrainingModuleSchema = manualTrainingModuleBase
+  .superRefine((mod, ctx) => validateModuleInvariants(mod, ctx));
+
+export const updateManualTrainingModuleSchema = manualTrainingModuleBase
   .partial()
   .strict()
   .refine(
@@ -239,6 +363,13 @@ export const detachTrainingDocumentQuerySchema = z
   })
   .strict();
 
+export const trainingDocumentUploadMetadataSchema = z
+  .object({
+    programId: z.string().uuid(),
+    scope: z.enum(['role', 'organization']),
+  })
+  .strict();
+
 // ─── Schemas nuevos — respuestas de IA ───
 
 export const documentAiAnalysisSchema = z
@@ -264,15 +395,12 @@ export const trainingTutorResponseSchema = z
   .object({
     message: z.string().trim().min(1).max(10_000),
     type: z.enum(['text', 'feedback']),
-    contentCovered: z
-      .array(z.string().trim().min(1).max(200))
-      .max(20)
-      .optional(),
-    evaluationReady: z.boolean().optional(),
+    contentCovered: z.boolean().default(false),
+    evaluationReady: z.boolean().default(false),
     citationChunkIds: z
       .array(z.string().uuid())
       .max(8)
-      .optional(),
+      .default([]),
   })
   .strict();
 
@@ -287,28 +415,9 @@ export const generatedModuleSectionSchema = z
   })
   .strict();
 
-export const generatedModuleQuestionSchema = z
-  .object({
-    question: z.string().trim().min(1).max(2_000),
-    type: z.enum(['multiple_choice', 'open_ended', 'true_false']),
-    options: z
-      .array(z.string().trim().min(1).max(500))
-      .optional(),
-    correctAnswer: z.string().trim().min(1).max(2_000),
-    explanation: z.string().trim().max(2_000).optional(),
-  })
-  .strict()
-  .superRefine((q, ctx) => {
-    if (q.type === 'multiple_choice' && (!q.options || q.options.length < 2)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['options'],
-        message: 'multiple_choice questions must have at least 2 options',
-      });
-    }
-  });
+export const generatedModuleQuestionSchema = baseQuestionSchema;
 
-export const generatedTrainingModuleSchema = z
+const generatedTrainingModuleBase = z
   .object({
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().max(5_000).optional(),
@@ -321,17 +430,24 @@ export const generatedTrainingModuleSchema = z
       .array(generatedModuleQuestionSchema)
       .max(20),
     sourceDocumentIds: z
-      .array(z.string())
+      .array(z.string().uuid())
       .min(1)
       .max(20),
     durationEstimate: z.number().int().min(1).max(480).optional(),
   })
   .strict();
 
+export const generatedTrainingModuleSchema = generatedTrainingModuleBase
+  .superRefine((mod, ctx) => validateModuleInvariants(mod, ctx));
+
 export const generatedTrainingModulesSchema = z
-  .array(generatedTrainingModuleSchema)
-  .min(1)
-  .max(50);
+  .object({
+    modules: z
+      .array(generatedTrainingModuleSchema)
+      .min(1)
+      .max(50),
+  })
+  .strict();
 
 export const openEndedGradingSchema = z
   .object({

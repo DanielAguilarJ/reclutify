@@ -136,10 +136,9 @@ export async function GET(
       available,
     });
   } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected error:', err);
+    console.error('[API Program Documents] Unexpected failure:', err);
     const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -187,7 +186,7 @@ export async function POST(
     // 2. Solo documentos ready pueden asociarse
     if ((document.status as string) !== 'ready') {
       return NextResponse.json(
-        { error: 'Only ready documents can be attached to a training program' },
+        { error: 'Only ready documents can be attached' },
         { status: 409 }
       );
     }
@@ -234,10 +233,9 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected error:', err);
+    console.error('[API Program Documents] Unexpected failure:', err);
     const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -247,7 +245,7 @@ export async function DELETE(
 ) {
   try {
     const { programId } = await props.params;
-    const { program, admin } = await requireProgramAdmin(programId);
+    const { program, admin, user } = await requireProgramAdmin(programId);
 
     // Guard: solo programas en draft
     if (program.status !== 'draft') {
@@ -269,22 +267,28 @@ export async function DELETE(
 
     const { documentId } = parsed.data;
 
-    const { error: deleteError } = await admin
-      .from('training_program_documents')
-      .delete()
-      .eq('program_id', programId)
-      .eq('document_id', documentId);
+    // Llamar a la RPC transaccional
+    const { error: rpcError } = await admin.rpc('detach_training_program_document', {
+      p_actor_user_id: user.id,
+      p_program_id: programId,
+      p_document_id: documentId,
+    });
 
-    if (deleteError) {
-      console.error('[API Program Documents] Detach failed:', deleteError);
+    if (rpcError) {
+      console.error('[API Program Documents] Detach RPC failed:', rpcError);
+      if (rpcError.message?.includes('training_document_in_use')) {
+        return NextResponse.json(
+          { error: 'Document is used by one or more modules. Remove it from those modules first.' },
+          { status: 409 }
+        );
+      }
       return NextResponse.json({ error: 'Failed to detach document' }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected error:', err);
+    console.error('[API Program Documents] Unexpected failure:', err);
     const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

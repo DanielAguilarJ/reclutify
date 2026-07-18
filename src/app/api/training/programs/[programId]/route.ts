@@ -55,9 +55,9 @@ export async function GET(
 
       if (roleError) {
         console.error('[API GET Program] Error fetching role:', roleError);
-      } else {
-        role = roleData as Record<string, unknown> | null;
+        return NextResponse.json({ error: 'Failed to fetch program context' }, { status: 500 });
       }
+      role = roleData as Record<string, unknown> | null;
     }
 
     // Obtener documentos asociados (sin extracted_text, storage_path ni checksum)
@@ -213,12 +213,20 @@ export async function PATCH(
       .from('training_programs')
       .update(updates)
       .eq('id', programId)
+      .eq('status', 'draft')
       .select('*')
-      .single();
+      .maybeSingle();
 
     if (error) {
-      console.error('[API PATCH Program] Error updating program:', error);
+      console.error('[API PATCH Program] Update failed:', error);
       return NextResponse.json({ error: 'Failed to update training program' }, { status: 500 });
+    }
+
+    if (!updated) {
+      return NextResponse.json(
+        { error: 'Program is no longer editable as a draft' },
+        { status: 409 }
+      );
     }
 
     return NextResponse.json({

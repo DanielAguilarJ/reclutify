@@ -53,10 +53,18 @@ export async function POST(req: NextRequest) {
 
     const files: File[] = [];
     for (const raw of rawFiles) {
-      if (!(raw instanceof File)) {
+      const isFile =
+        raw instanceof File ||
+        (raw &&
+          typeof raw === 'object' &&
+          'name' in raw &&
+          'size' in raw &&
+          'arrayBuffer' in raw);
+
+      if (!isFile) {
         return NextResponse.json({ error: 'All upload elements must be files' }, { status: 400 });
       }
-      files.push(raw);
+      files.push(raw as File);
     }
 
     // 1. Validar administrador del programa
@@ -81,6 +89,10 @@ export async function POST(req: NextRequest) {
 
     // Procesar cada archivo de forma independiente
     for (const file of files) {
+      let createdDocumentId: string | null = null;
+      let createdStoragePath: string | null = null;
+      let associationEstablished = false;
+
       try {
         // Validar tamaño
         if (file.size > MAX_TRAINING_FILE_SIZE) {
@@ -138,6 +150,8 @@ export async function POST(req: NextRequest) {
           const safeFileName = sanitizeTrainingFileName(file.name);
           const storageScope = scope === 'organization' ? 'organization' : roleId;
           const storagePath = [orgId, storageScope, documentId, safeFileName].join('/');
+
+          createdStoragePath = storagePath;
 
           // Subir a Storage
           const { error: uploadError } = await admin.storage
@@ -324,6 +338,8 @@ Return exactly:
                   documentId = retryDuplicate.data.id;
                   finalDocRow = retryDuplicate.data;
                   isExisting = true;
+                  createdDocumentId = null;
+                  createdStoragePath = null;
                 } else {
                   throw insertDocError;
                 }
@@ -335,6 +351,7 @@ Return exactly:
             }
           } else {
             finalDocRow = newDoc;
+            createdDocumentId = documentId;
           }
 
           // Si el estado es ready y acabamos de crearlo, insertar chunks en lote
@@ -380,7 +397,9 @@ Return exactly:
           throw new Error('PROGRAM_DOCUMENT_ASSOCIATION_QUERY_FAILED');
         }
 
-        if (!existingAssoc) {
+        if (existingAssoc) {
+          associationEstablished = true;
+        } else {
           const { data: maxAssoc, error: maxAssocError } = await admin
             .from('training_program_documents')
             .select('sort_order')
@@ -409,20 +428,10 @@ Return exactly:
             });
 
           if (assocError) {
-            if (!isExisting) {
-              await admin.from('training_documents').delete().eq('id', documentId);
-              const rollbackStoragePath =
-                typeof finalDocRow.storage_path === 'string'
-                  ? finalDocRow.storage_path
-                  : null;
-              if (rollbackStoragePath) {
-                await admin.storage
-                  .from('training-documents')
-                  .remove([rollbackStoragePath]);
-              }
-            }
             throw assocError;
           }
+
+          associationEstablished = true;
         }
 
         processedDocs.push({
@@ -443,6 +452,34 @@ Return exactly:
 
       } catch (fileErr: unknown) {
         console.error(`[Upload API] File failed: ${file.name}`, fileErr);
+
+        if (!associationEstablished && createdDocumentId) {
+          const { error: rollbackDocumentError } = await admin
+            .from('training_documents')
+            .delete()
+            .eq('id', createdDocumentId);
+
+          if (rollbackDocumentError) {
+            console.error(
+              '[Upload API] Document rollback failed:',
+              rollbackDocumentError
+            );
+          }
+        }
+
+        if (!associationEstablished && createdStoragePath) {
+          const { error: rollbackStorageError } = await admin.storage
+            .from('training-documents')
+            .remove([createdStoragePath]);
+
+          if (rollbackStorageError) {
+            console.error(
+              '[Upload API] Storage rollback failed:',
+              rollbackStorageError
+            );
+          }
+        }
+
         const fileErrMsg = 'Could not process training document';
         failures.push({
           fileName: file.name,

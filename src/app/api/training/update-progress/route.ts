@@ -35,23 +35,43 @@ export async function POST(req: NextRequest) {
     );
 
     if (rpcError) {
-      console.error('[Update Progress API] RPC increment failed:', rpcError);
-      
-      if (rpcError.message?.includes('module_progress_not_found')) {
+      console.error(
+        '[Update Progress API] Time RPC failed:',
+        rpcError
+      );
+
+      if (
+        rpcError.message?.includes(
+          'training_progress_not_available'
+        )
+      ) {
         return NextResponse.json(
-          { error: 'Module progress record not found' },
-          { status: 404 }
-        );
-      }
-      if (rpcError.message?.includes('module_is_locked')) {
-        return NextResponse.json(
-          { error: 'Module is locked' },
-          { status: 403 }
+          {
+            error:
+              'Training progress is not available for time updates',
+          },
+          { status: 409 }
         );
       }
 
       return NextResponse.json(
-        { error: 'Failed to update progress time' },
+        { error: 'Could not update training time' },
+        { status: 500 }
+      );
+    }
+
+    if (
+      typeof newTimeSpent !== 'number' ||
+      !Number.isInteger(newTimeSpent) ||
+      newTimeSpent < 0
+    ) {
+      console.error(
+        '[Update Progress API] Invalid RPC result:',
+        newTimeSpent
+      );
+
+      return NextResponse.json(
+        { error: 'Could not update training time' },
         { status: 500 }
       );
     }

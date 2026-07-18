@@ -38,42 +38,79 @@ export async function POST(req: NextRequest) {
     );
 
     if (rpcError) {
-      console.error('[Complete Module API] SQL RPC failed:', rpcError);
-      
-      if (rpcError.message?.includes('module_not_available_for_completion')) {
+      console.error(
+        '[Complete Module API] Completion RPC failed:',
+        rpcError
+      );
+
+      if (
+        rpcError.message?.includes(
+          'module_requires_evaluation'
+        )
+      ) {
         return NextResponse.json(
-          { error: 'Module not available for completion' },
+          {
+            error:
+              'Module requires evaluation and cannot be completed directly',
+          },
           { status: 409 }
         );
       }
-      if (rpcError.message?.includes('module_does_require_evaluation')) {
+
+      if (
+        rpcError.message?.includes(
+          'module_not_available'
+        )
+      ) {
         return NextResponse.json(
-          { error: 'Module requires evaluation and cannot be completed directly' },
+          {
+            error:
+              'Module is not available for completion',
+          },
           { status: 409 }
+        );
+      }
+
+      if (
+        rpcError.message?.includes(
+          'module_not_assigned'
+        )
+      ) {
+        return NextResponse.json(
+          { error: 'Module not found or not assigned' },
+          { status: 404 }
         );
       }
 
       return NextResponse.json(
-        { error: 'Failed to complete module' },
+        { error: 'Could not complete training module' },
         { status: 500 }
       );
     }
 
-    const parsedRpcResult = completeTrainingModuleRpcResultSchema.safeParse(rpcResult);
-    if (!parsedRpcResult.success) {
-      console.error('[Complete Module API] RPC response failed Zod validation:', parsedRpcResult.error.flatten());
+    const resultValidation =
+      completeTrainingModuleRpcResultSchema.safeParse(
+        rpcResult
+      );
+
+    if (!resultValidation.success) {
+      console.error(
+        '[Complete Module API] Invalid RPC result:',
+        resultValidation.error.flatten()
+      );
+
       return NextResponse.json(
-        { error: 'Database response validation failed' },
+        { error: 'Could not complete training module' },
         { status: 500 }
       );
     }
 
-    const result = parsedRpcResult.data;
+    const result = resultValidation.data;
 
     return NextResponse.json({
       success: true,
+      completed: result.completed,
       overallProgress: result.overallProgress,
-      overallScore: result.overallScore,
       nextModuleId: result.nextModuleId,
     });
   } catch (error: unknown) {

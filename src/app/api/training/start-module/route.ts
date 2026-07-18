@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
-import { startTrainingModuleSchema } from '@/lib/training/contracts';
+import {
+  startTrainingModuleSchema,
+  startTrainingModuleRpcResultSchema,
+} from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
@@ -45,12 +48,20 @@ export async function POST(req: NextRequest) {
       }
 
       if (
+        rpcError.message?.includes('training_progress_not_found') ||
         rpcError.message?.includes('training_module_not_found') ||
         rpcError.message?.includes('module_not_assigned')
       ) {
         return NextResponse.json(
-          { error: 'Module not found or not assigned' },
+          { error: 'Training progress not found' },
           { status: 404 }
+        );
+      }
+
+      if (rpcError.message?.includes('module_not_available')) {
+        return NextResponse.json(
+          { error: 'Module is not available' },
+          { status: 409 }
         );
       }
 
@@ -60,9 +71,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const resultValidation =
+      startTrainingModuleRpcResultSchema.safeParse(
+        rpcResult
+      );
+
+    if (!resultValidation.success) {
+      console.error(
+        '[Start Module API] Invalid RPC result:',
+        resultValidation.error.flatten()
+      );
+
+      return NextResponse.json(
+        { error: 'Could not start training module' },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({
       success: true,
-      result: rpcResult,
+      result: resultValidation.data,
     });
   } catch (err: unknown) {
     return trainingApiErrorResponse(

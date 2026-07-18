@@ -511,4 +511,72 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     const data = await res.json() as Record<string, unknown>;
     expect(data.error).toBe('Failed to record evaluation results');
   });
+
+  it('accepts overallScore as a decimal value from RPC', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'multiple_choice', options: ['yes', 'no'], correctAnswer: 'yes' }],
+    };
+
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        score: 85,
+        passed: true,
+        passingScore: 70,
+        attempts: 2,
+        overallProgress: 50,
+        overallScore: 82.5,
+      },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'yes' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.overallScore).toBe(82.5);
+  });
+
+  it('accepts overallScore as null from RPC', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'multiple_choice', options: ['yes', 'no'], correctAnswer: 'yes' }],
+    };
+
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        score: 85,
+        passed: true,
+        passingScore: 70,
+        attempts: 2,
+        overallProgress: 50,
+        overallScore: null,
+      },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'yes' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.overallScore).toBeNull();
+  });
 });

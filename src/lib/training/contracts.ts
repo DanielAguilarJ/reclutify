@@ -534,19 +534,29 @@ export const trainingPersonalizationSchema = z
 
 export const trainingEvaluationRpcResultSchema = z
   .object({
-    score: z.number().int().min(0).max(100),
+    score: z.number().min(0).max(100),
     passed: z.boolean(),
     passingScore: z.number().int().min(0).max(100),
-    attempts: z.number().int().min(0),
+    attempts: z.number().int().min(1),
     overallProgress: z.number().int().min(0).max(100),
-    overallScore: z.number().int().min(0).max(100),
+    overallScore: z.number().min(0).max(100).nullable(),
   })
   .strict();
 
 export const completeTrainingModuleRpcResultSchema = z
   .object({
+    completed: z.literal(true),
     overallProgress: z.number().int().min(0).max(100),
-    overallScore: z.number().int().min(0).max(100),
     nextModuleId: z.string().uuid().nullable(),
+  })
+  .strict();
+
+export const startTrainingModuleRpcResultSchema = z
+  .object({
+    success: z.literal(true),
+    status: z.enum([
+      'in_progress',
+      'completed',
+    ]),
   })
   .strict();

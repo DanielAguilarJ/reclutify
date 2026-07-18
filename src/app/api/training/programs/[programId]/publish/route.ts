@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuthenticatedUser } from '@/lib/training/auth';
-import { createAdminClient } from '@/utils/supabase/admin';
+import { requireProgramAdmin } from '@/lib/training/auth';
 import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
@@ -12,8 +11,7 @@ export async function POST(
   try {
     const { programId } = await props.params;
 
-    const user = await requireAuthenticatedUser();
-    const admin = createAdminClient();
+    const { user, admin } = await requireProgramAdmin(programId);
 
     const { data: publishedId, error } = await admin.rpc(
       'publish_training_program',

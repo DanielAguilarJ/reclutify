@@ -5,6 +5,7 @@ import {
 } from '@/lib/training/auth';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
 import { reorderTrainingModulesSchema } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -70,21 +71,6 @@ export async function PATCH(
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error(
-      '[API Modules Reorder] Unexpected error:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Modules Reorder] Unexpected error');
   }
 }

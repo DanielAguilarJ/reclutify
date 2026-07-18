@@ -363,6 +363,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Failed to connect';
       set({ error: errMsg });
+      throw err;
     } finally {
       set({ aiSpeaking: false });
     }

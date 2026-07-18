@@ -65,12 +65,13 @@ export const evaluateTrainingModuleSchema = z
             answer: z
               .string()
               .trim()
+              .min(1)
               .max(20_000),
           })
           .strict()
       )
       .min(1)
-      .max(100),
+      .max(20),
   })
   .strict();
 
@@ -501,3 +502,51 @@ export const persistedTrainingMessageSchema = z
 export const persistedTrainingMessagesSchema = z
   .array(persistedTrainingMessageSchema)
   .max(200);
+
+export const hireTrainingCandidateSchema = z
+  .object({
+    candidateResultId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200),
+    programId: z.string().uuid(),
+  })
+  .strict();
+
+export const trainingPersonalizationSchema = z
+  .object({
+    strengths: z
+      .array(z.string().trim().min(1).max(500))
+      .max(10),
+    areasToWatch: z
+      .array(z.string().trim().min(1).max(500))
+      .max(10),
+    learningStyle: z
+      .string()
+      .trim()
+      .max(1_000),
+    customTips: z
+      .array(z.string().trim().min(1).max(500))
+      .max(10),
+  })
+  .strict();
+
+export const trainingEvaluationRpcResultSchema = z
+  .object({
+    score: z.number().int().min(0).max(100),
+    passed: z.boolean(),
+    passingScore: z.number().int().min(0).max(100),
+    attempts: z.number().int().min(0),
+    overallProgress: z.number().int().min(0).max(100),
+    overallScore: z.number().int().min(0).max(100),
+  })
+  .strict();
+
+export const completeTrainingModuleRpcResultSchema = z
+  .object({
+    overallProgress: z.number().int().min(0).max(100),
+    overallScore: z.number().int().min(0).max(100),
+    nextModuleId: z.string().uuid().nullable(),
+  })
+  .strict();

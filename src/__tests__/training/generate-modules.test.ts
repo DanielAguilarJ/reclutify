@@ -260,7 +260,7 @@ describe('Generate Modules Endpoint (/api/training/generate-modules)', () => {
     const res = await POST(req);
     expect(res.status).toBe(500);
     const data = await res.json() as Record<string, unknown>;
-    expect(data.error).toBe('Could not generate training modules');
+    expect(data.error).toBe('Could not load organization context');
   });
 
   it('returns generic error and does not leak rpcError.message on replace error', async () => {

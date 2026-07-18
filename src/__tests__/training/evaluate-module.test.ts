@@ -24,9 +24,13 @@ const createFluentMock = (resolvedValue: unknown): FluentMock => {
 };
 
 let mockModuleData: unknown = null;
+let mockProgressData: unknown = { status: 'in_progress' };
 const mockFrom = vi.fn((table: string) => {
   if (table === 'training_modules') {
     return createFluentMock({ data: mockModuleData, error: null });
+  }
+  if (table === 'training_progress') {
+    return createFluentMock({ data: mockProgressData, error: null });
   }
   return createFluentMock({ data: null, error: null });
 });
@@ -83,6 +87,7 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       personalization_notes: {},
     };
     mockModuleData = null;
+    mockProgressData = { status: 'in_progress' };
   });
 
   it('returns 502 if AI returns duplicate index during open ended evaluation', async () => {
@@ -230,7 +235,6 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
         attempts: 1,
         overallProgress: 10,
         overallScore: 100,
-        feedback: { details: [] },
       },
       error: null,
     });
@@ -269,7 +273,6 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
         attempts: 1,
         overallProgress: 10,
         overallScore: 100,
-        feedback: { details: [] },
       },
       error: null,
     });
@@ -410,5 +413,102 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     expect(res.status).toBe(500);
     const data = await res.json() as Record<string, unknown>;
     expect(data.error).toBe('Evaluation data is corrupt');
+  });
+  it('returns 403 and does not call OpenRouter if module is locked', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'open_ended', correctAnswer: 'A1' }],
+    };
+    mockProgressData = { status: 'locked' };
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'My answer' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.error).toBe('Module is locked');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 and does not call OpenRouter if module is completed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'open_ended', correctAnswer: 'A1' }],
+    };
+    mockProgressData = { status: 'completed' };
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'My answer' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(409);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.error).toBe('Module evaluation is already completed');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when empty answer is submitted for an open question', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'open_ended', correctAnswer: 'A1' }],
+    };
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: '   ' }], // empty answer after trim
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.error).toBe('Invalid request');
+  });
+
+  it('returns 500 when RPC finalize evaluation output is invalid', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [{ question: 'Q1', type: 'multiple_choice', options: ['yes', 'no'], correctAnswer: 'yes' }],
+    };
+
+    // RPC returns corrupt shape or missing fields
+    mockRpc.mockResolvedValueOnce({
+      data: { corrupt_fields: true },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'yes' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.error).toBe('Failed to record evaluation results');
   });
 });

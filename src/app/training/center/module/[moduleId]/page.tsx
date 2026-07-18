@@ -75,6 +75,7 @@ export default function TrainingModulePage({
   const [evaluationFeedback, setEvaluationFeedback] = useState<EvaluationFeedbackState | null>(null);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [submittingEvaluation, setSubmittingEvaluation] = useState(false);
+  const [failedMessage, setFailedMessage] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -220,12 +221,25 @@ export default function TrainingModulePage({
     const userText = input.trim();
     setInput('');
     setError(null);
+    setFailedMessage(null);
     try {
       await sendModuleMessage(moduleId, userText);
     } catch (err: unknown) {
+      setFailedMessage(userText);
       setError(err instanceof Error ? err.message : 'Failed to send message');
     }
   }, [input, aiSpeaking, employee, sendModuleMessage, moduleId]);
+
+  const handleRetryMessage = useCallback(async () => {
+    if (!failedMessage || aiSpeaking || !employee) return;
+    setError(null);
+    try {
+      await sendModuleMessage(moduleId, failedMessage);
+      setFailedMessage(null);
+    } catch (retryError: unknown) {
+      setError(retryError instanceof Error ? retryError.message : 'Failed to send message');
+    }
+  }, [failedMessage, aiSpeaking, employee, moduleId, sendModuleMessage]);
 
   // Enviar evaluación al endpoint seguro
   const handleSubmitEvaluation = async () => {
@@ -741,8 +755,9 @@ export default function TrainingModulePage({
                         <AlertCircle className="w-4 h-4 text-red-500" />
                         <span className="text-xs text-red-500">{error}</span>
                         <button
-                          onClick={handleSend}
-                          className="flex items-center gap-1 ml-2 text-xs text-[#00D3D8] font-medium hover:underline"
+                          onClick={handleRetryMessage}
+                          disabled={!failedMessage || aiSpeaking}
+                          className="flex items-center gap-1 ml-2 text-xs text-[#00D3D8] font-medium hover:underline disabled:opacity-50 disabled:no-underline"
                         >
                           {language === 'es' ? 'Reintentar' : 'Retry'}
                         </button>

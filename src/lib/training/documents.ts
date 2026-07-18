@@ -11,6 +11,59 @@ export const ALLOWED_TRAINING_MIME_TYPES = new Set([
   'text/markdown',
 ]);
 
+export type TrainingFileKind =
+  | 'pdf'
+  | 'docx'
+  | 'text'
+  | 'markdown';
+
+export function detectTrainingFileKind(
+  fileName: string,
+  mimeType: string,
+  buffer: Buffer
+): TrainingFileKind | null {
+  const lowerName = fileName.toLowerCase();
+
+  if (
+    mimeType === 'application/pdf' &&
+    lowerName.endsWith('.pdf') &&
+    buffer.subarray(0, 5).toString('ascii') === '%PDF-'
+  ) {
+    return 'pdf';
+  }
+
+  if (
+    mimeType ===
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' &&
+    lowerName.endsWith('.docx') &&
+    buffer[0] === 0x50 &&
+    buffer[1] === 0x4b
+  ) {
+    return 'docx';
+  }
+
+  if (
+    mimeType === 'text/plain' &&
+    lowerName.endsWith('.txt') &&
+    !buffer.includes(0)
+  ) {
+    return 'text';
+  }
+
+  if (
+    (
+      mimeType === 'text/markdown' ||
+      mimeType === 'text/plain'
+    ) &&
+    lowerName.endsWith('.md') &&
+    !buffer.includes(0)
+  ) {
+    return 'markdown';
+  }
+
+  return null;
+}
+
 export function sanitizeTrainingFileName(name: string): string {
   const normalized = name
     .normalize('NFKD')

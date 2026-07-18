@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/training/auth';
 import { createAdminClient } from '@/utils/supabase/admin';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -32,9 +33,16 @@ export async function POST(
         );
       }
 
+      if (error.message?.includes('forbidden')) {
+        return NextResponse.json(
+          { error: 'Forbidden' },
+          { status: 403 }
+        );
+      }
+
       return NextResponse.json(
-        { error: error.message || 'Failed to publish training program' },
-        { status: 400 }
+        { error: 'Failed to publish training program' },
+        { status: 500 }
       );
     }
 
@@ -43,9 +51,6 @@ export async function POST(
       programId: publishedId as string,
     });
   } catch (err: unknown) {
-    console.error('[API Program Publish] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return trainingApiErrorResponse(err, '[API Program Publish] Unexpected error');
   }
 }

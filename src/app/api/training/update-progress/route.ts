@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { updateTrainingTimeSchema } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -35,9 +36,23 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) {
       console.error('[Update Progress API] RPC increment failed:', rpcError);
+      
+      if (rpcError.message?.includes('module_progress_not_found')) {
+        return NextResponse.json(
+          { error: 'Module progress record not found' },
+          { status: 404 }
+        );
+      }
+      if (rpcError.message?.includes('module_is_locked')) {
+        return NextResponse.json(
+          { error: 'Module is locked' },
+          { status: 403 }
+        );
+      }
+
       return NextResponse.json(
-        { error: rpcError.message || 'Failed to update progress time' },
-        { status: 400 }
+        { error: 'Failed to update progress time' },
+        { status: 500 }
       );
     }
 
@@ -46,7 +61,6 @@ export async function POST(req: NextRequest) {
       timeSpent: newTimeSpent,
     });
   } catch (err: unknown) {
-    console.error('[Update Progress API] Unexpected error:', err);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return trainingApiErrorResponse(err, '[Update Progress API] Unexpected error');
   }
 }

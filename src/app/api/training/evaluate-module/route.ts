@@ -6,7 +6,9 @@ import {
   evaluateTrainingModuleSchema,
   openEndedGradingSchema,
   trainingQuestionAdminSchema,
+  trainingEvaluationRpcResultSchema,
 } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -51,6 +53,61 @@ export async function POST(req: NextRequest) {
 
     if (!moduleData) {
       return NextResponse.json({ error: 'Assigned module not found' }, { status: 404 });
+    }
+
+    // 2.5 Verificar progreso actual para el módulo
+    const {
+      data: progressData,
+      error: progressError,
+    } = await admin
+      .from('training_progress')
+      .select('status')
+      .eq('employee_id', employee.id)
+      .eq('module_id', moduleId)
+      .maybeSingle();
+
+    if (progressError) {
+      console.error(
+        '[Evaluate API] Progress query failed:',
+        progressError
+      );
+
+      return NextResponse.json(
+        { error: 'Could not validate evaluation access' },
+        { status: 500 }
+      );
+    }
+
+    if (!progressData) {
+      return NextResponse.json(
+        { error: 'Evaluation is not available' },
+        { status: 403 }
+      );
+    }
+
+    if (progressData.status === 'locked') {
+      return NextResponse.json(
+        { error: 'Module is locked' },
+        { status: 403 }
+      );
+    }
+
+    if (progressData.status === 'completed') {
+      return NextResponse.json(
+        { error: 'Module evaluation is already completed' },
+        { status: 409 }
+      );
+    }
+
+    if (
+      !['available', 'in_progress'].includes(
+        progressData.status
+      )
+    ) {
+      return NextResponse.json(
+        { error: 'Evaluation is not available' },
+        { status: 409 }
+      );
     }
 
     // 3. Guard: evaluación habilitada
@@ -308,18 +365,37 @@ Return exactly:
       );
     }
 
+    const rpcResultValidation =
+      trainingEvaluationRpcResultSchema.safeParse(
+        rpcResult
+      );
+
+    if (!rpcResultValidation.success) {
+      console.error(
+        '[Evaluate API] Invalid evaluation RPC result:',
+        rpcResultValidation.error.flatten()
+      );
+
+      return NextResponse.json(
+        { error: 'Failed to record evaluation results' },
+        { status: 500 }
+      );
+    }
+
+    const finalized =
+      rpcResultValidation.data;
+
     return NextResponse.json({
       success: true,
-      score: (rpcResult as Record<string, unknown>).score,
-      passed: (rpcResult as Record<string, unknown>).passed,
-      passingScore: (rpcResult as Record<string, unknown>).passingScore,
-      attempts: (rpcResult as Record<string, unknown>).attempts,
-      overallProgress: (rpcResult as Record<string, unknown>).overallProgress,
-      overallScore: (rpcResult as Record<string, unknown>).overallScore,
+      score: finalized.score,
+      passed: finalized.passed,
+      passingScore: finalized.passingScore,
+      attempts: finalized.attempts,
+      overallProgress: finalized.overallProgress,
+      overallScore: finalized.overallScore,
       feedback: detailFeedback,
     });
   } catch (error: unknown) {
-    console.error('[Evaluate API] Unexpected error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return trainingApiErrorResponse(error, '[Evaluate API] Unexpected error');
   }
 }

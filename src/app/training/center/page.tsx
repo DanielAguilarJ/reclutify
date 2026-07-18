@@ -126,6 +126,8 @@ export default function TrainingCenterPage() {
     try {
       await sendGeneralMessage(userMsg);
     } catch (error: unknown) {
+      setChatInput(userMsg);
+
       console.error(
         '[Training Center] Could not send general message:',
         error
@@ -342,7 +344,7 @@ export default function TrainingCenterPage() {
           <h2 className="text-lg font-bold text-foreground mb-3">
             {language === 'es' ? 'Tu Plan de Aprendizaje' : 'Your Learning Plan'}
           </h2>
-          {modules
+          {[...modules]
             .sort((a, b) => a.sortOrder - b.sortOrder)
             .map((module, index) => {
               const modProgress = getModuleProgress(module.id);

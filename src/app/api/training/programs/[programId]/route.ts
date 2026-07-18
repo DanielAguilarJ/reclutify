@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { updateTrainingProgramSchema } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -172,10 +173,7 @@ export async function GET(
       modules,
     });
   } catch (err: unknown) {
-    console.error('[API GET Program] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return trainingApiErrorResponse(err, '[API GET Program] Unexpected error');
   }
 }
 
@@ -243,9 +241,6 @@ export async function PATCH(
       },
     });
   } catch (err: unknown) {
-    console.error('[API PATCH Program] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return trainingApiErrorResponse(err, '[API PATCH Program] Unexpected error');
   }
 }

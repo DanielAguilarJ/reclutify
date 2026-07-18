@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   requireProgramAdmin,
-  TrainingAuthError,
 } from '@/lib/training/auth';
 import {
   attachTrainingDocumentSchema,
   detachTrainingDocumentQuerySchema,
 } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -139,22 +139,7 @@ export async function GET(
       available,
     });
   } catch (error: unknown) {
-    console.error(
-      '[API Program Documents GET] Unexpected failure:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Program Documents GET] Unexpected failure');
   }
 }
 
@@ -273,22 +258,7 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error(
-      '[API Program Documents POST] Unexpected failure:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Program Documents POST] Unexpected failure');
   }
 }
 
@@ -340,21 +310,6 @@ export async function DELETE(
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error(
-      '[API Program Documents DELETE] Unexpected failure:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Program Documents DELETE] Unexpected failure');
   }
 }

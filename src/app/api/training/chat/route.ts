@@ -49,6 +49,138 @@ function sanitizePersistedMessages(
   return result.data;
 }
 
+function buildBoundedModuleStructure(
+  moduleContext: {
+    title: string;
+    description: string | null;
+    content: unknown;
+  },
+  maximumCharacters: number
+): string {
+  const rawContent =
+    moduleContext.content &&
+    typeof moduleContext.content === 'object'
+      ? (moduleContext.content as {
+          sections?: unknown[];
+        })
+      : {};
+
+  const sections = Array.isArray(rawContent.sections)
+    ? rawContent.sections
+    : [];
+
+  const structure: {
+    title: string;
+    description: string | null;
+    sections: Array<{
+      index: number;
+      title: string;
+      keyPoints: string[];
+      body: string;
+    }>;
+  } = {
+    title: moduleContext.title.slice(0, 200),
+    description:
+      moduleContext.description?.slice(0, 1_000) ?? null,
+    sections: [],
+  };
+
+  for (
+    let index = 0;
+    index < sections.length;
+    index++
+  ) {
+    const rawSection = sections[index];
+
+    if (
+      !rawSection ||
+      typeof rawSection !== 'object'
+    ) {
+      continue;
+    }
+
+    const section =
+      rawSection as Record<string, unknown>;
+
+    const title =
+      typeof section.title === 'string'
+        ? section.title.slice(0, 300)
+        : '';
+
+    const body =
+      typeof section.body === 'string'
+        ? section.body
+        : '';
+
+    const keyPoints = Array.isArray(section.keyPoints)
+      ? section.keyPoints
+          .filter(
+            (point): point is string =>
+              typeof point === 'string'
+          )
+          .slice(0, 20)
+          .map((point) => point.slice(0, 500))
+      : [];
+
+    let low = 0;
+    let high = body.length;
+    let acceptedBody = '';
+
+    while (low <= high) {
+      const middle =
+        Math.floor((low + high) / 2);
+
+      const candidateSection = {
+        index,
+        title,
+        keyPoints,
+        body: body.slice(0, middle),
+      };
+
+      const serialized = JSON.stringify({
+        ...structure,
+        sections: [
+          ...structure.sections,
+          candidateSection,
+        ],
+      });
+
+      if (
+        serialized.length <= maximumCharacters
+      ) {
+        acceptedBody =
+          candidateSection.body;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+
+    const candidateSection = {
+      index,
+      title,
+      keyPoints,
+      body: acceptedBody,
+    };
+
+    const serialized = JSON.stringify({
+      ...structure,
+      sections: [
+        ...structure.sections,
+        candidateSection,
+      ],
+    });
+
+    if (serialized.length > maximumCharacters) {
+      break;
+    }
+
+    structure.sections.push(candidateSection);
+  }
+
+  return JSON.stringify(structure);
+}
+
 export async function POST(req: NextRequest) {
   try {
     // 1. Validar sesión del empleado
@@ -341,92 +473,7 @@ PERSONALIZATION Context:
     // Acotar moduleStructure a 20,000 caracteres como máximo
     let moduleStructure = 'General training assistance';
     if (mode === 'module' && moduleContext) {
-      const MAX_MODULE_CONTEXT_CHARACTERS = 20_000;
-      const boundedSections: Array<{
-        index: number;
-        title: string;
-        keyPoints: string[];
-        body: string;
-      }> = [];
-      let moduleCharacterCount = 0;
-
-      const rawContent = moduleContext.content as { sections?: unknown[] } | undefined;
-      const sections = Array.isArray(rawContent?.sections) ? rawContent.sections : [];
-
-      for (let index = 0; index < sections.length; index++) {
-        const rawSection = sections[index];
-
-        if (
-          !rawSection ||
-          typeof rawSection !== 'object'
-        ) {
-          continue;
-        }
-
-        const sectionRecord =
-          rawSection as Record<string, unknown>;
-
-        const title =
-          typeof sectionRecord.title === 'string'
-            ? sectionRecord.title
-            : '';
-
-        const body =
-          typeof sectionRecord.body === 'string'
-            ? sectionRecord.body
-            : '';
-
-        const keyPoints = Array.isArray(sectionRecord.keyPoints)
-          ? sectionRecord.keyPoints.filter(
-              (point): point is string =>
-                typeof point === 'string'
-            )
-          : [];
-
-        const metadata = {
-          index,
-          title,
-          keyPoints,
-        };
-
-        const metadataLength = JSON.stringify({
-          ...metadata,
-          body: '',
-        }).length;
-
-        const availableForBody =
-          MAX_MODULE_CONTEXT_CHARACTERS -
-          moduleCharacterCount -
-          metadataLength;
-
-        if (availableForBody <= 0) {
-          break;
-        }
-
-        const boundedSection = {
-          ...metadata,
-          body: body.slice(0, availableForBody),
-        };
-
-        const serializedLength =
-          JSON.stringify(boundedSection).length;
-
-        if (
-          moduleCharacterCount + serializedLength >
-          MAX_MODULE_CONTEXT_CHARACTERS
-        ) {
-          break;
-        }
-
-        boundedSections.push(boundedSection);
-        moduleCharacterCount += serializedLength;
-      }
-
-      moduleStructure = JSON.stringify({
-        title: moduleContext.title,
-        description: moduleContext.description,
-        sections: boundedSections,
-      }, null, 2);
+      moduleStructure = buildBoundedModuleStructure(moduleContext, 20_000);
     }
 
     // 8. Preparar prompt
@@ -445,8 +492,9 @@ CURRENT MODULE STRUCTURE:
 ${moduleStructure}
 </UNTRUSTED_MODULE_CONTENT>
 
-SOURCE DOCUMENTS REFERENCE (RAG CONTEXT):
+<UNTRUSTED_RAG_CONTEXT>
 ${ragContext || 'No context documents available.'}
+</UNTRUSTED_RAG_CONTEXT>
 
 BEHAVIOR:
 1. Speak as a helpful colleague. Respond in the same language the employee uses.

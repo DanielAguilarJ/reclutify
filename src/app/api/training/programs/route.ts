@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/training/auth';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { createTrainingProgramSchema } from '@/lib/training/contracts';
 
@@ -87,8 +88,6 @@ export async function POST(req: NextRequest) {
       updatedAt: newProgram.updated_at,
     });
   } catch (err: unknown) {
-    console.error('[Programs API] Unexpected failure:', err);
-    const message = err instanceof Error ? err.message : 'Internal Server Error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return trainingApiErrorResponse(err, '[Programs API] Unexpected failure');
   }
 }

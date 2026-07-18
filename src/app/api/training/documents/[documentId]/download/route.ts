@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import {
   requireAuthenticatedUser,
-  TrainingAuthError,
 } from '@/lib/training/auth';
 import { createAdminClient } from '@/utils/supabase/admin';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -115,21 +115,6 @@ export async function GET(
       expiresIn: 60,
     });
   } catch (error: unknown) {
-    console.error(
-      '[Training Download] Unexpected error:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[Training Download] Unexpected error');
   }
 }

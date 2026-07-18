@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireProgramAdmin, TrainingAuthError } from '@/lib/training/auth';
+import { requireProgramAdmin } from '@/lib/training/auth';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 import {
   documentAiAnalysisSchema,
   trainingDocumentUploadMetadataSchema,
@@ -9,7 +10,7 @@ import {
   sha256,
   splitTrainingText,
   MAX_TRAINING_FILE_SIZE,
-  ALLOWED_TRAINING_MIME_TYPES,
+  detectTrainingFileKind,
 } from '@/lib/training/documents';
 import * as mammoth from 'mammoth';
 
@@ -86,12 +87,21 @@ export async function POST(req: NextRequest) {
           throw new Error(`El archivo ${file.name} excede el máximo de 15 MB`);
         }
 
-        // Validar tipo mime
-        if (!ALLOWED_TRAINING_MIME_TYPES.has(file.type)) {
-          throw new Error(`Tipo de archivo no permitido: ${file.type}`);
+        const fileBuffer = Buffer.from(await file.arrayBuffer());
+
+        // Validar tipo y extensión real
+        const fileKind = detectTrainingFileKind(
+          file.name,
+          file.type,
+          fileBuffer
+        );
+
+        if (!fileKind) {
+          throw new Error(
+            'File extension, MIME type and content do not match'
+          );
         }
 
-        const fileBuffer = Buffer.from(await file.arrayBuffer());
         const checksum = sha256(fileBuffer);
 
         const getExistingDuplicate = async () => {
@@ -142,7 +152,7 @@ export async function POST(req: NextRequest) {
           // Extraer texto
           let extractedText = '';
           try {
-            if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+            if (fileKind === 'pdf') {
               const mod = (await import('pdf-parse')) as unknown as
                 | { default?: (buf: Buffer) => Promise<{ text: string }> }
                 | ((buf: Buffer) => Promise<{ text: string }>);
@@ -152,17 +162,10 @@ export async function POST(req: NextRequest) {
               }
               const parsed = await pdfParse(fileBuffer);
               extractedText = parsed.text;
-            } else if (
-              file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-              file.name.endsWith('.docx')
-            ) {
+            } else if (fileKind === 'docx') {
               const parsed = await mammoth.extractRawText({ buffer: fileBuffer });
               extractedText = parsed.value;
-            } else if (
-              file.type === 'text/plain' ||
-              file.name.endsWith('.txt') ||
-              file.name.endsWith('.md')
-            ) {
+            } else if (fileKind === 'text' || fileKind === 'markdown') {
               extractedText = fileBuffer.toString('utf-8');
             }
           } catch (parseErr: unknown) {
@@ -177,7 +180,7 @@ export async function POST(req: NextRequest) {
           let processingError: string | null = null;
 
           if (!extractedText || extractedText.trim().length < 50) {
-            if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+            if (fileKind === 'pdf') {
               docStatus = 'needs_ocr';
               processingError = 'El PDF parece escaneado y requiere OCR.';
             } else {
@@ -307,21 +310,28 @@ Return exactly:
             .select('*')
             .maybeSingle();
 
-          if (insertDocError) {
+          if (insertDocError || !newDoc) {
             // Rollback de Storage
             await admin.storage.from('training-documents').remove([storagePath]);
 
-            if (insertDocError.code === '23505') {
-              const retryDuplicate = await getExistingDuplicate();
-              if (retryDuplicate.data) {
-                documentId = retryDuplicate.data.id;
-                finalDocRow = retryDuplicate.data;
-                isExisting = true;
+            if (insertDocError) {
+              if (insertDocError.code === '23505') {
+                const retryDuplicate = await getExistingDuplicate();
+                if (retryDuplicate.error) {
+                  throw retryDuplicate.error;
+                }
+                if (retryDuplicate.data) {
+                  documentId = retryDuplicate.data.id;
+                  finalDocRow = retryDuplicate.data;
+                  isExisting = true;
+                } else {
+                  throw insertDocError;
+                }
               } else {
                 throw insertDocError;
               }
             } else {
-              throw insertDocError;
+              throw new Error('DOCUMENT_INSERT_RETURNED_NO_ROW');
             }
           } else {
             finalDocRow = newDoc;
@@ -355,21 +365,37 @@ Return exactly:
         }
 
         // 3. Crear asociación en training_program_documents
-        const { data: existingAssoc } = await admin
+        const { data: existingAssoc, error: existingAssocError } = await admin
           .from('training_program_documents')
-          .select('*')
+          .select('program_id')
           .eq('program_id', programId)
           .eq('document_id', documentId)
           .maybeSingle();
 
+        if (existingAssocError) {
+          console.error(
+            '[Upload API] Existing association query failed:',
+            existingAssocError
+          );
+          throw new Error('PROGRAM_DOCUMENT_ASSOCIATION_QUERY_FAILED');
+        }
+
         if (!existingAssoc) {
-          const { data: maxAssoc } = await admin
+          const { data: maxAssoc, error: maxAssocError } = await admin
             .from('training_program_documents')
             .select('sort_order')
             .eq('program_id', programId)
             .order('sort_order', { ascending: false })
             .limit(1)
             .maybeSingle();
+
+          if (maxAssocError) {
+            console.error(
+              '[Upload API] Sort order query failed:',
+              maxAssocError
+            );
+            throw new Error('PROGRAM_DOCUMENT_SORT_ORDER_FAILED');
+          }
 
           const nextSortOrder = maxAssoc ? (maxAssoc.sort_order ?? 0) + 1 : 0;
 
@@ -385,7 +411,15 @@ Return exactly:
           if (assocError) {
             if (!isExisting) {
               await admin.from('training_documents').delete().eq('id', documentId);
-              await admin.storage.from('training-documents').remove([finalDocRow.storage_path as string]);
+              const rollbackStoragePath =
+                typeof finalDocRow.storage_path === 'string'
+                  ? finalDocRow.storage_path
+                  : null;
+              if (rollbackStoragePath) {
+                await admin.storage
+                  .from('training-documents')
+                  .remove([rollbackStoragePath]);
+              }
             }
             throw assocError;
           }
@@ -423,13 +457,6 @@ Return exactly:
       failures,
     });
   } catch (error: unknown) {
-    console.error('[Upload API] General failure:', error);
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[Upload API] Unexpected error');
   }
 }

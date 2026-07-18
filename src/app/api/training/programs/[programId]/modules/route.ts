@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { manualTrainingModuleSchema } from '@/lib/training/contracts';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -23,11 +24,18 @@ export async function POST(
     const currentModules = await loadDraftModules(admin, programId);
     if (currentModules.length > 0) {
       const activeIds = currentModules.map((m) => m.id);
-      const { data: progress } = await admin
+      const { data: progress, error: progressError } = await admin
         .from('training_progress')
         .select('id')
         .in('module_id', activeIds)
         .limit(1);
+
+      if (progressError) {
+        return NextResponse.json(
+          { error: 'Could not validate module usage' },
+          { status: 500 }
+        );
+      }
 
       if (progress && progress.length > 0) {
         return NextResponse.json(
@@ -57,11 +65,18 @@ export async function POST(
     // 3. Validar documentos fuente (ya es array validado por Zod)
     const docIds = sourceDocumentIds;
     if (docIds.length > 0) {
-      const { data: assocs } = await admin
+      const { data: assocs, error: assocsError } = await admin
         .from('training_program_documents')
         .select('document_id')
         .eq('program_id', programId)
         .in('document_id', docIds);
+
+      if (assocsError) {
+        return NextResponse.json(
+          { error: 'Could not validate module documents' },
+          { status: 500 }
+        );
+      }
 
       const validDocIds = new Set(assocs?.map((a) => a.document_id) || []);
       for (const id of docIds) {
@@ -100,9 +115,6 @@ export async function POST(
       module: newModule,
     });
   } catch (err: unknown) {
-    console.error('[API Manual Module] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    const status = (err as { status?: number }).status ?? 500;
-    return NextResponse.json({ error: message }, { status });
+    return trainingApiErrorResponse(err, '[API Manual Module] Unexpected error');
   }
 }

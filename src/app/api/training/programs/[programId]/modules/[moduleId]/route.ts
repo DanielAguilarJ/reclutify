@@ -8,6 +8,7 @@ import {
   updateManualTrainingModuleSchema,
   manualTrainingModuleSchema,
 } from '@/lib/training/contracts';
+import { trainingApiErrorResponse } from '@/lib/training/http';
 
 export const runtime = 'nodejs';
 
@@ -173,22 +174,7 @@ export async function PATCH(
       module: editedModule,
     });
   } catch (error: unknown) {
-    console.error(
-      '[API Manual Module Edit] Unexpected error:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Manual Module Edit] Unexpected error');
   }
 }
 
@@ -256,21 +242,6 @@ export async function DELETE(
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error(
-      '[API Manual Module Delete] Unexpected error:',
-      error
-    );
-
-    if (error instanceof TrainingAuthError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return trainingApiErrorResponse(error, '[API Manual Module Delete] Unexpected error');
   }
 }

@@ -67,9 +67,18 @@ export default function TrainingCenterPage() {
   // Cargar mensaje de inicio del tutor general al abrir el chat por primera vez
   useEffect(() => {
     if (showChat && generalMessages.length === 0) {
-      startGeneralChat();
+      void startGeneralChat().catch((error: unknown) => {
+        console.error(
+          '[Training Center] Could not start general chat:',
+          error
+        );
+      });
     }
-  }, [showChat, generalMessages.length, startGeneralChat]);
+  }, [
+    showChat,
+    generalMessages.length,
+    startGeneralChat,
+  ]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -110,9 +119,18 @@ export default function TrainingCenterPage() {
 
   const handleSendChat = async () => {
     if (!chatInput.trim() || aiSpeaking) return;
+
     const userMsg = chatInput.trim();
     setChatInput('');
-    await sendGeneralMessage(userMsg);
+
+    try {
+      await sendGeneralMessage(userMsg);
+    } catch (error: unknown) {
+      console.error(
+        '[Training Center] Could not send general message:',
+        error
+      );
+    }
   };
 
   return (

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireProgramAdmin } from '@/lib/training/auth';
+import {
+  requireProgramAdmin,
+  TrainingAuthError,
+} from '@/lib/training/auth';
 import {
   attachTrainingDocumentSchema,
   detachTrainingDocumentQuerySchema,
@@ -135,10 +138,23 @@ export async function GET(
       attached,
       available,
     });
-  } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected failure:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error: unknown) {
+    console.error(
+      '[API Program Documents GET] Unexpected failure:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
@@ -176,9 +192,21 @@ export async function POST(
       .eq('org_id', program.org_id)
       .maybeSingle();
 
-    if (docError || !document) {
+    if (docError) {
+      console.error(
+        '[API Program Documents] Document query failed:',
+        docError
+      );
+
       return NextResponse.json(
-        { error: 'Document not found or does not belong to this org' },
+        { error: 'Could not validate document' },
+        { status: 500 }
+      );
+    }
+
+    if (!document) {
+      return NextResponse.json(
+        { error: 'Document not found' },
         { status: 404 }
       );
     }
@@ -200,13 +228,25 @@ export async function POST(
     }
 
     // 4. Obtener el sort_order máximo
-    const { data: maxAssoc } = await admin
+    const { data: maxAssoc, error: maxAssocError } = await admin
       .from('training_program_documents')
       .select('sort_order')
       .eq('program_id', programId)
       .order('sort_order', { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (maxAssocError) {
+      console.error(
+        '[API Program Documents] Sort order query failed:',
+        maxAssocError
+      );
+
+      return NextResponse.json(
+        { error: 'Could not determine document order' },
+        { status: 500 }
+      );
+    }
 
     const nextSortOrder = maxAssoc ? ((maxAssoc.sort_order as number) ?? 0) + 1 : 0;
 
@@ -226,16 +266,29 @@ export async function POST(
     if (assocError) {
       console.error('[API Program Documents] Association failed:', assocError);
       return NextResponse.json(
-        { error: 'Failed to associate document with program' },
+        { error: 'Could not associate document' },
         { status: 500 }
       );
     }
 
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected failure:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error: unknown) {
+    console.error(
+      '[API Program Documents POST] Unexpected failure:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
@@ -286,9 +339,22 @@ export async function DELETE(
     }
 
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    console.error('[API Program Documents] Unexpected failure:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error: unknown) {
+    console.error(
+      '[API Program Documents DELETE] Unexpected failure:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireProgramAdmin } from '@/lib/training/auth';
+import {
+  requireProgramAdmin,
+  TrainingAuthError,
+} from '@/lib/training/auth';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
 import {
   updateManualTrainingModuleSchema,
@@ -31,11 +34,26 @@ export async function PATCH(
     }
 
     // 3. Verificar que no haya empleados con progreso
-    const { data: progress } = await admin
+    const {
+      data: progress,
+      error: progressError,
+    } = await admin
       .from('training_progress')
       .select('id')
       .eq('module_id', moduleId)
       .limit(1);
+
+    if (progressError) {
+      console.error(
+        '[API Manual Module] Progress query failed:',
+        progressError
+      );
+
+      return NextResponse.json(
+        { error: 'Could not validate module usage' },
+        { status: 500 }
+      );
+    }
 
     if (progress && progress.length > 0) {
       return NextResponse.json(
@@ -95,13 +113,28 @@ export async function PATCH(
     // 4. Validar documentos fuente
     const docIds = validatedModule.sourceDocumentIds;
     if (docIds.length > 0) {
-      const { data: assocs } = await admin
+      const {
+        data: associations,
+        error: associationsError,
+      } = await admin
         .from('training_program_documents')
         .select('document_id')
         .eq('program_id', programId)
         .in('document_id', docIds);
 
-      const validDocIds = new Set(assocs?.map((a) => a.document_id) || []);
+      if (associationsError) {
+        console.error(
+          '[API Manual Module] Document validation failed:',
+          associationsError
+        );
+
+        return NextResponse.json(
+          { error: 'Could not validate module documents' },
+          { status: 500 }
+        );
+      }
+
+      const validDocIds = new Set(associations?.map((a) => a.document_id) || []);
       for (const id of docIds) {
         if (!validDocIds.has(id)) {
           return NextResponse.json(
@@ -139,11 +172,21 @@ export async function PATCH(
       success: true,
       module: editedModule,
     });
-  } catch (err: unknown) {
-    console.error('[API Manual Module Edit] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
+  } catch (error: unknown) {
+    console.error(
+      '[API Manual Module Edit] Unexpected error:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
     return NextResponse.json(
-      { error: message },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }
@@ -172,11 +215,26 @@ export async function DELETE(
     }
 
     // 3. Verificar que no haya empleados con progreso
-    const { data: progress } = await admin
+    const {
+      data: progress,
+      error: progressError,
+    } = await admin
       .from('training_progress')
       .select('id')
       .eq('module_id', moduleId)
       .limit(1);
+
+    if (progressError) {
+      console.error(
+        '[API Manual Module] Progress query failed:',
+        progressError
+      );
+
+      return NextResponse.json(
+        { error: 'Could not validate module usage' },
+        { status: 500 }
+      );
+    }
 
     if (progress && progress.length > 0) {
       return NextResponse.json(
@@ -197,11 +255,21 @@ export async function DELETE(
     await replaceDraftModules(admin, user.id, programId, updatedModulesList);
 
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    console.error('[API Manual Module Delete] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
+  } catch (error: unknown) {
+    console.error(
+      '[API Manual Module Delete] Unexpected error:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
     return NextResponse.json(
-      { error: message },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

@@ -13,6 +13,7 @@ import {
   evaluateTrainingModuleSchema,
   trainingTutorResponseSchema,
   trainingQuestionAdminSchema,
+  manualTrainingModuleSchema,
 } from '../../lib/training/contracts';
 
 describe('Training Center V2 Contract Integrity', () => {
@@ -351,6 +352,37 @@ describe('Training Center V2 Contract Integrity', () => {
       moduleId: '00000000-0000-4000-8000-000000000001',
       answers: [],
     });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects manual module with more than 20 questions', () => {
+    const questions = Array.from(
+      { length: 21 },
+      (_, index) => ({
+        question: `Question ${index}`,
+        type: 'open_ended' as const,
+        correctAnswer: `Answer ${index}`,
+      })
+    );
+
+    const result =
+      manualTrainingModuleSchema.safeParse({
+        title: 'Module',
+        content: {
+          sections: [
+            {
+              title: 'Section',
+              body: 'Body',
+              keyPoints: ['Point'],
+            },
+          ],
+        },
+        durationEstimate: 30,
+        evaluationEnabled: true,
+        evaluationQuestions: questions,
+        sourceDocumentIds: [],
+      });
+
     expect(result.success).toBe(false);
   });
 });

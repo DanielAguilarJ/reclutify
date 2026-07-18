@@ -268,7 +268,7 @@ const manualTrainingModuleBase = z
       .strict(),
     durationEstimate: z.number().int().min(1).max(480),
     evaluationEnabled: z.boolean(),
-    evaluationQuestions: z.array(trainingQuestionAdminSchema),
+    evaluationQuestions: z.array(trainingQuestionAdminSchema).max(20),
     sourceDocumentIds: z.array(z.string().uuid()),
   })
   .strict();

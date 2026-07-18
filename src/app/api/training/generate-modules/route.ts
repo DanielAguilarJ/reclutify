@@ -253,10 +253,14 @@ ${documentContext}`,
     );
 
     if (rpcError) {
-      console.error('[Generate Modules API] SQL RPC replace modules failed:', rpcError);
+      console.error(
+        '[Generate Modules API] Module replacement failed:',
+        rpcError
+      );
+
       return NextResponse.json(
-        { error: rpcError.message || 'Failed to replace program modules in transaction' },
-        { status: 400 }
+        { error: 'Could not persist generated modules' },
+        { status: 500 }
       );
     }
 
@@ -266,7 +270,9 @@ ${documentContext}`,
     });
   } catch (error: unknown) {
     console.error('[Generate Modules API] General failure:', error);
-    const message = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Could not generate training modules' },
+      { status: 500 }
+    );
   }
 }

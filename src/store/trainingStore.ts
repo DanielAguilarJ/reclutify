@@ -29,7 +29,7 @@ export interface CompleteModuleResult {
   passingScore: number;
   attempts: number;
   overallProgress: number;
-  overallScore: number | null;
+  overallScore?: number;
   feedback: EvaluationFeedback;
 }
 
@@ -100,7 +100,7 @@ function employeeFromSupabase(row: Record<string, unknown>): TrainingEmployee {
     roleTitle: (row.role_title as string) || undefined,
     status: (row.status as TrainingEmployee['status']) || 'not_started',
     overallProgress: (row.overall_progress as number) ?? 0,
-    overallScore: typeof row.overall_score === 'number' ? row.overall_score : null,
+    overallScore: typeof row.overall_score === 'number' ? row.overall_score : undefined,
     accessExpiresAt: (row.access_expires_at as string) || undefined,
     accessRevokedAt: (row.access_revoked_at as string) || undefined,
     hiredAt: row.hired_at as string,
@@ -120,7 +120,7 @@ function progressFromSupabase(row: Record<string, unknown>): TrainingProgress {
     status: (row.status as TrainingProgress['status']) || 'locked',
     startedAt: (row.started_at as string) || undefined,
     completedAt: (row.completed_at as string) || undefined,
-    score: typeof row.score === 'number' ? row.score : null,
+    score: typeof row.score === 'number' ? row.score : undefined,
     aiFeedback: (row.ai_feedback as string) || undefined,
     timeSpent: (row.time_spent as number) ?? 0,
     createdAt: row.created_at as string,
@@ -295,7 +295,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         passingScore: data.passingScore,
         attempts: data.attempts,
         overallProgress: data.overallProgress,
-        overallScore: data.overallScore ?? null,
+        overallScore:
+          typeof data.overallScore === 'number'
+            ? data.overallScore
+            : undefined,
         feedback: data.feedback as EvaluationFeedback,
       };
     } catch (err: unknown) {
@@ -441,6 +444,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Failed to connect module tutor';
       set({ error: errMsg });
+      throw err;
     } finally {
       set({ aiSpeaking: false });
     }

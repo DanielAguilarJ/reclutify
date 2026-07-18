@@ -9,14 +9,25 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
+  Sparkles,
   Award,
   ChevronRight,
   AlertCircle,
   BookMarked,
 } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
-import { useTrainingStore, type EvaluationFeedback, type EvaluationDetail } from '@/store/trainingStore';
+import {
+  useTrainingStore,
+  type EvaluationDetail,
+} from '@/store/trainingStore';
 import type { TrainingQuestionPublic } from '@/types';
+
+interface EvaluationFeedbackState {
+  passed: boolean;
+  score: number;
+  passingScore: number;
+  details: EvaluationDetail[];
+}
 
 type BootstrapStatus = 'idle' | 'loading' | 'ready' | 'failed';
 
@@ -50,23 +61,25 @@ export default function TrainingModulePage({
     startModuleChat,
     sendModuleMessage,
     incrementTimeSpent,
+    initializeFromSession,
   } = useTrainingStore();
 
   const [input, setInput] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationComplete, setEvaluationComplete] = useState(false);
-  const [finalScore, setFinalScore] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>('idle');
 
   // Estados locales para la nueva interfaz de evaluación
   const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [evaluationFeedback, setEvaluationFeedback] = useState<EvaluationFeedback | null>(null);
+  const [evaluationFeedback, setEvaluationFeedback] = useState<EvaluationFeedbackState | null>(null);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [submittingEvaluation, setSubmittingEvaluation] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const bootstrapStartedRef = useRef(false);
+  const initializedModuleIdRef = useRef<string | null>(null);
 
   const currentModule = modules.find((m) => m.id === moduleId);
   const moduleProgress = progress.find((p) => p.moduleId === moduleId);
@@ -81,37 +94,108 @@ export default function TrainingModulePage({
     }
   }, [messages]);
 
-  // Initialize module and start tutor session
+  // Primer efecto: bootstrap de sesión
   useEffect(() => {
-    if (!employee || bootstrapStatus !== 'idle') return;
+    if (bootstrapStartedRef.current) return;
 
-    const init = async () => {
-      setBootstrapStatus('loading');
+    bootstrapStartedRef.current = true;
+    setBootstrapStatus('loading');
+
+    void (async () => {
       try {
-        const currentProgress = progress.find((p) => p.moduleId === moduleId);
-        if (!currentProgress || currentProgress.status === 'locked') {
-          router.push('/training/center');
+        const initialized = employee
+          ? true
+          : await initializeFromSession();
+
+        if (!initialized) {
+          setBootstrapStatus('failed');
+          router.replace('/');
           return;
         }
 
-        if (currentProgress.status === 'available') {
+        setBootstrapStatus('ready');
+      } catch (error: unknown) {
+        console.error(
+          '[Training Module] Session bootstrap failed:',
+          error
+        );
+
+        setError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to initialize training session'
+        );
+        setBootstrapStatus('failed');
+        router.replace('/');
+      }
+    })();
+  }, [
+    employee,
+    initializeFromSession,
+    router,
+  ]);
+
+  // Segundo efecto: validación e inicio del módulo
+  useEffect(() => {
+    if (bootstrapStatus !== 'ready' || !employee) return;
+    if (initializedModuleIdRef.current === moduleId) return;
+
+    const targetModule =
+      modules.find((module) => module.id === moduleId);
+
+    const targetProgress =
+      progress.find((item) => item.moduleId === moduleId);
+
+    if (
+      !targetModule ||
+      !targetProgress ||
+      targetProgress.status === 'locked'
+    ) {
+      initializedModuleIdRef.current = moduleId;
+      router.replace('/training/center');
+      return;
+    }
+
+    initializedModuleIdRef.current = moduleId;
+
+    void (async () => {
+      try {
+        if (targetProgress.status === 'available') {
           await startModule(moduleId);
         }
 
-        if (messages.length === 0) {
+        const existingMessages =
+          useTrainingStore.getState().moduleMessages[moduleId] ?? [];
+
+        if (existingMessages.length === 0) {
           await startModuleChat(moduleId);
         }
+      } catch (error: unknown) {
+        initializedModuleIdRef.current = null;
 
-        setBootstrapStatus('ready');
-      } catch (err: unknown) {
-        console.error('[Page Bootstrap] Initialization error:', err);
+        console.error(
+          '[Training Module] Module initialization failed:',
+          error
+        );
+
+        setError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to initialize module'
+        );
         setBootstrapStatus('failed');
-        setError(err instanceof Error ? err.message : 'Failed to initialize module');
       }
-    };
-
-    init();
-  }, [employee, moduleId, bootstrapStatus, progress, startModule, startModuleChat, messages.length, router]);
+    })();
+  }, [
+    bootstrapStatus,
+    employee,
+    moduleId,
+    modules,
+    progress,
+    router,
+    startModule,
+    startModuleChat,
+  ]);
 
   // Increment timer every minute under visibility constraint
   useEffect(() => {
@@ -162,8 +246,12 @@ export default function TrainingModulePage({
 
     try {
       const result = await completeModule(moduleId, answers);
-      setFinalScore(result.score);
-      setEvaluationFeedback(result.feedback);
+      setEvaluationFeedback({
+        passed: result.passed,
+        score: result.score,
+        passingScore: result.passingScore,
+        details: result.feedback.details,
+      });
       setEvaluationComplete(true);
       setIsEvaluating(false);
     } catch (err: unknown) {
@@ -193,9 +281,10 @@ export default function TrainingModulePage({
   };
 
   const showEvaluationSuccessFeedback = () => {
-    setFinalScore(100);
     setEvaluationFeedback({
+      passed: true,
       score: 100,
+      passingScore: 100,
       details: [],
     });
     setEvaluationComplete(true);
@@ -206,12 +295,14 @@ export default function TrainingModulePage({
     setAnswers({});
     setEvaluationFeedback(null);
     setEvaluationComplete(false);
-    setFinalScore(null);
     setIsEvaluating(true);
     setEvaluationError(null);
   };
 
-  if (bootstrapStatus === 'loading') {
+  if (
+    bootstrapStatus === 'idle' ||
+    bootstrapStatus === 'loading'
+  ) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-8 h-8 rounded-full border-2 border-[#00D3D8] border-t-transparent animate-spin" />
@@ -500,8 +591,8 @@ export default function TrainingModulePage({
                   {currentModule.evaluationEnabled && (
                     <p className="text-sm text-muted mt-1">
                       {language === 'es'
-                        ? `Puntuación obtenida: ${finalScore}%. Mínimo requerido: 70%`
-                        : `Your score: ${finalScore}%. Required minimum: 70%`}
+                        ? `Puntuación obtenida: ${evaluationFeedback.score}%. Mínimo requerido: ${evaluationFeedback.passingScore}%`
+                        : `Your score: ${evaluationFeedback.score}%. Required minimum: ${evaluationFeedback.passingScore}%`}
                     </p>
                   )}
                 </div>

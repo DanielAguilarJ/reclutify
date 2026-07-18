@@ -353,30 +353,73 @@ PERSONALIZATION Context:
       const rawContent = moduleContext.content as { sections?: unknown[] } | undefined;
       const sections = Array.isArray(rawContent?.sections) ? rawContent.sections : [];
 
-      for (let i = 0; i < sections.length; i++) {
-        const s = sections[i] as Record<string, unknown> | null;
-        if (!s) continue;
+      for (let index = 0; index < sections.length; index++) {
+        const rawSection = sections[index];
 
-        const remaining = MAX_MODULE_CONTEXT_CHARACTERS - moduleCharacterCount;
-        if (remaining <= 0) break;
+        if (
+          !rawSection ||
+          typeof rawSection !== 'object'
+        ) {
+          continue;
+        }
 
-        const sectionBody = String(s.body ?? '');
-        const boundedSection = {
-          index: i,
-          title: String(s.title ?? ''),
-          keyPoints: Array.isArray(s.keyPoints)
-            ? s.keyPoints.filter((k): k is string => typeof k === 'string')
-            : [],
-          body: sectionBody.slice(0, Math.max(0, remaining)),
+        const sectionRecord =
+          rawSection as Record<string, unknown>;
+
+        const title =
+          typeof sectionRecord.title === 'string'
+            ? sectionRecord.title
+            : '';
+
+        const body =
+          typeof sectionRecord.body === 'string'
+            ? sectionRecord.body
+            : '';
+
+        const keyPoints = Array.isArray(sectionRecord.keyPoints)
+          ? sectionRecord.keyPoints.filter(
+              (point): point is string =>
+                typeof point === 'string'
+            )
+          : [];
+
+        const metadata = {
+          index,
+          title,
+          keyPoints,
         };
 
-        const serialized = JSON.stringify(boundedSection);
-        if (moduleCharacterCount + serialized.length > MAX_MODULE_CONTEXT_CHARACTERS) {
+        const metadataLength = JSON.stringify({
+          ...metadata,
+          body: '',
+        }).length;
+
+        const availableForBody =
+          MAX_MODULE_CONTEXT_CHARACTERS -
+          moduleCharacterCount -
+          metadataLength;
+
+        if (availableForBody <= 0) {
+          break;
+        }
+
+        const boundedSection = {
+          ...metadata,
+          body: body.slice(0, availableForBody),
+        };
+
+        const serializedLength =
+          JSON.stringify(boundedSection).length;
+
+        if (
+          moduleCharacterCount + serializedLength >
+          MAX_MODULE_CONTEXT_CHARACTERS
+        ) {
           break;
         }
 
         boundedSections.push(boundedSection);
-        moduleCharacterCount += serialized.length;
+        moduleCharacterCount += serializedLength;
       }
 
       moduleStructure = JSON.stringify({
@@ -576,8 +619,14 @@ You MUST respond with a single valid JSON block only.
       history: finalHistory,
     });
   } catch (error: unknown) {
-    console.error('[Chat API] Unexpected failure:', error);
-    const message = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error(
+      '[Chat API] Unexpected failure:',
+      error
+    );
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }

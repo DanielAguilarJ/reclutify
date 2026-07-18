@@ -32,7 +32,6 @@ describe('Zustand Store Integrity', () => {
       json: async () => mockResult,
     });
 
-    // Mock bootstrap fetch inside initializeFromSession if needed, but since completeModule calls initializeFromSession, let's mock it too.
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -73,14 +72,12 @@ describe('Zustand Store Integrity', () => {
   });
 
   it('sendGeneralMessage does rollback to previous state if API call fails', async () => {
-    // Set initial messages
     useTrainingStore.setState({
       generalMessages: [
         { role: 'assistant', content: 'Hello', timestamp: 1000 }
       ]
     });
 
-    // API error
     mockFetch.mockResolvedValueOnce({
       ok: false,
       json: async () => ({ error: 'Internal Server Error' }),
@@ -90,9 +87,68 @@ describe('Zustand Store Integrity', () => {
       useTrainingStore.getState().sendGeneralMessage('User input')
     ).rejects.toThrow('Internal Server Error');
 
-    // Confirm that generalMessages has been rolled back and doesn't contain the optimistic user message
     expect(useTrainingStore.getState().generalMessages).toEqual([
       { role: 'assistant', content: 'Hello', timestamp: 1000 }
     ]);
+  });
+
+  // Nuevos tests del Paso 11
+  it('startModuleChat propagates error on API failure', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+    });
+
+    await expect(
+      useTrainingStore.getState().startModuleChat('mod-1')
+    ).rejects.toThrow('Failed to initialize module tutor');
+  });
+
+  it('sets overallScore and score to undefined when absent', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        employee: {
+          id: 'emp-1',
+          org_id: 'org-1',
+          program_id: 'prog-1',
+          email: 'e@e.com',
+          name: 'N',
+          overall_score: null, // absent
+        },
+        program: { id: 'prog-1', org_id: 'org-1', title: 'P' },
+        modules: [],
+        progress: [
+          { id: 'prog-id', employee_id: 'emp-1', module_id: 'mod-1', status: 'available', score: null } // absent
+        ]
+      }),
+    });
+
+    const success = await useTrainingStore.getState().initializeFromSession();
+    expect(success).toBe(true);
+
+    const state = useTrainingStore.getState();
+    expect(state.employee?.overallScore).toBeUndefined();
+    expect(state.progress[0]?.score).toBeUndefined();
+  });
+
+  it('incrementTimeSpent uses absolute value returned by the server', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        timeSpent: 45, // Absolute value
+      }),
+    });
+
+    useTrainingStore.setState({
+      progress: [
+        { id: 'prog-1', employeeId: 'emp-1', moduleId: 'mod-1', status: 'in_progress', timeSpent: 10, createdAt: '' }
+      ]
+    });
+
+    await useTrainingStore.getState().incrementTimeSpent('mod-1', 5);
+
+    const progressItem = useTrainingStore.getState().progress.find(p => p.moduleId === 'mod-1');
+    expect(progressItem?.timeSpent).toBe(45);
   });
 });

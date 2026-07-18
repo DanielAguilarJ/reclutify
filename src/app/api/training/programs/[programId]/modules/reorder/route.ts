@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireProgramAdmin } from '@/lib/training/auth';
+import {
+  requireProgramAdmin,
+  TrainingAuthError,
+} from '@/lib/training/auth';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
 import { reorderTrainingModulesSchema } from '@/lib/training/contracts';
 
@@ -66,11 +69,21 @@ export async function PATCH(
     await replaceDraftModules(admin, user.id, programId, updatedModulesList);
 
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    console.error('[API Modules Reorder] Unexpected error:', err);
-    const message = err instanceof Error ? err.message : 'Unauthorized';
+  } catch (error: unknown) {
+    console.error(
+      '[API Modules Reorder] Unexpected error:',
+      error
+    );
+
+    if (error instanceof TrainingAuthError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
+
     return NextResponse.json(
-      { error: message },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

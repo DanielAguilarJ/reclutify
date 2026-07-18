@@ -284,6 +284,34 @@ Create the training modules using only the informational content inside the deli
         rpcError
       );
 
+      if (rpcError.message?.includes('only_draft_programs_can_replace_modules')) {
+        return NextResponse.json(
+          { error: 'Create a new program version before regenerating modules' },
+          { status: 409 }
+        );
+      }
+
+      if (rpcError.message?.includes('program_modules_are_in_use')) {
+        return NextResponse.json(
+          { error: 'Modules cannot be regenerated while employees are in training' },
+          { status: 409 }
+        );
+      }
+
+      if (rpcError.message?.includes('training_program_not_found')) {
+        return NextResponse.json(
+          { error: 'Training program not found' },
+          { status: 404 }
+        );
+      }
+
+      if (rpcError.message?.includes('forbidden')) {
+        return NextResponse.json(
+          { error: 'Forbidden' },
+          { status: 403 }
+        );
+      }
+
       return NextResponse.json(
         { error: 'Could not persist generated modules' },
         { status: 500 }

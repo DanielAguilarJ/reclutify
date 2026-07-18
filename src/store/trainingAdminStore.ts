@@ -35,7 +35,6 @@ interface TrainingAdminState {
   updateProgram: (id: string, updates: Partial<TrainingProgram>) => Promise<boolean>;
 
   addDocument: (doc: TrainingDocument) => void;
-  removeDocument: (id: string) => Promise<boolean>;
   detachDocumentFromProgram: (programId: string, docId: string) => Promise<boolean>;
 
   setModules: (modules: TrainingModule[]) => void;
@@ -313,28 +312,6 @@ export const useTrainingAdminStore = create<TrainingAdminState>()((set, get) => 
     set((state) => ({
       documents: [doc, ...state.documents],
     }));
-  },
-
-  removeDocument: async (id) => {
-    set({ error: null });
-    const prevDocs = get().documents;
-    set({ documents: prevDocs.filter((d) => d.id !== id) });
-
-    try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from('training_documents')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-      return true;
-    } catch (err: unknown) {
-      console.error('[TrainingAdminStore] Error in removeDocument:', err);
-      const errMsg = err instanceof Error ? err.message : 'Error removing document';
-      set({ documents: prevDocs, error: errMsg });
-      return false;
-    }
   },
 
   detachDocumentFromProgram: async (programId, docId) => {

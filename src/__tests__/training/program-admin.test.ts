@@ -37,7 +37,7 @@ const mockFrom = vi.fn((table: string) => {
 });
 
 vi.mock('@/lib/training/auth', async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
+  const actual = (await importOriginal()) as typeof import('@/lib/training/auth');
   return {
     ...actual,
     requireProgramAdmin: async (programId: string) => {

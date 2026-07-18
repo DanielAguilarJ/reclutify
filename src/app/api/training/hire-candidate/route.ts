@@ -71,6 +71,33 @@ export async function POST(req: NextRequest) {
       if (rpcError.message?.includes('forbidden')) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
+      if (rpcError.message?.includes('training_program_not_published')) {
+        return NextResponse.json(
+          { error: 'Training program must be published before hiring' },
+          { status: 409 }
+        );
+      }
+      if (rpcError.message?.includes('training_program_has_no_role')) {
+        return NextResponse.json(
+          { error: 'Training program has no role assigned' },
+          { status: 409 }
+        );
+      }
+      if (rpcError.message?.includes('training_program_has_no_modules')) {
+        return NextResponse.json(
+          { error: 'Training program has no modules' },
+          { status: 409 }
+        );
+      }
+      if (
+        rpcError.message?.includes('candidate_org_mismatch') ||
+        rpcError.message?.includes('candidate_role_mismatch')
+      ) {
+        return NextResponse.json(
+          { error: 'Candidate does not match the training program organization or role' },
+          { status: 409 }
+        );
+      }
 
       return NextResponse.json(
         { error: 'Could not complete candidate hiring' },

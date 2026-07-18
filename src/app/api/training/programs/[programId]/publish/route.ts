@@ -38,6 +38,34 @@ export async function POST(
         );
       }
 
+      if (error.message?.includes('training_program_not_found')) {
+        return NextResponse.json(
+          { error: 'Training program not found' },
+          { status: 404 }
+        );
+      }
+
+      if (error.message?.includes('training_program_has_no_role')) {
+        return NextResponse.json(
+          { error: 'Assign a role to the program before publishing' },
+          { status: 409 }
+        );
+      }
+
+      if (error.message?.includes('training_program_has_no_modules')) {
+        return NextResponse.json(
+          { error: 'Add at least one module before publishing' },
+          { status: 409 }
+        );
+      }
+
+      if (error.message?.includes('training_program_has_unready_documents')) {
+        return NextResponse.json(
+          { error: 'All required documents must finish processing before publishing' },
+          { status: 409 }
+        );
+      }
+
       return NextResponse.json(
         { error: 'Failed to publish training program' },
         { status: 500 }

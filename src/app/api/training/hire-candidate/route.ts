@@ -1,122 +1,116 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
+import { requireAuthenticatedUser } from '@/lib/training/auth';
+import { createAdminClient } from '@/utils/supabase/admin';
+import { createOpaqueToken, hashOpaqueToken } from '@/lib/training/tokens';
 
-const TOKEN_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-function generateToken(length = 8): string {
-  let token = '';
-  for (let i = 0; i < length; i++) {
-    token += TOKEN_CHARSET[Math.floor(Math.random() * TOKEN_CHARSET.length)];
-  }
-  return token;
-}
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { candidateResultId, email, name, roleTitle, orgId, programId, interviewData } = body;
-
-    if (!email || !name || !orgId || !programId) {
+    // 1. Validar variables de entorno de red
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) {
       return NextResponse.json(
-        { error: 'Missing required fields: email, name, orgId, programId' },
+        { error: 'NEXT_PUBLIC_APP_URL is not configured' },
+        { status: 500 }
+      );
+    }
+
+    // 2. Autenticar administrador
+    const user = await requireAuthenticatedUser();
+
+    const body = await req.json();
+    const { candidateResultId, programId } = body;
+
+    if (!candidateResultId || !programId) {
+      return NextResponse.json(
+        { error: 'Missing required fields: candidateResultId, programId' },
         { status: 400 }
       );
     }
 
-    const token = generateToken();
-    const supabase = await createClient();
+    const admin = createAdminClient();
 
-    // 1. Insert into training_employees
-    const { data: employee, error: employeeError } = await supabase
+    // 3. Cargar candidato para obtener correo y nombre y asegurar que existe
+    const { data: candidate, error: candError } = await admin
+      .from('candidate_results')
+      .select('*')
+      .eq('id', candidateResultId)
+      .maybeSingle();
+
+    if (candError || !candidate) {
+      console.error('[Hire API] Candidate not found:', candError);
+      return NextResponse.json({ error: 'Candidate result not found' }, { status: 404 });
+    }
+
+    // 4. Generar token opaco criptográfico y su hash
+    const invitationToken = createOpaqueToken();
+    const invitationTokenHash = hashOpaqueToken(invitationToken);
+    const accessExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 días
+
+    // 5. Llamar RPC transaccional
+    const { data: employeeId, error: rpcError } = await admin.rpc('hire_training_candidate', {
+      p_actor_user_id: user.id,
+      p_candidate_result_id: candidateResultId,
+      p_program_id: programId,
+      p_access_token_hash: invitationTokenHash,
+      p_access_expires_at: accessExpiresAt,
+    });
+
+    if (rpcError) {
+      console.error('[Hire API] SQL RPC Transaction failed:', rpcError);
+      return NextResponse.json(
+        { error: `Transaction failed: ${rpcError.message}` },
+        { status: 400 }
+      );
+    }
+
+    // 6. Cargar el empleado creado
+    const { data: employee, error: empLoadError } = await admin
       .from('training_employees')
-      .insert({
-        candidate_result_id: candidateResultId || null,
-        email,
-        name,
-        role_title: roleTitle,
-        org_id: orgId,
-        program_id: programId,
-        token: token,
-        status: 'not_started',
-        overall_progress: 0,
-        interview_data: interviewData || null,
-      })
-      .select()
+      .select('*')
+      .eq('id', employeeId)
       .single();
 
-    if (employeeError) {
-      console.error('[hire-candidate] Employee insert error:', employeeError);
-      return NextResponse.json(
-        { error: 'Failed to create employee record' },
-        { status: 500 }
-      );
+    if (empLoadError || !employee) {
+      console.error('[Hire API] Error reloading hired employee:', empLoadError);
+      return NextResponse.json({ error: 'Employee was created but record could not be loaded' }, { status: 500 });
     }
 
-    // 2. Fetch all modules for the program (ordered)
-    const { data: modules, error: modulesError } = await supabase
-      .from('training_modules')
-      .select('id, title, sort_order')
-      .eq('program_id', programId)
-      .order('sort_order', { ascending: true });
+    // 7. Generar notas de personalización vía AI (opcional/no-bloqueante)
+    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
 
-    if (modulesError) {
-      console.error('[hire-candidate] Modules fetch error:', modulesError);
-      return NextResponse.json(
-        { error: 'Failed to fetch program modules' },
-        { status: 500 }
-      );
-    }
-
-    // 3. Create training_progress entries (first = 'available', rest = 'locked')
-    if (modules && modules.length > 0) {
-      const progressEntries = modules.map((mod, index) => ({
-        employee_id: employee.id,
-        module_id: mod.id,
-        status: index === 0 ? 'available' : 'locked',
-        score: null,
-        ai_feedback: null,
-      }));
-
-      const { error: progressError } = await supabase
-        .from('training_progress')
-        .insert(progressEntries);
-
-      if (progressError) {
-        console.error('[hire-candidate] Progress insert error:', progressError);
-      }
-    }
-
-    // 4. Generate personalization notes via AI
-    let personalizationNotes = null;
-    if (interviewData) {
+    if (OPENROUTER_API_KEY && employee.interview_data) {
       try {
-        const aiPrompt = `Based on the following interview evaluation data for a new employee, generate personalization notes for their training program. The employee "${name}" was hired for the role "${roleTitle}".
+        const aiPrompt = `Based on the following interview evaluation data for a new employee, generate personalization notes for their training program. The employee "${employee.name}" was hired for the role "${employee.role_title || ''}".
 
 INTERVIEW DATA:
-${JSON.stringify(interviewData, null, 2)}
+${JSON.stringify(employee.interview_data, null, 2)}
 
-Return a JSON object with:
+Return a JSON object with this exact structure (strengths, areasToWatch, customTips must be arrays of strings):
 {
-  "strengths": "A summary of their key strengths based on the interview (2-3 sentences)",
-  "areasToWatch": "Areas where they may need extra support or attention during training (2-3 sentences)",
-  "learningStyle": "Inferred learning style and preferences based on their responses (1-2 sentences)",
-  "customTips": "Specific tips for trainers/AI tutor to personalize their learning experience (2-3 bullet points as a string)"
+  "strengths": ["Strength 1", "Strength 2"],
+  "areasToWatch": ["Area 1", "Area 2"],
+  "learningStyle": "Inferred learning style preferences...",
+  "customTips": ["Tip 1", "Tip 2"]
 }
 
-Respond ONLY with valid JSON, no markdown delimiters.`;
+Respond ONLY with valid JSON.`;
 
         const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            Authorization: `Bearer ${OPENROUTER_API_KEY}`,
             'Content-Type': 'application/json',
             'HTTP-Referer': 'https://reclutify.com',
             'X-Title': 'Reclutify Training Center',
           },
           body: JSON.stringify({
-            model: 'x-ai/grok-4.20',
+            model: TRAINING_AI_MODEL,
             messages: [{ role: 'user', content: aiPrompt }],
-            temperature: 0.7,
+            temperature: 0.5,
             response_format: { type: 'json_object' },
           }),
         });
@@ -124,26 +118,42 @@ Respond ONLY with valid JSON, no markdown delimiters.`;
         if (aiResponse.ok) {
           const aiData = await aiResponse.json();
           const content = aiData.choices?.[0]?.message?.content || '{}';
-          const jsonStr = content.replace(/```json/g, '').replace(/```/g, '').trim();
-          personalizationNotes = JSON.parse(jsonStr);
+          const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
+          const structured = JSON.parse(cleanContent);
 
-          // Update employee with personalization notes
-          await supabase
+          // Normalizar arrays
+          const strengths = Array.isArray(structured.strengths) ? structured.strengths : [structured.strengths].filter(Boolean);
+          const areasToWatch = Array.isArray(structured.areasToWatch) ? structured.areasToWatch : [structured.areasToWatch].filter(Boolean);
+          const customTips = Array.isArray(structured.customTips) ? structured.customTips : [structured.customTips].filter(Boolean);
+
+          const personalizationNotes = {
+            strengths,
+            areasToWatch,
+            learningStyle: structured.learningStyle || '',
+            customTips,
+          };
+
+          // Actualizar notas en DB
+          await admin
             .from('training_employees')
             .update({ personalization_notes: personalizationNotes })
-            .eq('id', employee.id);
+            .eq('id', employeeId);
         }
       } catch (aiError) {
-        console.error('[hire-candidate] AI personalization error:', aiError);
-        // Non-blocking: training can proceed without personalization
+        console.error('[Hire API] AI personalization failed:', aiError);
       }
     }
 
-    // 5. Send welcome email via Brevo
-    try {
-      const trainingUrl = `https://reclutify.com/training/${token}`;
+    // 8. Construir URL de entrenamiento
+    const trainingUrl = `${appUrl.replace(/\/$/, '')}/training/${invitationToken}`;
 
-      const emailHtml = `
+    // 9. Enviar correo de bienvenida vía Brevo (opcional/no-bloqueante)
+    let emailSent = false;
+    const BREVO_API_KEY = process.env.BREVO_API_KEY;
+
+    if (BREVO_API_KEY) {
+      try {
+        const emailHtml = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -164,13 +174,13 @@ Respond ONLY with valid JSON, no markdown delimiters.`;
           <tr>
             <td style="padding:40px;">
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 20px;">
-                Hi <strong>${name}</strong>,
+                Hi <strong>${employee.name}</strong>,
               </p>
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 20px;">
-                Congratulations on being selected for the role of <strong>${roleTitle}</strong>! We're excited to have you on board.
+                Congratulations on being selected for the role of <strong>${employee.role_title || ''}</strong>! We're excited to have you on board.
               </p>
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 30px;">
-                Your personalized onboarding training program is ready. Click the button below to get started with your AI-guided learning experience.
+                Your onboarding training program is ready. Click the button below to get started with your AI-guided learning experience.
               </p>
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
@@ -181,11 +191,8 @@ Respond ONLY with valid JSON, no markdown delimiters.`;
                   </td>
                 </tr>
               </table>
-              <p style="color:#6b7280;font-size:14px;line-height:1.6;margin:30px 0 0;text-align:center;">
-                Your access code: <strong style="color:#6366f1;font-size:16px;letter-spacing:2px;">${token}</strong>
-              </p>
-              <p style="color:#9ca3af;font-size:13px;line-height:1.5;margin:20px 0 0;text-align:center;">
-                You can also access your training at any time by visiting reclutify.com/training and entering your code.
+              <p style="color:#9ca3af;font-size:13px;line-height:1.5;margin:30px 0 0;text-align:center;">
+                You can access your training at any time using the link above.
               </p>
             </td>
           </tr>
@@ -203,44 +210,42 @@ Respond ONLY with valid JSON, no markdown delimiters.`;
 </body>
 </html>`;
 
-      await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'api-key': process.env.BREVO_API_KEY || '',
-          'Content-Type': 'application/json',
-          'accept': 'application/json',
-        },
-        body: JSON.stringify({
-          sender: { name: 'Reclutify', email: 'hola@reclutify.com' },
-          to: [{ email, name }],
-          subject: `${name}, your training program is ready!`,
-          htmlContent: emailHtml,
-        }),
-      });
-    } catch (emailError) {
-      console.error('[hire-candidate] Email send error:', emailError);
-      // Non-blocking: employee was created successfully
+        const brevoResponse = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: {
+            'api-key': BREVO_API_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            sender: { name: 'Reclutify Onboarding', email: 'onboarding@reclutify.com' },
+            to: [{ email: employee.email, name: employee.name }],
+            subject: `Welcome to Your Training - ${employee.role_title || 'Reclutify'}`,
+            htmlContent: emailHtml,
+          }),
+        });
+
+        if (brevoResponse.ok) {
+          emailSent = true;
+        } else {
+          const errData = await brevoResponse.text();
+          console.error('[Hire API] Brevo email delivery failed:', errData);
+        }
+      } catch (emailErr) {
+        console.error('[Hire API] Error sending Brevo email:', emailErr);
+      }
     }
 
     return NextResponse.json({
       success: true,
-      employee: {
-        ...employee,
-        personalization_notes: personalizationNotes,
-      },
-      token,
-      modulesCount: modules?.length || 0,
+      employeeId,
+      trainingUrl,
+      emailSent,
     });
-  } catch (error) {
-    const err = error as Error;
-    console.error('[hire-candidate] failure:', {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
-    });
+  } catch (err: any) {
+    console.error('[Hire API] Unexpected error:', err);
     return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
+      { error: err.message || 'Unauthorized' },
+      { status: err.status || 500 }
     );
   }
 }

@@ -1,18 +1,48 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Users, TrendingUp, Award, BookOpen, Settings, Eye, Activity } from 'lucide-react';
+import { Users, TrendingUp, Award, BookOpen, Settings, Eye, Activity, Briefcase, Plus, FileEdit, Check, AlertCircle, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
+import { useAdminStore } from '@/store/adminStore';
 
 export default function TrainingDashboardPage() {
   const { language } = useAppStore();
-  const { employees, modules, loading, fetchTrainingData } = useTrainingAdminStore();
+  const { employees, modules, programs, loading: trainingLoading, fetchTrainingData, createProgram } = useTrainingAdminStore();
+  const { roles, loading: adminLoading, fetchFromSupabase: fetchAdminData } = useAdminStore();
+  const [creatingForRole, setCreatingForRole] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTrainingData();
-  }, [fetchTrainingData]);
+    fetchAdminData();
+  }, [fetchTrainingData, fetchAdminData]);
+
+  const handleCreateProgram = async (roleId: string, roleTitle: string) => {
+    setCreatingForRole(roleId);
+    try {
+      const newProgram = await createProgram({
+        roleId,
+        title: language === 'es' ? `Programa: ${roleTitle}` : `Program: ${roleTitle}`,
+        description: language === 'es' 
+          ? `Programa de capacitación e inducción para el puesto de ${roleTitle}.` 
+          : `Training and onboarding program for the ${roleTitle} role.`,
+        welcomeMessage: language === 'es'
+          ? `¡Te damos la bienvenida a tu capacitación para el puesto de ${roleTitle}!`
+          : `Welcome to your training for the ${roleTitle} role!`,
+        aiPersonality: 'friendly_mentor',
+      });
+      if (newProgram) {
+        window.location.href = `/admin/training/configure/${newProgram.id}`;
+      }
+    } catch (err) {
+      console.error('Error creating program:', err);
+    } finally {
+      setCreatingForRole(null);
+    }
+  };
+
+  const loading = trainingLoading || adminLoading;
 
   // KPI calculations
   const totalEmployees = employees.length;
@@ -68,7 +98,7 @@ export default function TrainingDashboardPage() {
     return 'bg-muted';
   };
 
-  if (loading) {
+  if (loading && employees.length === 0 && roles.length === 0) {
     return (
       <div className="animate-in fade-in duration-500 p-6 space-y-6">
         {/* Header skeleton */}
@@ -106,7 +136,7 @@ export default function TrainingDashboardPage() {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-foreground mb-1">
-            {language === 'es' ? 'Centro de Capacitacion' : 'Training Center'}
+            {language === 'es' ? 'Centro de Capacitación' : 'Training Center'}
           </h1>
           <p className="text-sm text-muted">
             {language === 'es'
@@ -114,13 +144,6 @@ export default function TrainingDashboardPage() {
               : 'Manage training programs and monitor employee progress'}
           </p>
         </div>
-        <Link
-          href="/admin/training/configure"
-          className="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-medium py-2.5 px-4 rounded-xl transition-all"
-        >
-          <Settings className="h-4 w-4" />
-          {language === 'es' ? 'Configurar Programa' : 'Configure Program'}
-        </Link>
       </div>
 
       {/* KPI Cards */}
@@ -172,6 +195,142 @@ export default function TrainingDashboardPage() {
           </div>
           <p className="text-2xl font-bold text-foreground">{activeModules}</p>
         </div>
+      </div>
+
+      {/* Programs by Vacancy */}
+      <div className="bg-card rounded-2xl shadow-sm border border-border/50 overflow-hidden">
+        <div className="p-5 border-b border-border/50 flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">
+              {language === 'es' ? 'Programas por Puesto Vacante' : 'Programs by Vacant Role'}
+            </h2>
+            <p className="text-xs text-muted mt-0.5">
+              {language === 'es'
+                ? 'Asigna, configura y publica el programa de entrenamiento correspondiente a cada rol.'
+                : 'Assign, configure and publish the corresponding training program for each role.'}
+            </p>
+          </div>
+        </div>
+
+        {roles.length === 0 ? (
+          <div className="p-12 flex flex-col items-center justify-center border-2 border-dashed border-border/50 m-5 rounded-xl">
+            <div className="p-4 rounded-full bg-primary-light mb-4">
+              <Briefcase className="h-8 w-8 text-primary" />
+            </div>
+            <p className="text-foreground font-medium mb-1">
+              {language === 'es' ? 'No hay puestos vacantes creados' : 'No vacant roles created'}
+            </p>
+            <p className="text-sm text-muted text-center max-w-md">
+              {language === 'es'
+                ? 'Ve a la sección de Puestos para crear un puesto con IA primero.'
+                : 'Go to the Roles section to create a role with AI first.'}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border/50">
+                  <th className="text-left text-xs font-medium text-muted uppercase tracking-wider px-5 py-3">
+                    {language === 'es' ? 'Puesto / Vacante' : 'Role / Vacancy'}
+                  </th>
+                  <th className="text-left text-xs font-medium text-muted uppercase tracking-wider px-5 py-3">
+                    {language === 'es' ? 'Estado del Programa' : 'Program Status'}
+                  </th>
+                  <th className="text-left text-xs font-medium text-muted uppercase tracking-wider px-5 py-3">
+                    {language === 'es' ? 'Versión' : 'Version'}
+                  </th>
+                  <th className="text-left text-xs font-medium text-muted uppercase tracking-wider px-5 py-3">
+                    {language === 'es' ? 'Módulos' : 'Modules'}
+                  </th>
+                  <th className="text-right text-xs font-medium text-muted uppercase tracking-wider px-5 py-3">
+                    {language === 'es' ? 'Acción' : 'Action'}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/50">
+                {roles.map((role) => {
+                  // Buscar el programa publicado u obtener el más nuevo/borrador para este rol
+                  const rolePrograms = programs.filter((p) => p.roleId === role.id);
+                  const program = rolePrograms.find((p) => p.status === 'published') || rolePrograms[0];
+                  const roleModulesCount = program ? modules.filter((m) => m.programId === program.id).length : 0;
+
+                  return (
+                    <tr key={role.id} className="hover:bg-background/50 transition-colors">
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-full bg-primary-light flex items-center justify-center">
+                            <Briefcase className="h-4 w-4 text-primary" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-foreground">{role.title}</p>
+                            <p className="text-xs text-muted">{role.location || 'Remote'}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        {!program ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted/20 text-muted">
+                            <AlertCircle className="h-3 w-3" />
+                            {language === 'es' ? 'No Configurado' : 'Not Configured'}
+                          </span>
+                        ) : program.status === 'published' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
+                            <Check className="h-3 w-3" />
+                            {language === 'es' ? 'Publicado' : 'Published'}
+                          </span>
+                        ) : program.status === 'archived' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted/30 text-muted">
+                            {language === 'es' ? 'Archivado' : 'Archived'}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">
+                            {language === 'es' ? 'Borrador' : 'Draft'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="text-sm text-foreground">{program ? `v${program.version}` : '—'}</span>
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="text-sm text-foreground">{program ? roleModulesCount : '—'}</span>
+                      </td>
+                      <td className="px-5 py-4 text-right">
+                        {program ? (
+                          <Link
+                            href={`/admin/training/configure/${program.id}`}
+                            className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover font-medium transition-colors"
+                          >
+                            <Settings className="h-3.5 w-3.5" />
+                            {language === 'es' ? 'Configurar' : 'Configure'}
+                          </Link>
+                        ) : (
+                          <button
+                            onClick={() => handleCreateProgram(role.id, role.title)}
+                            disabled={creatingForRole === role.id}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary hover:bg-primary-hover text-white transition-colors disabled:opacity-50"
+                          >
+                            {creatingForRole === role.id ? (
+                              <>
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                {language === 'es' ? 'Creando...' : 'Creating...'}
+                              </>
+                            ) : (
+                              <>
+                                <Plus className="h-3 w-3" />
+                                {language === 'es' ? 'Crear Programa' : 'Create Program'}
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Employees Table */}

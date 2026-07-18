@@ -35,7 +35,7 @@ describe('Logo Component', () => {
 describe('Sitemap Generation', () => {
   it('should export a valid sitemap function', async () => {
     const { default: sitemap } = await import('@/app/sitemap');
-    const result = sitemap();
+    const result = await sitemap();
 
     expect(Array.isArray(result)).toBe(true);
     expect(result.length).toBeGreaterThanOrEqual(5);

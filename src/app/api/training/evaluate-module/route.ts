@@ -1,220 +1,204 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
+import { getTrainingEmployeeFromSession } from '@/lib/training/session';
+import { createAdminClient } from '@/utils/supabase/admin';
+import { evaluateTrainingModuleSchema } from '@/lib/training/contracts';
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { moduleId, employeeId, conversationHistory, moduleContent } = body;
+    // 1. Validar sesión del empleado
+    const employee = await getTrainingEmployeeFromSession();
+    if (!employee) {
+      return NextResponse.json({ error: 'Unauthorized training session' }, { status: 401 });
+    }
 
-    if (!moduleId || !employeeId || !conversationHistory) {
+    const parsed = evaluateTrainingModuleSchema.safeParse(await req.json());
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Missing required fields: moduleId, employeeId, conversationHistory' },
+        { error: 'Invalid request', issues: parsed.error.flatten() },
         { status: 400 }
       );
     }
 
-    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    if (!OPENROUTER_API_KEY) {
-      return NextResponse.json(
-        { error: 'AI service not configured' },
-        { status: 503 }
-      );
+    const { moduleId, answers: rawAnswers } = parsed.data;
+
+    // Transform array to internal Record<number, string> structure
+    const answers: Record<number, string> = {};
+    for (const item of rawAnswers) {
+      answers[item.questionIndex] = item.answer;
     }
 
-    // Format conversation for evaluation
-    const conversationText = conversationHistory
-      .map((msg: { role: string; content: string }) => `${msg.role === 'assistant' ? 'Tutor' : 'Employee'}: ${msg.content}`)
-      .join('\n\n');
+    const admin = createAdminClient();
 
-    const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://reclutify.com',
-        'X-Title': 'Reclutify Training Center',
-      },
-      body: JSON.stringify({
-        model: 'x-ai/grok-4.20',
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert training evaluator. Analyze the training conversation between a tutor and employee to assess how well the employee understood the module content. Be fair but rigorous. Respond ONLY with valid JSON.`,
-          },
-          {
-            role: 'user',
-            content: `Based on this training conversation, evaluate how well the employee understood the module content.
+    // 2. Cargar el módulo asignado
+    const { data: moduleData, error: modError } = await admin
+      .from('training_modules')
+      .select('*')
+      .eq('id', moduleId)
+      .eq('program_id', employee.program_id)
+      .maybeSingle();
 
-MODULE CONTENT COVERED:
-${moduleContent || 'Not provided'}
+    if (modError || !moduleData) {
+      console.error('[Evaluate API] Module load error:', modError);
+      return NextResponse.json({ error: 'Assigned module not found' }, { status: 404 });
+    }
 
-TRAINING CONVERSATION:
-${conversationText}
+    const questions = (moduleData.evaluation_questions || []) as any[];
+    if (questions.length === 0) {
+      return NextResponse.json({ error: 'This module has no evaluation questions' }, { status: 400 });
+    }
 
-Evaluate and return JSON with:
+    // 3. Calificar respuestas
+    const deterministicResults: { index: number; correct: boolean; explanation?: string }[] = [];
+    const openEndedToEvaluate: { index: number; question: string; answerExpected: string; answerGiven: string }[] = [];
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const answerGiven = answers[i] || '';
+
+      if (q.type === 'multiple_choice' || q.type === 'true_false') {
+        const expected = String(q.correctAnswer || '').trim().toLowerCase();
+        const given = String(answerGiven).trim().toLowerCase();
+        const isCorrect = expected === given;
+
+        deterministicResults.push({
+          index: i,
+          correct: isCorrect,
+          explanation: q.explanation || '',
+        });
+      } else if (q.type === 'open_ended') {
+        openEndedToEvaluate.push({
+          index: i,
+          question: q.question,
+          answerExpected: q.correctAnswer || '',
+          answerGiven: String(answerGiven),
+        });
+      }
+    }
+
+    const openEndedResults: { index: number; correct: boolean; explanation: string }[] = [];
+
+    if (openEndedToEvaluate.length > 0) {
+      const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+      const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+
+      if (!OPENROUTER_API_KEY) {
+        return NextResponse.json({ error: 'AI service not configured for grading open questions' }, { status: 503 });
+      }
+
+      try {
+        const aiPrompt = `You are a strict grading assistant. Evaluate the user's answers against the expected correct answers for these open-ended questions.
+Determine if they are conceptually correct (correct: true/false) and provide a short 1-sentence explanation of why.
+
+QUESTIONS TO EVALUATE:
+${JSON.stringify(openEndedToEvaluate, null, 2)}
+
+Return JSON format:
 {
-  "score": <number 0-100>,
-  "passed": <boolean, true if score >= 70>,
-  "feedback": "Overall feedback paragraph about their performance",
-  "strongAreas": ["Area they understood well 1", "Area 2"],
-  "weakAreas": ["Area that needs review 1", "Area 2"],
-  "recommendation": "What they should do next - review specific topics, proceed to next module, etc."
-}`,
+  "evaluations": [
+    {
+      "index": 0,
+      "correct": true,
+      "explanation": "Explanation here..."
+    }
+  ]
+}
+Respond ONLY with valid JSON.`;
+
+        const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reclutify.com',
+            'X-Title': 'Reclutify Training Center',
           },
-        ],
-        temperature: 0.3,
-        response_format: { type: 'json_object' },
-      }),
-    });
+          body: JSON.stringify({
+            model: TRAINING_AI_MODEL,
+            messages: [{ role: 'user', content: aiPrompt }],
+            temperature: 0.1,
+            response_format: { type: 'json_object' },
+          }),
+        });
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error('[evaluate-module] AI API error:', errorText);
-      return NextResponse.json(
-        { error: 'AI evaluation service unavailable. Please try again.' },
-        { status: 502 }
-      );
-    }
+        if (aiResponse.ok) {
+          const aiData = await aiResponse.json();
+          const content = aiData.choices?.[0]?.message?.content || '{}';
+          const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
+          const structured = JSON.parse(cleanContent);
 
-    const aiData = await aiResponse.json();
-    const content = aiData.choices?.[0]?.message?.content || '{}';
-    const jsonStr = content.replace(/```json/g, '').replace(/```/g, '').trim();
-
-    let evaluation;
-    try {
-      evaluation = JSON.parse(jsonStr);
-    } catch (parseError) {
-      console.error('[evaluate-module] JSON parse error:', jsonStr.substring(0, 500));
-      return NextResponse.json(
-        { error: 'Failed to parse evaluation. Please try again.' },
-        { status: 500 }
-      );
-    }
-
-    // Ensure valid score
-    const score = Math.min(100, Math.max(0, Number(evaluation.score) || 0));
-    const passed = score >= 70;
-
-    const supabase = await createClient();
-
-    // 1. Update training_progress for this module
-    const { error: progressError } = await supabase
-      .from('training_progress')
-      .update({
-        status: passed ? 'completed' : 'in_progress',
-        score,
-        ai_feedback: evaluation.feedback || null,
-        completed_at: passed ? new Date().toISOString() : null,
-      })
-      .eq('employee_id', employeeId)
-      .eq('module_id', moduleId);
-
-    if (progressError) {
-      console.error('[evaluate-module] Progress update error:', progressError);
-    }
-
-    // 2. If passed, unlock the next module
-    if (passed) {
-      // Get current module's order to find the next one
-      const { data: currentProgress } = await supabase
-        .from('training_progress')
-        .select('module_id, training_modules(sort_order, program_id)')
-        .eq('employee_id', employeeId)
-        .eq('module_id', moduleId)
-        .single();
-
-      if (currentProgress?.training_modules) {
-        const moduleData = currentProgress.training_modules as unknown as {
-          sort_order: number;
-          program_id: string;
-        };
-
-        // Find the next module in order
-        const { data: nextModule } = await supabase
-          .from('training_modules')
-          .select('id')
-          .eq('program_id', moduleData.program_id)
-          .gt('sort_order', moduleData.sort_order)
-          .order('sort_order', { ascending: true })
-          .limit(1)
-          .single();
-
-        if (nextModule) {
-          await supabase
-            .from('training_progress')
-            .update({ status: 'available' })
-            .eq('employee_id', employeeId)
-            .eq('module_id', nextModule.id)
-            .eq('status', 'locked');
+          if (Array.isArray(structured.evaluations)) {
+            for (const grading of structured.evaluations) {
+              openEndedResults.push({
+                index: grading.index,
+                correct: !!grading.correct,
+                explanation: grading.explanation || '',
+              });
+            }
+          }
+        }
+      } catch (aiErr) {
+        console.error('[Evaluate API] AI grading failed, treating open questions as incorrect:', aiErr);
+        for (const oq of openEndedToEvaluate) {
+          openEndedResults.push({
+            index: oq.index,
+            correct: false,
+            explanation: 'Grading system was offline. Answer could not be validated.',
+          });
         }
       }
     }
 
-    // 3. Insert into training_evaluations
-    const { error: evalError } = await supabase
-      .from('training_evaluations')
-      .insert({
-        employee_id: employeeId,
-        module_id: moduleId,
-        score,
-        passed,
-        attempts: 1,
-        questions: evaluation.strongAreas?.map((area: string) => ({
-          question: area,
-          type: 'open_ended',
-          correctAnswer: '',
-        })) || [],
-        answers: evaluation.weakAreas?.map((area: string, i: number) => ({
-          questionIndex: i,
-          answer: area,
-          isCorrect: false,
-          aiExplanation: evaluation.recommendation || '',
-        })) || [],
-      });
+    // Combinar resultados y calcular score
+    const allResults = [...deterministicResults, ...openEndedResults].sort((a, b) => a.index - b.index);
+    const correctCount = allResults.filter(r => r.correct).length;
+    const score = Math.round((correctCount / questions.length) * 100);
 
-    if (evalError) {
-      console.error('[evaluate-module] Evaluation insert error:', evalError);
-    }
+    const detailFeedback = {
+      score,
+      details: allResults.map(r => ({
+        question: questions[r.index]?.question || 'Question',
+        correct: r.correct,
+        userAnswer: answers[r.index] || '',
+        correctAnswer: questions[r.index]?.correctAnswer || '',
+        explanation: r.explanation || '',
+      })),
+    };
 
-    // 4. Recalculate overall_progress for the employee
-    const { data: allProgress } = await supabase
-      .from('training_progress')
-      .select('status')
-      .eq('employee_id', employeeId);
+    // 4. Llamar a la RPC transaccional finalize_training_evaluation
+    const { data: rpcResult, error: rpcError } = await admin.rpc(
+      'finalize_training_evaluation',
+      {
+        p_employee_id: employee.id,
+        p_module_id: moduleId,
+        p_questions: questions,
+        p_answers: answers,
+        p_score: score,
+        p_feedback: JSON.stringify(detailFeedback),
+      }
+    );
 
-    if (allProgress && allProgress.length > 0) {
-      const completedCount = allProgress.filter((p) => p.status === 'completed').length;
-      const overallProgress = Math.round((completedCount / allProgress.length) * 100);
-
-      await supabase
-        .from('training_employees')
-        .update({
-          overall_progress: overallProgress,
-          status: overallProgress === 100 ? 'completed' : 'active',
-        })
-        .eq('id', employeeId);
+    if (rpcError) {
+      console.error('[Evaluate API] SQL RPC evaluation failed:', rpcError);
+      return NextResponse.json({ error: rpcError.message || 'Failed to record evaluation' }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
-      evaluation: {
-        score,
-        passed,
-        feedback: evaluation.feedback || '',
-        strongAreas: evaluation.strongAreas || [],
-        weakAreas: evaluation.weakAreas || [],
-        recommendation: evaluation.recommendation || '',
-      },
+      score: rpcResult.score,
+      passed: rpcResult.passed,
+      passingScore: rpcResult.passingScore,
+      attempts: rpcResult.attempts,
+      overallProgress: rpcResult.overallProgress,
+      overallScore: rpcResult.overallScore,
+      feedback: detailFeedback,
     });
-  } catch (error) {
-    const err = error as Error;
-    console.error('[evaluate-module] failure:', {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
-    });
+  } catch (error: any) {
+    console.error('[Evaluate API] Unexpected error:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: error.message || 'Internal Server Error' },
       { status: 500 }
     );
   }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, UserCheck, GraduationCap, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { X, UserCheck, GraduationCap, Loader2, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
 import type { CandidateResult } from '@/types';
 
@@ -17,19 +17,29 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
   const [selectedProgramId, setSelectedProgramId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trainingLink, setTrainingLink] = useState<string>('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     fetchTrainingData();
   }, [fetchTrainingData]);
 
+  // Filtrar programas elegibles
+  const eligiblePrograms = programs.filter(
+    (program) =>
+      program.roleId === candidate.roleId &&
+      program.status === 'published'
+  );
+
   useEffect(() => {
-    if (programs.length > 0 && !selectedProgramId) {
-      const defaultProgram = programs.find(p => p.isDefault) || programs[0];
+    if (eligiblePrograms.length > 0 && !selectedProgramId) {
+      // Auto-seleccionar el primero o el default
+      const defaultProgram = eligiblePrograms.find(p => p.isDefault) || eligiblePrograms[0];
       setSelectedProgramId(defaultProgram.id);
     }
-  }, [programs, selectedProgramId]);
+  }, [eligiblePrograms, selectedProgramId]);
 
   const handleHire = async () => {
     if (!selectedProgramId) {
@@ -46,16 +56,7 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           candidateResultId: candidate.id,
-          email: candidate.candidate.email,
-          name: candidate.candidate.name,
-          roleTitle: candidate.roleTitle,
-          orgId: useTrainingAdminStore.getState().programs[0]?.orgId || '',
           programId: selectedProgramId,
-          interviewData: {
-            evaluation: candidate.evaluation,
-            transcript: candidate.transcript,
-            cvData: candidate.candidate.cvData,
-          },
         }),
       });
 
@@ -65,12 +66,23 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
       }
 
       const data = await response.json();
-      setTrainingLink(`${window.location.origin}/training/${data.employee.token}`);
+      setTrainingLink(data.trainingUrl);
+      setEmailSent(!!data.emailSent);
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error inesperado');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(trainingLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy', err);
     }
   };
 
@@ -118,7 +130,7 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                 <div className="flex items-center gap-3">
                   <div className="h-10 w-10 rounded-full bg-primary-light flex items-center justify-center">
                     <span className="text-primary text-sm font-bold">
-                      {candidate.candidate.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                      {candidate.candidate.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
                     </span>
                   </div>
                   <div>
@@ -126,7 +138,7 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                     <p className="text-xs text-muted">{candidate.candidate.email}</p>
                   </div>
                   <span className="ml-auto inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium border bg-success/10 text-success border-success/20">
-                    {candidate.evaluation?.recommendation}
+                    {candidate.evaluation?.recommendation || 'Hired'}
                   </span>
                 </div>
               </div>
@@ -137,25 +149,27 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                   <GraduationCap className="h-4 w-4 inline mr-1.5 -mt-0.5" />
                   {language === 'es' ? 'Programa de Capacitación' : 'Training Program'}
                 </label>
-                {programs.length > 0 ? (
+                {eligiblePrograms.length > 0 ? (
                   <select
                     value={selectedProgramId}
                     onChange={(e) => setSelectedProgramId(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all text-sm text-foreground"
                   >
-                    {programs.map(program => (
+                    {eligiblePrograms.map(program => (
                       <option key={program.id} value={program.id}>
-                        {program.title} {program.isDefault ? (language === 'es' ? '(Por defecto)' : '(Default)') : ''}
+                        {program.title}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <div className="p-3 rounded-xl border-2 border-dashed border-border/30 text-center">
+                  <div className="p-4 rounded-xl border-2 border-dashed border-border/30 text-center">
                     <p className="text-xs text-muted mb-2">
-                      {language === 'es' ? 'No hay programas configurados' : 'No programs configured'}
+                      {language === 'es' 
+                        ? 'No hay programas publicados para este puesto' 
+                        : 'No published programs for this role'}
                     </p>
-                    <a href="/admin/training/configure" className="text-xs text-primary hover:underline font-medium">
-                      {language === 'es' ? 'Crear programa' : 'Create program'}
+                    <a href="/admin/training" className="text-xs text-primary hover:underline font-medium">
+                      {language === 'es' ? 'Ir a configurar un programa' : 'Go configure a program'}
                     </a>
                   </div>
                 )}
@@ -165,8 +179,8 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
               <div className="p-3 rounded-xl bg-primary/5 border border-primary/10 mb-6">
                 <p className="text-xs text-muted leading-relaxed">
                   {language === 'es'
-                    ? 'Al contratar, se enviará un correo al candidato con acceso al Centro de Capacitación. La AI personalizará su experiencia basándose en los datos de su entrevista.'
-                    : 'Upon hiring, an email will be sent to the candidate with access to the Training Center. The AI will personalize their experience based on their interview data.'}
+                    ? 'Al contratar, se creará el empleado de capacitación y se generará su URL de acceso.'
+                    : 'Upon hiring, a training employee will be created and their access URL will be generated.'}
                 </p>
               </div>
 
@@ -214,18 +228,38 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
               <h3 className="text-lg font-semibold text-foreground mb-1">
                 {language === 'es' ? 'Candidato Contratado' : 'Candidate Hired'}
               </h3>
+              
               <p className="text-sm text-muted mb-4">
-                {language === 'es'
-                  ? 'Se ha enviado un correo con acceso al Centro de Capacitación.'
-                  : 'An email with Training Center access has been sent.'}
+                {emailSent ? (
+                  language === 'es'
+                    ? 'Se ha enviado un correo con acceso al Centro de Capacitación.'
+                    : 'An email with Training Center access has been sent.'
+                ) : (
+                  language === 'es'
+                    ? 'Empleado creado, pero no se pudo enviar el correo de invitación. Puedes copiar el enlace manualmente.'
+                    : 'Employee created, but invitation email could not be sent. You can copy the link manually.'
+                )}
               </p>
 
               {trainingLink && (
-                <div className="p-3 rounded-xl bg-background border border-border/30 mb-4">
-                  <p className="text-xs text-muted mb-1">
-                    {language === 'es' ? 'Enlace de capacitación:' : 'Training link:'}
-                  </p>
-                  <p className="text-xs text-primary font-mono break-all">{trainingLink}</p>
+                <div className="p-3 rounded-xl bg-background border border-border/30 mb-4 flex items-center justify-between gap-2">
+                  <div className="text-left min-w-0 flex-1">
+                    <p className="text-xs text-muted mb-0.5">
+                      {language === 'es' ? 'Enlace de capacitación:' : 'Training link:'}
+                    </p>
+                    <p className="text-xs text-primary font-mono truncate">{trainingLink}</p>
+                  </div>
+                  <button
+                    onClick={handleCopy}
+                    className="p-2 rounded-lg hover:bg-muted/10 transition-colors shrink-0"
+                    title={language === 'es' ? 'Copiar enlace' : 'Copy link'}
+                  >
+                    {copied ? (
+                      <Check className="h-4 w-4 text-success" />
+                    ) : (
+                      <Copy className="h-4 w-4 text-muted" />
+                    )}
+                  </button>
                 </div>
               )}
 

@@ -140,31 +140,56 @@ export interface InterviewTicket {
 
 // ─── Training Center Types ───
 
+export type TrainingProgramStatus =
+  | 'draft'
+  | 'published'
+  | 'archived';
+
 export interface TrainingProgram {
   id: string;
   orgId: string;
+  roleId?: string;
   title: string;
   description?: string;
   isDefault: boolean;
   welcomeMessage?: string;
   aiPersonality: string;
+  status: TrainingProgramStatus;
+  version: number;
+  passingScore: number;
+  publishedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
 
+export type TrainingDocumentScope =
+  | 'organization'
+  | 'role';
+
+export type TrainingDocumentStatus =
+  | 'uploaded'
+  | 'processing'
+  | 'ready'
+  | 'failed'
+  | 'needs_ocr';
+
 export interface TrainingDocument {
   id: string;
-  programId: string;
   orgId: string;
+  roleId?: string;
+  scope: TrainingDocumentScope;
   fileName: string;
-  fileUrl: string;
   fileType: string;
   fileSize?: number;
+  storagePath?: string;
   extractedText?: string;
   aiSummary?: string;
   aiTopics: TrainingDocumentTopic[];
-  sortOrder: number;
+  status: TrainingDocumentStatus;
+  processingError?: string;
+  checksumSha256?: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface TrainingDocumentTopic {
@@ -173,10 +198,33 @@ export interface TrainingDocumentTopic {
   keyPoints: string[];
 }
 
+export interface TrainingProgramDocument {
+  programId: string;
+  documentId: string;
+  sortOrder: number;
+  required: boolean;
+  createdAt: string;
+}
+
 export interface TrainingModuleSection {
   title: string;
   body: string;
   keyPoints: string[];
+}
+
+export interface TrainingQuestionPublic {
+  question: string;
+  type: 'multiple_choice' | 'open_ended' | 'true_false';
+  options?: string[];
+}
+
+export interface TrainingQuestionAdmin extends TrainingQuestionPublic {
+  correctAnswer: string;
+  explanation?: string;
+}
+
+export interface EmployeeTrainingModule extends Omit<TrainingModule, 'evaluationQuestions'> {
+  evaluationQuestions: TrainingQuestionPublic[];
 }
 
 export interface TrainingModule {
@@ -184,31 +232,33 @@ export interface TrainingModule {
   programId: string;
   title: string;
   description?: string;
-  content: { sections: TrainingModuleSection[] };
-  sourceDocumentId?: string;
+  content: {
+    sections: TrainingModuleSection[];
+  };
+  sourceDocumentIds: string[];
   sortOrder: number;
   durationEstimate: number;
   evaluationEnabled: boolean;
-  evaluationQuestions: TrainingQuestion[];
+  evaluationQuestions: TrainingQuestionAdmin[];
   createdAt: string;
   updatedAt: string;
-}
-
-export interface TrainingQuestion {
-  question: string;
-  type: 'multiple_choice' | 'open_ended' | 'true_false';
-  options?: string[];
-  correctAnswer: string;
-  explanation?: string;
 }
 
 export interface TrainingEmployee {
   id: string;
   orgId: string;
+  roleId?: string;
   candidateResultId?: string;
   userId?: string;
   programId: string;
-  token: string;
+
+  /*
+   * Nunca debe contener el token real en el bootstrap.
+   * Puede eliminarse completamente de la interfaz si ningún componente
+   * legítimo lo utiliza.
+   */
+  token?: string;
+
   email: string;
   name: string;
   roleTitle?: string;
@@ -218,6 +268,8 @@ export interface TrainingEmployee {
   hiredAt: string;
   startedAt?: string;
   completedAt?: string;
+  accessExpiresAt?: string;
+  accessRevokedAt?: string;
   interviewData: {
     evaluation?: Evaluation;
     transcript?: TranscriptEntry[];
@@ -251,7 +303,7 @@ export interface TrainingEvaluation {
   id: string;
   employeeId: string;
   moduleId: string;
-  questions: TrainingQuestion[];
+  questions: TrainingQuestionAdmin[];
   answers: TrainingAnswer[];
   score?: number;
   passed: boolean;
@@ -271,6 +323,7 @@ export interface TrainingMessage {
   content: string;
   timestamp: number;
   type?: 'text' | 'quiz' | 'feedback' | 'celebration';
+  citations?: { fileName: string; snippet: string }[];
 }
 
 export interface TrainingSession {
@@ -284,3 +337,4 @@ export interface TrainingSession {
 }
 
 export type TrainingPhase = 'welcome' | 'overview' | 'module' | 'evaluation' | 'complete';
+

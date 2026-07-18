@@ -1,79 +1,260 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
+import { getTrainingEmployeeFromSession } from '@/lib/training/session';
+import { createAdminClient } from '@/utils/supabase/admin';
+import { trainingChatRequestSchema } from '@/lib/training/contracts';
+import { validateChatCitations } from '@/lib/training/documents';
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
+const MAX_CONTEXT_CHUNKS = 8;
+const MAX_CONTEXT_CHARACTERS = 16000;
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const {
-      messages,
-      moduleContent,
-      employeeName,
-      roleTitle,
-      companyContext,
-      personalizationNotes,
-      moduleTitle,
-      evaluationMode,
-      sessionId,
-      employeeId,
-      moduleId,
-    } = body;
+    // 1. Validar sesión del empleado
+    const employee = await getTrainingEmployeeFromSession();
+    if (!employee) {
+      return NextResponse.json({ error: 'Unauthorized training session' }, { status: 401 });
+    }
 
-    if (!messages || !Array.isArray(messages)) {
+    const parsed = trainingChatRequestSchema.safeParse(await req.json());
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Messages array is required' },
+        { error: 'Invalid request', issues: parsed.error.flatten() },
         { status: 400 }
       );
     }
 
-    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    if (!OPENROUTER_API_KEY) {
-      return NextResponse.json(
-        { error: 'AI service not configured' },
-        { status: 503 }
-      );
+    const body = parsed.data;
+    const mode = body.mode;
+    const moduleId = mode === 'module' ? body.moduleId : undefined;
+    const action = 'action' in body ? body.action : undefined;
+    const message = 'message' in body ? body.message : undefined;
+
+    const admin = createAdminClient();
+    const now = new Date().toISOString();
+
+    // 2. Cargar documentos permitidos según el modo
+    let documentIds: string[] = [];
+    if (mode === 'module' && moduleId) {
+      const { data: moduleDocAssocs } = await admin
+        .from('training_module_documents')
+        .select('document_id')
+        .eq('module_id', moduleId);
+      documentIds = moduleDocAssocs?.map(a => a.document_id) || [];
+    } else {
+      // mode === 'general': todos los documentos del programa
+      const { data: programDocAssocs } = await admin
+        .from('training_program_documents')
+        .select('document_id')
+        .eq('program_id', employee.program_id);
+      documentIds = programDocAssocs?.map(a => a.document_id) || [];
     }
 
-    const companyName = companyContext?.name || 'the company';
+    // 3. Buscar chunks y aplicar límite de contexto (RAG)
+    let boundedChunks: any[] = [];
+    if (documentIds.length > 0) {
+      let query = admin
+        .from('training_document_chunks')
+        .select(`
+          id,
+          document_id,
+          chunk_index,
+          content,
+          training_documents (
+            file_name
+          )
+        `)
+        .in('document_id', documentIds)
+        .limit(MAX_CONTEXT_CHUNKS * 2); // Cargar el doble para filtrar
 
-    // Build personalization context
-    const personalization = personalizationNotes
-      ? `
-PERSONALIZATION (based on their interview):
-- Strengths: ${personalizationNotes.strengths || 'Not available'}
-- Areas to develop: ${personalizationNotes.areasToWatch || 'Not available'}
-- Learning style: ${personalizationNotes.learningStyle || 'Not available'}
-- Special tips: ${personalizationNotes.customTips || 'Not available'}`
-      : '';
+      const userText = message?.trim();
+      if (userText) {
+        query = query.textSearch('content', userText, {
+          type: 'websearch',
+          config: 'simple',
+        });
+      }
 
-    const systemPrompt = `You are "Zara", an AI training mentor at ${companyName}. You are guiding ${employeeName || 'the employee'} through their onboarding training for the role of ${roleTitle || 'their new position'}.
+      const { data: rawChunks } = await query;
 
-CURRENT MODULE: ${moduleTitle || 'Training Module'}
-MODULE CONTENT:
-${moduleContent || 'No specific content provided.'}
+      // Si la búsqueda con t_vector no dio resultados, cargar sin textSearch
+      let candidateChunks = rawChunks || [];
+      if (candidateChunks.length === 0) {
+        const { data: fallbackChunks } = await admin
+          .from('training_document_chunks')
+          .select(`
+            id,
+            document_id,
+            chunk_index,
+            content,
+            training_documents (
+              file_name
+            )
+          `)
+          .in('document_id', documentIds)
+          .limit(MAX_CONTEXT_CHUNKS);
+        candidateChunks = fallbackChunks || [];
+      }
+
+      // Limitar a 8 chunks y 16,000 caracteres máximo
+      let totalCharacters = 0;
+      boundedChunks = candidateChunks
+        .filter((chunk: any) => chunk.content && chunk.content.trim())
+        .filter((chunk: any) => {
+          if (totalCharacters + chunk.content.length > MAX_CONTEXT_CHARACTERS) {
+            return false;
+          }
+          totalCharacters += chunk.content.length;
+          return true;
+        })
+        .slice(0, MAX_CONTEXT_CHUNKS);
+    }
+
+    // 4. Buscar o crear la sesión de chat correspondiente
+    const sessionType = mode === 'general' ? 'general' : 'module';
+    
+    const getActiveSession = async () => {
+      let querySession = admin
+        .from('training_sessions')
+        .select('*')
+        .eq('employee_id', employee.id)
+        .eq('session_type', sessionType)
+        .is('ended_at', null);
+
+      if (mode === 'module' && moduleId) {
+        querySession = querySession.eq('module_id', moduleId);
+      }
+      return await querySession.maybeSingle();
+    };
+
+    let { data: activeSession, error: sessError } = await getActiveSession();
+    if (sessError) {
+      console.error('[Chat API] Session fetch error:', sessError);
+    }
+
+    let chatSession: any;
+    if (activeSession) {
+      chatSession = activeSession;
+    } else {
+      const sessionId = crypto.randomUUID();
+      const { data: createdSession, error: createSessError } = await admin
+        .from('training_sessions')
+        .insert({
+          id: sessionId,
+          employee_id: employee.id,
+          module_id: mode === 'module' ? moduleId : null,
+          session_type: sessionType,
+          messages: [],
+          started_at: now,
+        })
+        .select('*')
+        .maybeSingle();
+
+      if (createSessError) {
+        // En caso de concurrencia (código 23505), intentar volver a consultar la sesión
+        if (createSessError.code === '23505') {
+          const retry = await getActiveSession();
+          if (retry.data) {
+            chatSession = retry.data;
+          } else {
+            return NextResponse.json({ error: 'Session conflict error' }, { status: 409 });
+          }
+        } else {
+          console.error('[Chat API] Session insertion failed:', createSessError);
+          return NextResponse.json({ error: 'Failed to establish training chat session' }, { status: 500 });
+        }
+      } else {
+        chatSession = createdSession;
+      }
+    }
+
+    const historyMessages = Array.isArray(chatSession.messages) ? chatSession.messages : [];
+
+    // Si es start y existe historial, devolvemos el historial y el mensaje del tutor
+    if (action === 'start' && historyMessages.length > 0) {
+      const lastAssis = [...historyMessages].reverse().find(m => m.role === 'assistant');
+      return NextResponse.json({
+        success: true,
+        message: lastAssis?.content || 'Bienvenido de nuevo.',
+        type: lastAssis?.type || 'text',
+        contentCovered: false,
+        evaluationReady: false,
+        citations: lastAssis?.citations || [],
+        history: historyMessages,
+      });
+    }
+
+    // 5. Cargar contexto organizacional y personalización
+    const { data: orgData } = await admin
+      .from('organizations')
+      .select('name')
+      .eq('id', employee.org_id)
+      .single();
+    const companyName = orgData?.name || 'Reclutify Client';
+
+    const pNotes = employee.personalization_notes || {};
+    const personalization = `
+PERSONALIZATION Context:
+- Strengths: ${Array.isArray(pNotes.strengths) ? pNotes.strengths.join(', ') : 'None'}
+- Areas to watch: ${Array.isArray(pNotes.areasToWatch) ? pNotes.areasToWatch.join(', ') : 'None'}
+- Learning Style: ${pNotes.learningStyle || 'Standard'}
+- Custom Tips: ${Array.isArray(pNotes.customTips) ? pNotes.customTips.join(', ') : 'None'}
+`;
+
+    const ragContext = boundedChunks
+      .map(
+        (chunk) =>
+          `[Chunk ID: ${chunk.id}] (File: ${chunk.training_documents?.file_name || 'Manual'}):\n${chunk.content}`
+      )
+      .join('\n\n');
+
+    // 6. Preparar prompt
+    const systemPrompt = `You are "Zara", a warm, friendly AI onboarding mentor at ${companyName}. You are guiding ${employee.name} in their training for the role of ${employee.role_title || 'their new position'}.
+
+MODE: ${mode === 'module' ? `Teaching Module. Teach the concepts of this module using the documents.` : 'General chat. Help the employee with general queries.'}
+
 ${personalization}
 
-YOUR BEHAVIOR:
-1. Present information clearly and engagingly, breaking complex topics into digestible pieces
-2. Ask questions periodically to check understanding (don't just lecture)
-3. Use the employee's strengths to make connections ("Given your experience in X, you'll find that...")
-4. Pay special attention to their areas to watch - spend more time on those topics
-5. Be encouraging but honest about what's important
-6. After covering all key points, let the employee know they can proceed to the evaluation
-7. If in evaluation mode, ask quiz questions one by one, grade answers, and provide explanations
-8. Always respond in the same language the employee uses (Spanish/English)
-9. Be conversational and warm, like a helpful colleague, not a textbook
-10. Use concrete examples relevant to the company whenever possible
+SOURCE DOCUMENTS REFERENCE (RAG CONTEXT):
+${ragContext || 'No context documents available.'}
 
-${evaluationMode ? 'You are now in EVALUATION MODE. Ask quiz questions one at a time from the module content. After each answer, tell them if they are correct and explain why. Track their score.' : 'You are in TEACHING MODE. Present the module content engagingly and check understanding periodically.'}`;
+BEHAVIOR:
+1. Speak as a helpful colleague. Respond in the same language the employee uses.
+2. Incorporate the student's strengths and support their areas to watch.
+3. If using information from a chunk, append its "Chunk ID" to citationChunkIds array.
+4. When in module mode, cover all concepts. Once the content has been discussed, indicate that they can start the evaluation.
 
-    // Build messages array for the API
+RESPONSE FORMAT:
+You MUST respond with a single valid JSON block only.
+{
+  "message": "Your conversational message to the employee...",
+  "type": "text | feedback",
+  "contentCovered": true | false,
+  "evaluationReady": true | false,
+  "citationChunkIds": ["chunk-uuid-1"]
+}`;
+
+    // Construir mensajes para la llamada
     const apiMessages = [
       { role: 'system', content: systemPrompt },
-      ...messages.map((msg: { role: string; content: string }) => ({
-        role: msg.role,
+      ...historyMessages.slice(-8).map((msg: any) => ({
+        role: msg.role === 'user' ? 'user' : 'assistant',
         content: msg.content,
       })),
     ];
+
+    if (action !== 'start' && message) {
+      apiMessages.push({ role: 'user', content: message.trim() });
+    }
+
+    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+
+    if (!OPENROUTER_API_KEY) {
+      return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });
+    }
 
     const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -84,117 +265,76 @@ ${evaluationMode ? 'You are now in EVALUATION MODE. Ask quiz questions one at a 
         'X-Title': 'Reclutify Training Center',
       },
       body: JSON.stringify({
-        model: 'x-ai/grok-4.20',
+        model: TRAINING_AI_MODEL,
         messages: apiMessages,
-        temperature: 0.7,
-        max_tokens: 800,
+        temperature: 0.6,
+        response_format: { type: 'json_object' },
       }),
     });
 
     if (!aiResponse.ok) {
       const errorText = await aiResponse.text();
-      console.error('[training/chat] AI API error:', errorText);
-      return NextResponse.json(
-        { error: 'AI service unavailable. Please try again.' },
-        { status: 502 }
-      );
+      console.error('[Chat API] AI service error:', errorText);
+      return NextResponse.json({ error: 'AI tutor is offline' }, { status: 502 });
     }
 
     const aiData = await aiResponse.json();
-    const responseContent = aiData.choices?.[0]?.message?.content || '';
+    const rawContent = aiData.choices?.[0]?.message?.content || '{}';
+    const cleanContent = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
 
-    if (!responseContent) {
-      return NextResponse.json(
-        { error: 'AI returned empty response. Please try again.' },
-        { status: 502 }
-      );
+    let structured: any;
+    try {
+      structured = JSON.parse(cleanContent);
+    } catch (parseError) {
+      console.error('[Chat API] Failed to parse AI JSON:', rawContent);
+      structured = {
+        message: cleanContent || 'I understand. Let me know if you have any questions.',
+        type: 'text',
+        contentCovered: false,
+        evaluationReady: false,
+        citationChunkIds: [],
+      };
     }
 
-    // Detect metadata from response content
-    const metadata: {
-      isQuizQuestion?: boolean;
-      evaluationComplete?: boolean;
-      score?: number;
-      sessionId?: string;
-    } = {};
+    // 7. Validar citas contra los chunks reales
+    const citationIds: string[] = Array.isArray(structured.citationChunkIds) ? structured.citationChunkIds : [];
+    const citations = validateChatCitations(citationIds, boundedChunks);
 
-    // Heuristic detection of quiz questions (AI asking a question in evaluation mode)
-    if (evaluationMode) {
-      metadata.isQuizQuestion = true;
-
-      // Check if evaluation seems complete (AI mentions final score)
-      const scoreMatch = responseContent.match(
-        /(?:final score|puntuaci[oó]n final|resultado final|score final)[:\s]*(\d+)/i
-      );
-      if (scoreMatch) {
-        metadata.evaluationComplete = true;
-        metadata.score = parseInt(scoreMatch[1], 10);
-      }
+    // 8. Persistir en la sesión del empleado
+    const newMessages = [...historyMessages];
+    if (action !== 'start' && message) {
+      newMessages.push({
+        role: 'user',
+        content: message.trim(),
+        timestamp: Date.now(),
+      });
     }
+    newMessages.push({
+      role: 'assistant',
+      content: structured.message,
+      type: structured.type || 'text',
+      citations,
+      timestamp: Date.now(),
+    });
 
-    // Persist messages to training_sessions (non-blocking)
-    if (employeeId && moduleId) {
-      try {
-        const supabase = await createClient();
-        const allMessages = [
-          ...messages.map((msg: { role: string; content: string; timestamp?: number }) => ({
-            role: msg.role,
-            content: msg.content,
-            timestamp: msg.timestamp || Date.now(),
-          })),
-          {
-            role: 'assistant',
-            content: responseContent,
-            timestamp: Date.now(),
-          },
-        ];
-
-        if (sessionId) {
-          // Update existing session
-          await supabase
-            .from('training_sessions')
-            .update({
-              messages: allMessages,
-              ended_at: metadata.evaluationComplete ? new Date().toISOString() : null,
-            })
-            .eq('id', sessionId);
-        } else {
-          // Create new session
-          const { data: newSession } = await supabase
-            .from('training_sessions')
-            .insert({
-              employee_id: employeeId,
-              module_id: moduleId,
-              session_type: evaluationMode ? 'evaluation' : 'module',
-              messages: allMessages,
-            })
-            .select('id')
-            .single();
-
-          if (newSession) {
-            metadata.sessionId = newSession.id;
-          }
-        }
-      } catch (persistError) {
-        // Non-blocking: chat continues even if persistence fails
-        console.error('[training/chat] Session persist error:', persistError);
-      }
-    }
+    await admin
+      .from('training_sessions')
+      .update({ messages: newMessages })
+      .eq('id', chatSession.id);
 
     return NextResponse.json({
       success: true,
-      message: responseContent,
-      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+      message: structured.message,
+      type: structured.type || 'text',
+      contentCovered: !!structured.contentCovered,
+      evaluationReady: !!structured.evaluationReady,
+      citations,
+      history: newMessages,
     });
-  } catch (error) {
-    const err = error as Error;
-    console.error('[training/chat] failure:', {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
-    });
+  } catch (error: any) {
+    console.error('[Chat API] Unexpected failure:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: error.message || 'Internal Server Error' },
       { status: 500 }
     );
   }

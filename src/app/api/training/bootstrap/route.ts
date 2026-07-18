@@ -116,11 +116,54 @@ export async function GET() {
       created_at: employee.created_at,
     };
 
+    type RawTrainingQuestion = {
+      question?: unknown;
+      type?: unknown;
+      options?: unknown;
+    };
+
+    const safeModules = (modulesResult.data ?? []).map(
+      (module) => {
+        const questions = Array.isArray(
+          module.evaluation_questions,
+        )
+          ? module.evaluation_questions
+          : [];
+
+        return {
+          ...module,
+
+          /*
+           * Nunca enviar correctAnswer ni explanation
+           * al navegador del empleado.
+           */
+          evaluation_questions: questions.map(
+            (question: RawTrainingQuestion) => ({
+              question:
+                typeof question.question === 'string'
+                  ? question.question
+                  : '',
+              type:
+                typeof question.type === 'string'
+                  ? question.type
+                  : 'open_ended',
+              options: Array.isArray(question.options)
+                ? question.options.filter(
+                    (option): option is string =>
+                      typeof option === 'string',
+                  )
+                : [],
+            }),
+          ),
+        };
+      },
+    );
+
     return NextResponse.json({
       success: true,
       employee: safeEmployee,
       program: programResult.data,
-      modules: modulesResult.data ?? [],
+      modules: safeModules,
       progress: progressResult.data ?? [],
     });
   } catch (error) {

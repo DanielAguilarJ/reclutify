@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  BookOpen,
   CheckCircle2,
   Lock,
   Play,
@@ -34,19 +33,18 @@ export default function TrainingCenterPage() {
     loading,
     startModule,
     initializeFromSession,
+    generalMessages,
+    startGeneralChat,
+    sendGeneralMessage,
+    aiSpeaking,
   } = useTrainingStore();
 
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<
-    { role: 'user' | 'assistant'; content: string }[]
-  >([]);
-  const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const bootstrapAttemptedRef = useRef(false);
 
-  // Recuperar la capacitación desde la cookie HttpOnly cuando
-  // el usuario actualiza la página o abre /training/center directamente.
+  // Recuperar la capacitación desde la cookie HttpOnly al iniciar
   useEffect(() => {
     if (employee || loading || bootstrapAttemptedRef.current) {
       return;
@@ -66,10 +64,17 @@ export default function TrainingCenterPage() {
     router,
   ]);
 
+  // Cargar mensaje de inicio del tutor general al abrir el chat por primera vez
+  useEffect(() => {
+    if (showChat && generalMessages.length === 0) {
+      startGeneralChat();
+    }
+  }, [showChat, generalMessages.length, startGeneralChat]);
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  }, [generalMessages]);
 
   if (loading || !employee) {
     return (
@@ -98,52 +103,16 @@ export default function TrainingCenterPage() {
     return progress.find((p) => p.moduleId === moduleId);
   };
 
-  // Find first available module
-  const firstAvailable = modules.find((m) => {
-    const p = getModuleProgress(m.id);
-    return p?.status === 'available' || p?.status === 'in_progress';
-  });
-
   const handleStartModule = async (moduleId: string) => {
     await startModule(moduleId);
     router.push(`/training/center/module/${moduleId}`);
   };
 
   const handleSendChat = async () => {
-    if (!chatInput.trim() || chatLoading) return;
+    if (!chatInput.trim() || aiSpeaking) return;
     const userMsg = chatInput.trim();
     setChatInput('');
-    setChatMessages((prev) => [...prev, { role: 'user', content: userMsg }]);
-    setChatLoading(true);
-
-    try {
-      const res = await fetch('/api/training/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          employeeId: employee.id,
-          sessionType: 'general',
-          messages: [...chatMessages, { role: 'user', content: userMsg }],
-        }),
-      });
-      const data = await res.json();
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.message || (language === 'es' ? 'No pude procesar tu pregunta.' : 'I could not process your question.') },
-      ]);
-    } catch {
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: language === 'es'
-            ? 'Hubo un error. Intenta de nuevo.'
-            : 'There was an error. Please try again.',
-        },
-      ]);
-    } finally {
-      setChatLoading(false);
-    }
+    await sendGeneralMessage(userMsg);
   };
 
   return (
@@ -299,104 +268,76 @@ export default function TrainingCenterPage() {
                   animate={{
                     strokeDashoffset: 2 * Math.PI * 52 * (1 - progressPercent / 100),
                   }}
-                  transition={{ duration: 1.2, ease: 'easeOut', delay: 0.3 }}
-                  transform="rotate(-90 60 60)"
+                  transition={{ duration: 1, ease: 'easeOut' }}
                 />
                 <defs>
-                  <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="#00D3D8" />
                     <stop offset="100%" stopColor="#00A5A8" />
                   </linearGradient>
                 </defs>
               </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-2xl font-bold text-foreground">
-                  {progressPercent}%
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-bold text-foreground">{progressPercent}%</span>
+                <span className="text-[10px] text-muted font-medium uppercase tracking-wider">
+                  {language === 'es' ? 'Progreso' : 'Progress'}
                 </span>
               </div>
             </div>
 
-            {/* Stats */}
-            <div className="flex-1 min-w-0">
-              <h2 className="text-lg font-semibold text-foreground mb-3">
-                {language === 'es' ? 'Tu Progreso' : 'Your Progress'}
-              </h2>
-              <div className="grid grid-cols-2 gap-3">
+            {/* KPI Details */}
+            <div className="flex-1 space-y-3">
+              <div>
+                <p className="text-xs text-muted uppercase tracking-wider font-semibold">
+                  {language === 'es' ? 'Módulos completados' : 'Modules Completed'}
+                </p>
+                <p className="text-lg font-bold text-foreground">
+                  {completedModules} / {totalModules}
+                </p>
+              </div>
+              <div className="flex items-center gap-4">
                 <div>
-                  <p className="text-xs text-muted">
-                    {language === 'es' ? 'Módulos' : 'Modules'}
+                  <p className="text-[10px] text-muted uppercase tracking-wider font-semibold">
+                    {language === 'es' ? 'Tiempo Invertido' : 'Time Spent'}
                   </p>
                   <p className="text-sm font-semibold text-foreground">
-                    {completedModules} / {totalModules}
+                    {formatTime(totalTimeSpent)}
                   </p>
                 </div>
-                <div>
-                  <p className="text-xs text-muted">
-                    {language === 'es' ? 'Puntuación' : 'Score'}
-                  </p>
-                  <p className="text-sm font-semibold text-foreground">
-                    {employee.overallScore ? `${employee.overallScore}%` : '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted">
-                    {language === 'es' ? 'Tiempo invertido' : 'Time spent'}
-                  </p>
-                  <p className="text-sm font-semibold text-foreground">
-                    {totalTimeSpent > 0 ? formatTime(totalTimeSpent) : '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted">
-                    {language === 'es' ? 'Estado' : 'Status'}
-                  </p>
-                  <p className="text-sm font-semibold text-[#00D3D8]">
-                    {allComplete
-                      ? language === 'es' ? 'Completado' : 'Complete'
-                      : language === 'es' ? 'En progreso' : 'In progress'}
-                  </p>
-                </div>
+                {employee.overallScore && (
+                  <div>
+                    <p className="text-[10px] text-muted uppercase tracking-wider font-semibold">
+                      {language === 'es' ? 'Calificación Promedio' : 'Average Grade'}
+                    </p>
+                    <p className="text-sm font-semibold text-success">
+                      {employee.overallScore}%
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
-
-          {/* Start button for first-time users */}
-          {employee.status === 'not_started' && firstAvailable && (
-            <motion.button
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.6 }}
-              onClick={() => handleStartModule(firstAvailable.id)}
-              className="mt-5 w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-[#00D3D8] to-[#00A5A8] text-white font-semibold text-sm shadow-lg shadow-[#00D3D8]/25 hover:shadow-[#00D3D8]/40 transition-shadow"
-            >
-              <Play className="w-4 h-4" />
-              {language === 'es' ? 'Comenzar Capacitación' : 'Start Training'}
-            </motion.button>
-          )}
         </motion.div>
 
-        {/* ─── Module Cards List ─── */}
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-[#00D3D8]" />
-            {language === 'es' ? 'Módulos de Aprendizaje' : 'Learning Modules'}
-          </h3>
-
+        {/* ─── Modules List ─── */}
+        <div className="space-y-4">
+          <h2 className="text-lg font-bold text-foreground mb-3">
+            {language === 'es' ? 'Tu Plan de Aprendizaje' : 'Your Learning Plan'}
+          </h2>
           {modules
             .sort((a, b) => a.sortOrder - b.sortOrder)
             .map((module, index) => {
               const modProgress = getModuleProgress(module.id);
-              const status = modProgress?.status || 'locked';
-              const isLocked = status === 'locked';
-              const isCompleted = status === 'completed';
-              const isAvailable = status === 'available';
-              const isInProgress = status === 'in_progress';
+              const isLocked = !modProgress || modProgress.status === 'locked';
+              const isAvailable = modProgress?.status === 'available';
+              const isInProgress = modProgress?.status === 'in_progress';
+              const isCompleted = modProgress?.status === 'completed';
 
               return (
                 <motion.div
                   key={module.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.4, delay: 0.15 + index * 0.08 }}
                   className={`p-5 rounded-2xl bg-card border border-border/50 shadow-sm flex items-center gap-4 transition-all ${
                     isLocked ? 'opacity-60' : 'hover:shadow-md cursor-pointer'
@@ -538,7 +479,7 @@ export default function TrainingCenterPage() {
 
             {/* Chat messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {chatMessages.length === 0 && (
+              {generalMessages.length === 0 && (
                 <div className="text-center py-8">
                   <Sparkles className="w-8 h-8 text-[#00D3D8]/40 mx-auto mb-3" />
                   <p className="text-xs text-muted">
@@ -548,7 +489,7 @@ export default function TrainingCenterPage() {
                   </p>
                 </div>
               )}
-              {chatMessages.map((msg, i) => (
+              {generalMessages.map((msg, i) => (
                 <div
                   key={i}
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -564,7 +505,7 @@ export default function TrainingCenterPage() {
                   </div>
                 </div>
               ))}
-              {chatLoading && (
+              {aiSpeaking && (
                 <div className="flex justify-start">
                   <div className="bg-card border border-border/50 px-3 py-2 rounded-xl rounded-bl-sm">
                     <div className="flex gap-1">
@@ -600,7 +541,7 @@ export default function TrainingCenterPage() {
                 />
                 <button
                   onClick={handleSendChat}
-                  disabled={!chatInput.trim() || chatLoading}
+                  disabled={!chatInput.trim() || aiSpeaking}
                   className="w-9 h-9 rounded-xl bg-[#00D3D8] text-white flex items-center justify-center disabled:opacity-40 hover:bg-[#00B8BD] transition-colors"
                 >
                   <Send className="w-4 h-4" />

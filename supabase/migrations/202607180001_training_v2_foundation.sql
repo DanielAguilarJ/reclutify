@@ -75,39 +75,89 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_published_training_program_per_role
 -- 2. DOCUMENTOS ASOCIADOS Y SCOPES
 -- ============================================================
 
+-- Todas las columnas deben crearse ANTES de cualquier UPDATE o constraint.
+ALTER TABLE public.training_documents
+  ALTER COLUMN program_id DROP NOT NULL;
+
+ALTER TABLE public.training_documents
+  ALTER COLUMN file_url DROP NOT NULL;
+
+ALTER TABLE public.training_documents
+  ADD COLUMN IF NOT EXISTS role_id TEXT;
+
+ALTER TABLE public.training_documents
+  DROP CONSTRAINT IF EXISTS training_documents_role_id_fkey;
+
+ALTER TABLE public.training_documents
+  ADD CONSTRAINT training_documents_role_id_fkey
+  FOREIGN KEY (role_id)
+  REFERENCES public.roles(id)
+  ON DELETE RESTRICT;
+
 ALTER TABLE public.training_documents
   ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'role';
 
 ALTER TABLE public.training_documents
-  ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT;
+  ADD COLUMN IF NOT EXISTS storage_path TEXT;
+
+ALTER TABLE public.training_documents
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'uploaded';
 
 ALTER TABLE public.training_documents
   ADD COLUMN IF NOT EXISTS processing_error TEXT;
 
 ALTER TABLE public.training_documents
-  ALTER COLUMN program_id DROP NOT NULL;
+  ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT;
 
--- Backfill de scope y role_id en documentos preexistentes antes de inyectar el constraint
-UPDATE public.training_documents AS doc
+ALTER TABLE public.training_documents
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE public.training_documents
+  DROP CONSTRAINT IF EXISTS training_documents_scope_check;
+
+ALTER TABLE public.training_documents
+  ADD CONSTRAINT training_documents_scope_check
+  CHECK (scope IN ('organization', 'role'));
+
+ALTER TABLE public.training_documents
+  DROP CONSTRAINT IF EXISTS training_documents_status_check;
+
+ALTER TABLE public.training_documents
+  ADD CONSTRAINT training_documents_status_check
+  CHECK (
+    status IN (
+      'uploaded',
+      'processing',
+      'ready',
+      'failed',
+      'needs_ocr'
+    )
+  );
+
+-- Backfill: normalizar documentos heredados desde sus programas.
+UPDATE public.training_documents AS document
 SET
-  scope = 'role',
-  role_id = program.role_id
+  role_id = program.role_id,
+  scope = CASE
+    WHEN program.role_id IS NULL THEN 'organization'
+    ELSE 'role'
+  END
 FROM public.training_programs AS program
-WHERE doc.program_id = program.id
-  AND doc.role_id IS NULL
-  AND program.role_id IS NOT NULL;
+WHERE document.program_id = program.id;
 
--- Para documentos que aún no tienen org_id
+-- Para documentos que aún no tienen role_id: marcarlos como organization.
+UPDATE public.training_documents
+SET
+  scope = 'organization',
+  role_id = NULL
+WHERE role_id IS NULL;
+
+-- Para documentos que aún no tienen org_id: tomarlos del programa asociado.
 UPDATE public.training_documents AS doc
 SET org_id = program.org_id
 FROM public.training_programs AS program
 WHERE doc.program_id = program.id
   AND doc.org_id IS NULL;
-
--- Si queda alguno suelto, asignar organization scope por defecto
-UPDATE public.training_documents
-SET scope = 'organization'
-WHERE scope IS NULL;
 
 ALTER TABLE public.training_documents
   DROP CONSTRAINT IF EXISTS training_documents_scope_role_check;
@@ -146,6 +196,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_training_org_document_checksum
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_training_role_document_checksum
   ON public.training_documents (org_id, role_id, checksum_sha256)
   WHERE scope = 'role' AND role_id IS NOT NULL AND checksum_sha256 IS NOT NULL;
+
 
 
 -- ============================================================

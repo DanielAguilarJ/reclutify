@@ -23,16 +23,16 @@ export default function TrainingTokenPage({
   useEffect(() => {
     const validate = async () => {
       const isValid = await initializeFromToken(token);
+
       if (isValid) {
         setPhase('valid');
-        router.push('/training/center');
+        router.replace('/training/center');
       } else {
         setPhase('invalid');
       }
     };
 
-    // Small delay for Zustand hydration
-    setTimeout(validate, 150);
+    validate();
   }, [token, initializeFromToken, router]);
 
   return (

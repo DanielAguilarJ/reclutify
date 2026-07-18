@@ -33,6 +33,7 @@ interface TrainingState {
 
   // Acciones
   initializeFromToken: (token: string) => Promise<boolean>;
+  initializeFromSession: () => Promise<boolean>;
   initializeFromAuth: () => Promise<boolean>;
   setPhase: (phase: TrainingPhase) => void;
   startModule: (moduleId: string) => Promise<void>;
@@ -217,43 +218,116 @@ export const useTrainingStore = create<TrainingState>()(
     // ─── Inicializar desde token (empleado sin autenticar) ───
     initializeFromToken: async (token: string) => {
       set({ loading: true, error: null });
+
       try {
-        const supabase = createClient();
+        const accessResponse = await fetch('/api/training/access', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({ token }),
+        });
 
-        // Buscar empleado por token
-        const { data: employeeData, error: empError } = await supabase
-          .from('training_employees')
-          .select('*')
-          .eq('token', token)
-          .single();
+        if (!accessResponse.ok) {
+          const body = await accessResponse
+            .json()
+            .catch(() => ({ error: 'Token inválido o expirado' }));
 
-        if (empError || !employeeData) {
-          set({ loading: false, error: 'Token inválido o expirado' });
+          set({
+            loading: false,
+            error: body.error || 'Token inválido o expirado',
+          });
+
           return false;
         }
 
-        const employee = employeeFromSupabase(employeeData);
+        /*
+         * El token ya fue convertido en una cookie HttpOnly.
+         * Ahora se cargan los datos por medio del endpoint seguro.
+         */
+        return await get().initializeFromSession();
+      } catch (error) {
+        console.error(
+          '[TrainingStore] Error inicializando desde token:',
+          error,
+        );
 
-        // Cargar datos del programa, módulos y progreso
-        const { program, modules, progress } = await loadTrainingDataForEmployee(supabase, employee);
+        set({
+          loading: false,
+          error: 'Error cargando datos de capacitación',
+        });
 
-        const phase = determineInitialPhase(employee);
+        return false;
+      }
+    },
+
+    initializeFromSession: async () => {
+      set({ loading: true, error: null });
+
+      try {
+        const response = await fetch('/api/training/bootstrap', {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          const body = await response
+            .json()
+            .catch(() => ({ error: 'Sesión de capacitación inválida' }));
+
+          set({
+            employee: null,
+            program: null,
+            modules: [],
+            progress: [],
+            loading: false,
+            error: body.error || 'Sesión de capacitación inválida',
+          });
+
+          return false;
+        }
+
+        const data = await response.json();
+
+        const employee = employeeFromSupabase(data.employee);
+        const program = data.program
+          ? programFromSupabase(data.program)
+          : null;
+        const modules = Array.isArray(data.modules)
+          ? data.modules.map(moduleFromSupabase)
+          : [];
+        const progress = Array.isArray(data.progress)
+          ? data.progress.map(progressFromSupabase)
+          : [];
 
         set({
           employee,
           program,
           modules,
           progress,
-          phase,
+          phase: determineInitialPhase(employee),
           loading: false,
+          error: null,
         });
 
         return true;
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error inicializando desde token:', err);
-        }
-        set({ loading: false, error: 'Error cargando datos de training' });
+      } catch (error) {
+        console.error(
+          '[TrainingStore] Error inicializando desde sesión:',
+          error,
+        );
+
+        set({
+          employee: null,
+          program: null,
+          modules: [],
+          progress: [],
+          loading: false,
+          error: 'Error cargando datos de capacitación',
+        });
+
         return false;
       }
     },

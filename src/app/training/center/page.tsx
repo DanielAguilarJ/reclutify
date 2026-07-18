@@ -33,6 +33,7 @@ export default function TrainingCenterPage() {
     phase,
     loading,
     startModule,
+    initializeFromSession,
   } = useTrainingStore();
 
   const [showChat, setShowChat] = useState(false);
@@ -42,13 +43,28 @@ export default function TrainingCenterPage() {
   >([]);
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const bootstrapAttemptedRef = useRef(false);
 
-  // Redirect if not initialized
+  // Recuperar la capacitación desde la cookie HttpOnly cuando
+  // el usuario actualiza la página o abre /training/center directamente.
   useEffect(() => {
-    if (!loading && !employee) {
-      router.push('/');
+    if (employee || loading || bootstrapAttemptedRef.current) {
+      return;
     }
-  }, [loading, employee, router]);
+
+    bootstrapAttemptedRef.current = true;
+
+    initializeFromSession().then((success) => {
+      if (!success) {
+        router.replace('/');
+      }
+    });
+  }, [
+    employee,
+    loading,
+    initializeFromSession,
+    router,
+  ]);
 
   // Auto-scroll chat
   useEffect(() => {

@@ -56,7 +56,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [welcomeMessage, setWelcomeMessage] = useState('');
-  const [aiPersonality, setAiPersonality] = useState('friendly');
+  const [aiPersonality, setAiPersonality] = useState('friendly_mentor');
   const [passingScore, setPassingScore] = useState(70);
   const [status, setStatus] = useState<TrainingProgramStatus>('draft');
 
@@ -96,7 +96,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         setTitle(data.program.title || '');
         setDescription(data.program.description || '');
         setWelcomeMessage(data.program.welcomeMessage || '');
-        setAiPersonality(data.program.aiPersonality || 'friendly');
+        setAiPersonality(data.program.aiPersonality || 'friendly_mentor');
         setPassingScore(data.program.passingScore ?? 70);
         setStatus(data.program.status || 'draft');
       }
@@ -289,7 +289,6 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const handleAddManualModule = async () => {
     if (isReadOnly) return;
     const manualPayload = {
-      programId: programId,
       title: language === 'es' ? 'Nuevo Módulo' : 'New Module',
       description: '',
       content: { sections: [] },
@@ -546,9 +545,9 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               onChange={(e) => setAiPersonality(e.target.value)}
               className="w-full px-4 py-2.5 rounded-xl border border-border/50 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all text-sm disabled:opacity-60"
             >
-              <option value="friendly">{language === 'es' ? 'Mentor Amigable' : 'Friendly Mentor'}</option>
-              <option value="strict">{language === 'es' ? 'Profesor Estricto' : 'Strict Teacher'}</option>
-              <option value="casual">{language === 'es' ? 'Colega Casual' : 'Casual Colleague'}</option>
+              <option value="friendly_mentor">{language === 'es' ? 'Mentor Amigable' : 'Friendly Mentor'}</option>
+              <option value="strict_teacher">{language === 'es' ? 'Profesor Estricto' : 'Strict Teacher'}</option>
+              <option value="casual_colleague">{language === 'es' ? 'Colega Casual' : 'Casual Colleague'}</option>
             </select>
           </div>
         </div>

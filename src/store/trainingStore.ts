@@ -73,7 +73,7 @@ function programFromSupabase(row: Record<string, unknown>): TrainingProgram {
     description: (row.description as string) || undefined,
     isDefault: (row.is_default as boolean) ?? false,
     welcomeMessage: (row.welcome_message as string) || undefined,
-    aiPersonality: (row.ai_personality as string) || 'friendly',
+    aiPersonality: (row.ai_personality as string) || 'friendly_mentor',
     status: (row.status as TrainingProgramStatus) || 'draft',
     version: (row.version as number) ?? 1,
     passingScore: (row.passing_score as number) ?? 70,

@@ -38,7 +38,7 @@ interface TrainingAdminState {
   detachDocumentFromProgram: (programId: string, docId: string) => Promise<boolean>;
 
   setModules: (modules: TrainingModule[]) => void;
-  addModule: (programId: string, module: Omit<TrainingModule, 'id' | 'createdAt' | 'updatedAt' | 'sortOrder'>) => Promise<TrainingModule | null>;
+  addModule: (programId: string, module: Omit<TrainingModule, 'id' | 'programId' | 'createdAt' | 'updatedAt' | 'sortOrder'>) => Promise<TrainingModule | null>;
   updateModule: (programId: string, moduleId: string, updates: Partial<TrainingModule>) => Promise<boolean>;
   removeModule: (programId: string, moduleId: string) => Promise<boolean>;
   reorderModules: (programId: string, moduleIds: string[]) => Promise<boolean>;
@@ -55,7 +55,7 @@ function programFromSupabase(row: Record<string, unknown>): TrainingProgram {
     description: (row.description as string) || undefined,
     isDefault: (row.is_default as boolean) ?? false,
     welcomeMessage: (row.welcome_message as string) || undefined,
-    aiPersonality: (row.ai_personality as string) || 'friendly',
+    aiPersonality: (row.ai_personality as string) || 'friendly_mentor',
     status: (row.status as TrainingProgramStatus) || 'draft',
     version: (row.version as number) ?? 1,
     passingScore: (row.passing_score as number) ?? 70,

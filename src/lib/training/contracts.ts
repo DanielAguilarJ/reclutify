@@ -212,24 +212,15 @@ const baseQuestionSchema = z
 
 export const trainingQuestionAdminSchema = baseQuestionSchema;
 
-// Validador de invariantes de módulos comunes
+// Validador de invariantes de módulos comunes (compartido entre módulos
+// manuales y generados por IA). No exige secciones: un módulo manual
+// puede crearse vacío y completarse después.
 const validateModuleInvariants = (mod: {
   title: string;
-  sections?: Array<{ title: string; body: string; keyPoints: string[] }> | null;
-  content?: { sections: Array<{ title: string; body: string; keyPoints: string[] }> } | null;
   evaluationEnabled: boolean;
   evaluationQuestions: unknown[];
   sourceDocumentIds: string[];
 }, context: z.RefinementCtx) => {
-  const sections = mod.content?.sections ?? mod.sections;
-  if (!sections || sections.length < 1) {
-    context.addIssue({
-      code: 'custom',
-      path: [mod.content ? 'content' : 'sections'],
-      message: 'A module must have at least one section',
-    });
-  }
-
   if (mod.evaluationEnabled) {
     if (!mod.evaluationQuestions || mod.evaluationQuestions.length < 1) {
       context.addIssue({

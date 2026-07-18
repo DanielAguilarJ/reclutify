@@ -318,12 +318,19 @@ export interface TrainingAnswer {
   aiExplanation?: string;
 }
 
+export interface TrainingCitation {
+  documentId: string;
+  fileName: string;
+  chunkIndex: number;
+  snippet: string;
+}
+
 export interface TrainingMessage {
   role: 'assistant' | 'user' | 'system';
   content: string;
   timestamp: number;
   type?: 'text' | 'quiz' | 'feedback' | 'celebration';
-  citations?: { fileName: string; snippet: string }[];
+  citations?: TrainingCitation[];
 }
 
 export interface TrainingSession {

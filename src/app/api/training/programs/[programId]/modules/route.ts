@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
+import { manualTrainingModuleSchema } from '@/lib/training/contracts';
 import { loadDraftModules, replaceDraftModules } from '@/lib/training/modules';
 
 export const runtime = 'nodejs';
@@ -36,7 +37,13 @@ export async function POST(
       }
     }
 
-    const body = await request.json();
+    const bodyParsed = manualTrainingModuleSchema.safeParse(await request.json());
+    if (!bodyParsed.success) {
+      return NextResponse.json(
+        { error: 'Invalid request', issues: bodyParsed.error.flatten() },
+        { status: 400 }
+      );
+    }
     const {
       title,
       description,
@@ -45,14 +52,10 @@ export async function POST(
       evaluationEnabled,
       evaluationQuestions,
       sourceDocumentIds,
-    } = body;
+    } = bodyParsed.data;
 
-    if (!title) {
-      return NextResponse.json({ error: 'Title is required' }, { status: 400 });
-    }
-
-    // 3. Validar documentos fuente
-    const docIds = Array.isArray(sourceDocumentIds) ? sourceDocumentIds : [];
+    // 3. Validar documentos fuente (ya es array validado por Zod)
+    const docIds = sourceDocumentIds;
     if (docIds.length > 0) {
       const { data: assocs } = await admin
         .from('training_program_documents')
@@ -96,11 +99,10 @@ export async function POST(
       success: true,
       module: newModule,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API Manual Module] Unexpected error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
-    );
+    const message = err instanceof Error ? err.message : 'Unauthorized';
+    const status = (err as { status?: number }).status ?? 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
+import { documentAiAnalysisSchema } from '@/lib/training/contracts';
 import {
   sanitizeTrainingFileName,
   sha256,
@@ -44,7 +45,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Program is not bound to a role vacancy' }, { status: 400 });
     }
 
-    const processedDocs: any[] = [];
+    // Guard: solo programas en draft pueden recibir nuevos documentos
+    if (program.status !== 'draft') {
+      return NextResponse.json(
+        { error: 'Documents can only be uploaded to draft programs' },
+        { status: 409 }
+      );
+    }
+
+    const processedDocs: Record<string, unknown>[] = [];
     const failures: Array<{ fileName: string; error: string }> = [];
 
     // Procesar cada archivo de forma independiente
@@ -84,7 +93,7 @@ export async function POST(req: NextRequest) {
         if (duplicateError) throw duplicateError;
 
         let documentId: string;
-        let finalDocRow: any;
+        let finalDocRow: Record<string, unknown>;
         let isExisting = false;
 
         if (existingDoc) {
@@ -134,10 +143,11 @@ export async function POST(req: NextRequest) {
             ) {
               extractedText = fileBuffer.toString('utf-8');
             }
-          } catch (parseErr: any) {
+          } catch (parseErr: unknown) {
             // Rollback del storage en caso de fallo catastrófico en parseo
             await admin.storage.from('training-documents').remove([storagePath]);
-            throw new Error(`Failed to parse file: ${parseErr.message}`);
+            const parseErrMsg = parseErr instanceof Error ? parseErr.message : 'Unknown parsing error';
+            throw new Error(`Failed to parse file: ${parseErrMsg}`);
           }
 
           // Validar longitud del texto extraído
@@ -156,7 +166,7 @@ export async function POST(req: NextRequest) {
 
           // Analizar con AI si está listo
           let aiSummary = '';
-          let aiTopics: any[] = [];
+          let aiTopics: unknown[] = [];
           const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
           const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
 
@@ -202,12 +212,24 @@ ${extractedText.substring(0, 30000)}`,
               });
 
               if (aiResponse.ok) {
-                const aiData = await aiResponse.json();
-                const content = aiData.choices?.[0]?.message?.content || '{}';
+                const aiData = (await aiResponse.json()) as {
+                  choices?: Array<{ message?: { content?: string } }>;
+                };
+                const content = aiData.choices?.[0]?.message?.content ?? '{}';
                 const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
-                const structured = JSON.parse(cleanContent);
-                aiSummary = structured.summary || '';
-                aiTopics = structured.topics || [];
+                let rawAnalysis: unknown;
+                try {
+                  rawAnalysis = JSON.parse(cleanContent);
+                } catch {
+                  rawAnalysis = {};
+                }
+                const analysisResult = documentAiAnalysisSchema.safeParse(rawAnalysis);
+                if (analysisResult.success) {
+                  aiSummary = analysisResult.data.summary;
+                  aiTopics = analysisResult.data.topics;
+                } else {
+                  console.warn('[Upload API] AI analysis did not match schema, skipping');
+                }
               }
             } catch (aiErr) {
               console.error('[Upload API] AI analysis failed, continuing without it:', aiErr);
@@ -320,7 +342,7 @@ ${extractedText.substring(0, 30000)}`,
             // Si es un documento nuevo y falla la relación, hacemos rollback
             if (!isExisting) {
               await admin.from('training_documents').delete().eq('id', documentId);
-              await admin.storage.from('training-documents').remove([finalDocRow.storage_path]);
+              await admin.storage.from('training-documents').remove([finalDocRow.storage_path as string]);
             }
             throw assocError;
           }
@@ -334,22 +356,20 @@ ${extractedText.substring(0, 30000)}`,
           fileName: finalDocRow.file_name,
           fileType: finalDocRow.file_type,
           fileSize: finalDocRow.file_size || undefined,
-          storagePath: finalDocRow.storage_path || undefined,
-          extractedText: finalDocRow.extracted_text || undefined,
           aiSummary: finalDocRow.ai_summary || undefined,
           aiTopics: finalDocRow.ai_topics || [],
           status: finalDocRow.status,
           processingError: finalDocRow.processing_error || undefined,
-          checksumSha256: finalDocRow.checksum_sha256 || undefined,
           createdAt: finalDocRow.created_at,
           updatedAt: finalDocRow.updated_at,
         });
 
-      } catch (fileErr: any) {
+      } catch (fileErr: unknown) {
         console.error(`[Upload API] File failed: ${file.name}`, fileErr);
+        const fileErrMsg = fileErr instanceof Error ? fileErr.message : 'Error desconocido al procesar el archivo';
         failures.push({
           fileName: file.name,
-          error: fileErr.message || 'Error desconocido al procesar el archivo',
+          error: fileErrMsg,
         });
       }
     }
@@ -359,10 +379,11 @@ ${extractedText.substring(0, 30000)}`,
       documents: processedDocs,
       failures,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Upload API] General failure:', error);
+    const errMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json(
-      { error: error.message || 'Internal Server Error' },
+      { error: errMessage },
       { status: 500 }
     );
   }

@@ -5,17 +5,15 @@ import { createAdminClient } from '@/utils/supabase/admin';
 export const runtime = 'nodejs';
 
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   props: { params: Promise<{ programId: string }> }
 ) {
   try {
     const { programId } = await props.params;
 
-    // 1. Autenticar usuario
     const user = await requireAuthenticatedUser();
     const admin = createAdminClient();
 
-    // 2. Invocar RPC para duplicar versión en base de datos
     const { data: newProgramId, error } = await admin.rpc(
       'create_training_program_version',
       {
@@ -26,18 +24,35 @@ export async function POST(
 
     if (error) {
       console.error('[API Program Versions] RPC failed:', error);
-      return NextResponse.json({ error: error.message || 'Failed to create new program version' }, { status: 400 });
+
+      if (error.message?.includes('only_published_or_archived_programs_can_be_versioned')) {
+        return NextResponse.json(
+          { error: 'Only published or archived programs can be versioned' },
+          { status: 409 }
+        );
+      }
+
+      if (error.message?.includes('draft_version_already_exists')) {
+        return NextResponse.json(
+          { error: 'A draft version already exists for this role vacancy' },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: error.message || 'Failed to create new program version' },
+        { status: 400 }
+      );
     }
 
     return NextResponse.json({
       success: true,
-      programId: newProgramId,
+      programId: newProgramId as string,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API Program Versions] Unexpected error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
-    );
+    const message = err instanceof Error ? err.message : 'Unauthorized';
+    const status = (err as { status?: number }).status ?? 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -1,14 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
-import { trainingChatRequestSchema } from '@/lib/training/contracts';
-import { validateChatCitations } from '@/lib/training/documents';
+import {
+  trainingChatRequestSchema,
+  trainingTutorResponseSchema,
+  persistedTrainingMessagesSchema,
+  persistedTrainingMessageSchema,
+} from '@/lib/training/contracts';
+import { validateChatCitations, CitationSource } from '@/lib/training/documents';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const MAX_CONTEXT_CHUNKS = 8;
-const MAX_CONTEXT_CHARACTERS = 16000;
+const MAX_CONTEXT_CHARACTERS = 16_000;
+
+type BoundedChunk = {
+  id: string;
+  document_id: string;
+  chunk_index: number;
+  content: string;
+  training_documents?: { file_name: string } | null;
+};
+
+function sanitizePersistedMessages(
+  raw: unknown
+): Array<{
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  type?: 'text' | 'feedback';
+  citations?: Array<{
+    documentId: string;
+    fileName: string;
+    chunkIndex: number;
+    snippet: string;
+  }>;
+}> {
+  const result = persistedTrainingMessagesSchema.safeParse(raw);
+  if (!result.success) {
+    // Intentar rescatar mensajes válidos individualmente
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item: unknown) => persistedTrainingMessageSchema.safeParse(item))
+      .filter((r): r is { success: true; data: z.infer<typeof persistedTrainingMessageSchema> } => r.success)
+      .map((r) => r.data);
+  }
+  return result.data;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,54 +73,62 @@ export async function POST(req: NextRequest) {
     const message = 'message' in body ? body.message : undefined;
 
     const admin = createAdminClient();
-    const now = new Date().toISOString();
 
-    // 2. Cargar documentos permitidos según el modo
+    // 2. Si modo módulo, verificar propiedad
+    if (mode === 'module' && moduleId) {
+      const { data: moduleRow } = await admin
+        .from('training_modules')
+        .select('id')
+        .eq('id', moduleId)
+        .eq('program_id', employee.program_id)
+        .maybeSingle();
+
+      if (!moduleRow) {
+        return NextResponse.json({ error: 'Module not found or not assigned' }, { status: 404 });
+      }
+    }
+
+    // 3. Cargar documentos permitidos según el modo
     let documentIds: string[] = [];
     if (mode === 'module' && moduleId) {
       const { data: moduleDocAssocs } = await admin
         .from('training_module_documents')
         .select('document_id')
         .eq('module_id', moduleId);
-      documentIds = moduleDocAssocs?.map(a => a.document_id) || [];
+      documentIds = moduleDocAssocs?.map((a) => a.document_id) ?? [];
     } else {
-      // mode === 'general': todos los documentos del programa
       const { data: programDocAssocs } = await admin
         .from('training_program_documents')
         .select('document_id')
         .eq('program_id', employee.program_id);
-      documentIds = programDocAssocs?.map(a => a.document_id) || [];
+      documentIds = programDocAssocs?.map((a) => a.document_id) ?? [];
     }
 
-    // 3. Buscar chunks y aplicar límite de contexto (RAG)
-    let boundedChunks: any[] = [];
+    // 4. Buscar chunks y aplicar límite de contexto (RAG)
+    let boundedChunks: BoundedChunk[] = [];
     if (documentIds.length > 0) {
-      let query = admin
-        .from('training_document_chunks')
-        .select(`
-          id,
-          document_id,
-          chunk_index,
-          content,
-          training_documents (
-            file_name
-          )
-        `)
-        .in('document_id', documentIds)
-        .limit(MAX_CONTEXT_CHUNKS * 2); // Cargar el doble para filtrar
-
       const userText = message?.trim();
+      let candidateChunks: BoundedChunk[] = [];
+
       if (userText) {
-        query = query.textSearch('content', userText, {
-          type: 'websearch',
-          config: 'simple',
-        });
+        const { data: searchResults } = await admin
+          .from('training_document_chunks')
+          .select(`
+            id,
+            document_id,
+            chunk_index,
+            content,
+            training_documents (
+              file_name
+            )
+          `)
+          .in('document_id', documentIds)
+          .textSearch('content', userText, { type: 'websearch', config: 'simple' })
+          .limit(MAX_CONTEXT_CHUNKS * 2);
+        candidateChunks = (searchResults as unknown as BoundedChunk[]) ?? [];
       }
 
-      const { data: rawChunks } = await query;
-
-      // Si la búsqueda con t_vector no dio resultados, cargar sin textSearch
-      let candidateChunks = rawChunks || [];
+      // Si la búsqueda por texto no dio resultados, cargar sin filtro
       if (candidateChunks.length === 0) {
         const { data: fallbackChunks } = await admin
           .from('training_document_chunks')
@@ -95,28 +143,26 @@ export async function POST(req: NextRequest) {
           `)
           .in('document_id', documentIds)
           .limit(MAX_CONTEXT_CHUNKS);
-        candidateChunks = fallbackChunks || [];
+        candidateChunks = (fallbackChunks as unknown as BoundedChunk[]) ?? [];
       }
 
       // Limitar a 8 chunks y 16,000 caracteres máximo
       let totalCharacters = 0;
       boundedChunks = candidateChunks
-        .filter((chunk: any) => chunk.content && chunk.content.trim())
-        .filter((chunk: any) => {
-          if (totalCharacters + chunk.content.length > MAX_CONTEXT_CHARACTERS) {
-            return false;
-          }
+        .filter((chunk) => chunk.content && chunk.content.trim())
+        .filter((chunk) => {
+          if (totalCharacters + chunk.content.length > MAX_CONTEXT_CHARACTERS) return false;
           totalCharacters += chunk.content.length;
           return true;
         })
         .slice(0, MAX_CONTEXT_CHUNKS);
     }
 
-    // 4. Buscar o crear la sesión de chat correspondiente
+    // 5. Buscar o crear la sesión de chat
     const sessionType = mode === 'general' ? 'general' : 'module';
-    
+
     const getActiveSession = async () => {
-      let querySession = admin
+      let query = admin
         .from('training_sessions')
         .select('*')
         .eq('employee_id', employee.id)
@@ -124,21 +170,22 @@ export async function POST(req: NextRequest) {
         .is('ended_at', null);
 
       if (mode === 'module' && moduleId) {
-        querySession = querySession.eq('module_id', moduleId);
+        query = query.eq('module_id', moduleId);
       }
-      return await querySession.maybeSingle();
+      return query.maybeSingle();
     };
 
-    let { data: activeSession, error: sessError } = await getActiveSession();
+    const { data: activeSession, error: sessError } = await getActiveSession();
     if (sessError) {
       console.error('[Chat API] Session fetch error:', sessError);
     }
 
-    let chatSession: any;
+    let chatSession: Record<string, unknown>;
     if (activeSession) {
-      chatSession = activeSession;
+      chatSession = activeSession as Record<string, unknown>;
     } else {
       const sessionId = crypto.randomUUID();
+      const now = new Date().toISOString();
       const { data: createdSession, error: createSessError } = await admin
         .from('training_sessions')
         .insert({
@@ -153,11 +200,10 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (createSessError) {
-        // En caso de concurrencia (código 23505), intentar volver a consultar la sesión
         if (createSessError.code === '23505') {
           const retry = await getActiveSession();
           if (retry.data) {
-            chatSession = retry.data;
+            chatSession = retry.data as Record<string, unknown>;
           } else {
             return NextResponse.json({ error: 'Session conflict error' }, { status: 409 });
           }
@@ -166,54 +212,60 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Failed to establish training chat session' }, { status: 500 });
         }
       } else {
-        chatSession = createdSession;
+        chatSession = createdSession as Record<string, unknown>;
       }
     }
 
-    const historyMessages = Array.isArray(chatSession.messages) ? chatSession.messages : [];
+    const historyMessages = sanitizePersistedMessages(chatSession.messages);
 
-    // Si es start y existe historial, devolvemos el historial y el mensaje del tutor
+    // Si es start y existe historial, devolvemos el historial y el último mensaje del tutor
     if (action === 'start' && historyMessages.length > 0) {
-      const lastAssis = [...historyMessages].reverse().find(m => m.role === 'assistant');
+      const lastAssis = [...historyMessages].reverse().find((m) => m.role === 'assistant');
       return NextResponse.json({
         success: true,
-        message: lastAssis?.content || 'Bienvenido de nuevo.',
-        type: lastAssis?.type || 'text',
+        message: lastAssis?.content ?? 'Bienvenido de nuevo.',
+        type: lastAssis?.type ?? 'text',
         contentCovered: false,
         evaluationReady: false,
-        citations: lastAssis?.citations || [],
+        citations: lastAssis?.citations ?? [],
         history: historyMessages,
       });
     }
 
-    // 5. Cargar contexto organizacional y personalización
+    // 6. Cargar contexto organizacional y personalización
     const { data: orgData } = await admin
       .from('organizations')
       .select('name')
       .eq('id', employee.org_id)
       .single();
-    const companyName = orgData?.name || 'Reclutify Client';
+    const companyName = orgData?.name ?? 'Reclutify Client';
 
-    const pNotes = employee.personalization_notes || {};
+    const pNotes = (employee.personalization_notes ?? {}) as Record<string, unknown>;
     const personalization = `
 PERSONALIZATION Context:
 - Strengths: ${Array.isArray(pNotes.strengths) ? pNotes.strengths.join(', ') : 'None'}
 - Areas to watch: ${Array.isArray(pNotes.areasToWatch) ? pNotes.areasToWatch.join(', ') : 'None'}
-- Learning Style: ${pNotes.learningStyle || 'Standard'}
+- Learning Style: ${typeof pNotes.learningStyle === 'string' ? pNotes.learningStyle : 'Standard'}
 - Custom Tips: ${Array.isArray(pNotes.customTips) ? pNotes.customTips.join(', ') : 'None'}
 `;
 
     const ragContext = boundedChunks
       .map(
         (chunk) =>
-          `[Chunk ID: ${chunk.id}] (File: ${chunk.training_documents?.file_name || 'Manual'}):\n${chunk.content}`
+          `[Chunk ID: ${chunk.id}] (File: ${
+            chunk.training_documents?.file_name ?? 'Manual'
+          }):\n${chunk.content}`
       )
       .join('\n\n');
 
-    // 6. Preparar prompt
-    const systemPrompt = `You are "Zara", a warm, friendly AI onboarding mentor at ${companyName}. You are guiding ${employee.name} in their training for the role of ${employee.role_title || 'their new position'}.
+    // 7. Preparar prompt
+    const systemPrompt = `You are "Zara", a warm, friendly AI onboarding mentor at ${companyName}. You are guiding ${employee.name} in their training for the role of ${employee.role_title ?? 'their new position'}.
 
-MODE: ${mode === 'module' ? `Teaching Module. Teach the concepts of this module using the documents.` : 'General chat. Help the employee with general queries.'}
+MODE: ${
+      mode === 'module'
+        ? 'Teaching Module. Teach the concepts of this module using the documents.'
+        : 'General chat. Help the employee with general queries.'
+    }
 
 ${personalization}
 
@@ -236,26 +288,28 @@ You MUST respond with a single valid JSON block only.
   "citationChunkIds": ["chunk-uuid-1"]
 }`;
 
-    // Construir mensajes para la llamada
+    // Construir mensajes para la llamada a la IA (NO incluir el mensaje del usuario aún)
     const apiMessages = [
       { role: 'system', content: systemPrompt },
-      ...historyMessages.slice(-8).map((msg: any) => ({
+      ...historyMessages.slice(-8).map((msg) => ({
         role: msg.role === 'user' ? 'user' : 'assistant',
         content: msg.content,
       })),
     ];
 
+    // Agregar el mensaje del usuario al contexto de la IA (pero aún no persistir)
     if (action !== 'start' && message) {
       apiMessages.push({ role: 'user', content: message.trim() });
     }
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-2.5-flash';
 
     if (!OPENROUTER_API_KEY) {
       return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });
     }
 
+    // 8. Llamar a la IA
     const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -278,64 +332,86 @@ You MUST respond with a single valid JSON block only.
       return NextResponse.json({ error: 'AI tutor is offline' }, { status: 502 });
     }
 
-    const aiData = await aiResponse.json();
-    const rawContent = aiData.choices?.[0]?.message?.content || '{}';
+    const aiData = (await aiResponse.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const rawContent = aiData.choices?.[0]?.message?.content ?? '{}';
     const cleanContent = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
 
-    let structured: any;
+    let rawParsed: unknown;
     try {
-      structured = JSON.parse(cleanContent);
-    } catch (parseError) {
+      rawParsed = JSON.parse(cleanContent);
+    } catch {
       console.error('[Chat API] Failed to parse AI JSON:', rawContent);
-      structured = {
-        message: cleanContent || 'I understand. Let me know if you have any questions.',
-        type: 'text',
-        contentCovered: false,
-        evaluationReady: false,
-        citationChunkIds: [],
-      };
+      return NextResponse.json({ error: 'AI tutor is offline' }, { status: 502 });
     }
 
-    // 7. Validar citas contra los chunks reales
-    const citationIds: string[] = Array.isArray(structured.citationChunkIds) ? structured.citationChunkIds : [];
-    const citations = validateChatCitations(citationIds, boundedChunks);
+    const tutorResult = trainingTutorResponseSchema.safeParse(rawParsed);
+    if (!tutorResult.success) {
+      console.error('[Chat API] AI response failed Zod validation:', tutorResult.error.flatten());
+      return NextResponse.json({ error: 'AI tutor is offline' }, { status: 502 });
+    }
 
-    // 8. Persistir en la sesión del empleado
-    const newMessages = [...historyMessages];
+    const structured = tutorResult.data;
+
+    // 9. Validar citas contra los chunks reales
+    const citationIds = structured.citationChunkIds ?? [];
+    const citations = validateChatCitations(citationIds, boundedChunks as unknown as CitationSource[]);
+
+    // 10. Persistir en batch atómico (usuario + assistant) con la RPC
+    const now = Date.now();
+    const messageBatch: Array<{
+      role: 'user' | 'assistant';
+      content: string;
+      timestamp: number;
+      type?: 'text' | 'feedback';
+      citations?: typeof citations;
+    }> = [];
+
     if (action !== 'start' && message) {
-      newMessages.push({
+      messageBatch.push({
         role: 'user',
         content: message.trim(),
-        timestamp: Date.now(),
+        timestamp: now,
       });
     }
-    newMessages.push({
+
+    messageBatch.push({
       role: 'assistant',
       content: structured.message,
-      type: structured.type || 'text',
+      type: structured.type,
       citations,
-      timestamp: Date.now(),
+      timestamp: now,
     });
 
-    await admin
-      .from('training_sessions')
-      .update({ messages: newMessages })
-      .eq('id', chatSession.id);
+    const { data: persistedHistory, error: appendError } = await admin.rpc(
+      'append_training_session_messages',
+      {
+        p_employee_id: employee.id,
+        p_session_id: chatSession.id as string,
+        p_messages: messageBatch,
+      }
+    );
+
+    if (appendError) {
+      console.error('[Chat API] Failed to persist messages:', appendError);
+      // No devolver 500: la IA respondió. El mensaje se retorna igual.
+    }
+
+    const finalHistory = sanitizePersistedMessages(persistedHistory ?? [...historyMessages, ...messageBatch]);
 
     return NextResponse.json({
       success: true,
       message: structured.message,
-      type: structured.type || 'text',
-      contentCovered: !!structured.contentCovered,
-      evaluationReady: !!structured.evaluationReady,
+      type: structured.type,
+      contentCovered: structured.contentCovered ?? false,
+      evaluationReady: structured.evaluationReady ?? false,
       citations,
-      history: newMessages,
+      history: finalHistory,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Chat API] Unexpected failure:', error);
-    return NextResponse.json(
-      { error: error.message || 'Internal Server Error' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'Internal Server Error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

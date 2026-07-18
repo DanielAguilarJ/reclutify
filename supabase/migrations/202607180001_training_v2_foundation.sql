@@ -31,12 +31,29 @@ ALTER TABLE public.training_programs
 ALTER TABLE public.training_programs
   ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
 
--- Migrar y vincular programas existentes a un rol si es posible
-UPDATE public.training_programs AS program
-SET role_id = (
-  SELECT id FROM public.roles LIMIT 1
-)
-WHERE program.role_id IS NULL;
+ALTER TABLE public.training_programs
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft';
+
+ALTER TABLE public.training_programs
+  DROP CONSTRAINT IF EXISTS training_programs_status_check;
+
+ALTER TABLE public.training_programs
+  ADD CONSTRAINT training_programs_status_check
+  CHECK (status IN ('draft', 'published', 'archived'));
+
+ALTER TABLE public.training_programs
+  DROP CONSTRAINT IF EXISTS training_programs_version_check;
+
+ALTER TABLE public.training_programs
+  ADD CONSTRAINT training_programs_version_check
+  CHECK (version >= 1);
+
+ALTER TABLE public.training_programs
+  DROP CONSTRAINT IF EXISTS training_programs_passing_score_check;
+
+ALTER TABLE public.training_programs
+  ADD CONSTRAINT training_programs_passing_score_check
+  CHECK (passing_score BETWEEN 0 AND 100);
 
 -- Asegurar que al menos tengamos una versión coherente en los existentes
 UPDATE public.training_programs
@@ -48,6 +65,10 @@ CREATE INDEX IF NOT EXISTS idx_training_programs_role
 
 CREATE INDEX IF NOT EXISTS idx_training_programs_status
   ON public.training_programs(status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_published_training_program_per_role
+  ON public.training_programs (org_id, role_id)
+  WHERE status = 'published' AND role_id IS NOT NULL;
 
 
 -- ============================================================
@@ -630,5 +651,30 @@ ON public.training_programs (
 WHERE
   role_id IS NOT NULL
   AND status = 'draft';
+
+-- ============================================================
+-- 11. SESIÓN DE ACCESO ÚNICA POR EMPLEADO
+-- ============================================================
+
+-- Revocar sesiones duplicadas antes de crear el índice único.
+WITH ranked_access_sessions AS (
+  SELECT
+    id,
+    row_number() OVER (
+      PARTITION BY employee_id
+      ORDER BY created_at DESC, id DESC
+    ) AS row_number
+  FROM public.training_access_sessions
+  WHERE revoked_at IS NULL
+)
+UPDATE public.training_access_sessions session
+SET revoked_at = now()
+FROM ranked_access_sessions ranked
+WHERE session.id = ranked.id
+  AND ranked.row_number > 1;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_training_access_session
+  ON public.training_access_sessions (employee_id)
+  WHERE revoked_at IS NULL;
 
 COMMIT;

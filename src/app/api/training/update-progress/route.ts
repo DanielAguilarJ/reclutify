@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
       success: true,
       timeSpent: newTimeSpent,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[Update Progress API] Unexpected error:', err);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }

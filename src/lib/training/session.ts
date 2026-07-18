@@ -85,14 +85,15 @@ export async function getTrainingEmployeeFromSession(): Promise<TrainingSessionE
       return null;
     }
 
-    // 4. Actualizar la última vez visto (last_seen_at) de la sesión de manera asíncrona
-    supabase
+    // 4. Actualizar la última vez visto (last_seen_at) de la sesión
+    const { error: lastSeenError } = await supabase
       .from('training_access_sessions')
       .update({ last_seen_at: new Date().toISOString() })
-      .eq('id', session.id)
-      .then(({ error }) => {
-        if (error) console.error('[Session Helper] Error updating last_seen_at:', error);
-      });
+      .eq('id', session.id);
+
+    if (lastSeenError) {
+      console.error('[Session Helper] Error updating last_seen_at:', lastSeenError);
+    }
 
     return employee;
   } catch (err) {

@@ -1,20 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
+import { updateTrainingProgramSchema } from '@/lib/training/contracts';
 
 export const runtime = 'nodejs';
 
+type ProgramDocumentRow = {
+  id: string;
+  org_id: string;
+  role_id: string | null;
+  scope: 'organization' | 'role';
+  file_name: string;
+  file_type: string;
+  file_size: number | null;
+  ai_summary: string | null;
+  ai_topics: unknown;
+  status: 'uploaded' | 'processing' | 'ready' | 'failed' | 'needs_ocr';
+  processing_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ModuleRow = {
+  id: string;
+  program_id: string;
+  title: string;
+  description: string | null;
+  content: { sections: unknown[] } | null;
+  sort_order: number | null;
+  duration_estimate: number | null;
+  evaluation_enabled: boolean | null;
+  evaluation_questions: unknown;
+  created_at: string;
+  updated_at: string;
+  training_module_documents: { document_id: string }[];
+};
+
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   props: { params: Promise<{ programId: string }> }
 ) {
   try {
     const { programId } = await props.params;
-
-    // 1. Autorizar admin
     const { program, admin } = await requireProgramAdmin(programId);
 
-    // 2. Obtener rol asociado
-    let role = null;
+    // Obtener rol asociado
+    let role: Record<string, unknown> | null = null;
     if (program.role_id) {
       const { data: roleData, error: roleError } = await admin
         .from('roles')
@@ -25,11 +55,11 @@ export async function GET(
       if (roleError) {
         console.error('[API GET Program] Error fetching role:', roleError);
       } else {
-        role = roleData;
+        role = roleData as Record<string, unknown> | null;
       }
     }
 
-    // 3. Obtener documentos asociados al programa vía tabla intermedia
+    // Obtener documentos asociados (sin extracted_text, storage_path ni checksum)
     const { data: associations, error: assocError } = await admin
       .from('training_program_documents')
       .select(`
@@ -43,13 +73,10 @@ export async function GET(
           file_name,
           file_type,
           file_size,
-          storage_path,
-          extracted_text,
           ai_summary,
           ai_topics,
           status,
           processing_error,
-          checksum_sha256,
           created_at,
           updated_at
         )
@@ -62,33 +89,30 @@ export async function GET(
       return NextResponse.json({ error: 'Failed to load documents' }, { status: 500 });
     }
 
-    // Mapear asociaciones a TrainingDocument
-    const documents = (associations || [])
-      .map((assoc: any) => {
-        const doc = assoc.training_documents;
+    const documents = (associations as unknown as Array<{ training_documents: ProgramDocumentRow | ProgramDocumentRow[] | null }> ?? [])
+      .map((assoc) => {
+        const docRaw = assoc.training_documents;
+        const doc = Array.isArray(docRaw) ? docRaw[0] : docRaw;
         if (!doc) return null;
         return {
           id: doc.id,
           orgId: doc.org_id,
-          roleId: doc.role_id || undefined,
+          roleId: doc.role_id ?? undefined,
           scope: doc.scope,
           fileName: doc.file_name,
           fileType: doc.file_type,
-          fileSize: doc.file_size || undefined,
-          storagePath: doc.storage_path || undefined,
-          extractedText: doc.extracted_text || undefined,
-          aiSummary: doc.ai_summary || undefined,
-          aiTopics: doc.ai_topics || [],
+          fileSize: doc.file_size ?? undefined,
+          aiSummary: doc.ai_summary ?? undefined,
+          aiTopics: doc.ai_topics ?? [],
           status: doc.status,
-          processingError: doc.processing_error || undefined,
-          checksumSha256: doc.checksum_sha256 || undefined,
+          processingError: doc.processing_error ?? undefined,
           createdAt: doc.created_at,
           updatedAt: doc.updated_at,
         };
       })
-      .filter(Boolean);
+      .filter((d): d is NonNullable<typeof d> => d !== null);
 
-    // 4. Obtener módulos del programa incluyendo las relaciones con documentos fuente
+    // Obtener módulos
     const { data: modulesData, error: modsError } = await admin
       .from('training_modules')
       .select(`
@@ -105,21 +129,21 @@ export async function GET(
       return NextResponse.json({ error: 'Failed to load modules' }, { status: 500 });
     }
 
-    const modules = (modulesData || []).map((row: any) => {
+    const modules = (modulesData as ModuleRow[] ?? []).map((row) => {
       const docIds = Array.isArray(row.training_module_documents)
-        ? row.training_module_documents.map((d: any) => d.document_id as string)
+        ? row.training_module_documents.map((d) => d.document_id)
         : [];
       return {
         id: row.id,
         programId: row.program_id,
         title: row.title,
-        description: row.description || undefined,
-        content: row.content || { sections: [] },
+        description: row.description ?? undefined,
+        content: row.content ?? { sections: [] },
         sourceDocumentIds: docIds,
         sortOrder: row.sort_order ?? 0,
         durationEstimate: row.duration_estimate ?? 15,
         evaluationEnabled: row.evaluation_enabled ?? false,
-        evaluationQuestions: row.evaluation_questions || [],
+        evaluationQuestions: row.evaluation_questions ?? [],
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -130,16 +154,16 @@ export async function GET(
       program: {
         id: program.id,
         orgId: program.org_id,
-        roleId: program.role_id || undefined,
+        roleId: program.role_id ?? undefined,
         title: program.title,
-        description: program.description || undefined,
+        description: program.description ?? undefined,
         isDefault: program.is_default ?? false,
-        welcomeMessage: program.welcome_message || undefined,
-        aiPersonality: program.ai_personality || 'friendly',
-        status: program.status || 'draft',
+        welcomeMessage: program.welcome_message ?? undefined,
+        aiPersonality: program.ai_personality ?? 'friendly',
+        status: program.status ?? 'draft',
         version: program.version ?? 1,
         passingScore: program.passing_score ?? 70,
-        publishedAt: program.published_at || undefined,
+        publishedAt: program.published_at ?? undefined,
         createdAt: program.created_at,
         updatedAt: program.updated_at,
       },
@@ -147,12 +171,11 @@ export async function GET(
       documents,
       modules,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API GET Program] Unexpected error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
-    );
+    const message = err instanceof Error ? err.message : 'Unauthorized';
+    const status = (err as { status?: number }).status ?? 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }
 
@@ -164,7 +187,6 @@ export async function PATCH(
     const { programId } = await props.params;
     const { program, admin } = await requireProgramAdmin(programId);
 
-    // 1. Si no está en draft, impedir edición
     if (program.status !== 'draft') {
       return NextResponse.json(
         { error: 'Create a new program version before editing' },
@@ -172,27 +194,23 @@ export async function PATCH(
       );
     }
 
-    const body = await request.json();
-    const updates: Record<string, any> = {};
+    const parsed = updateTrainingProgramSchema.safeParse(await request.json());
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Invalid request', issues: parsed.error.flatten() },
+        { status: 400 }
+      );
+    }
 
-    // 2. Filtrar únicamente campos permitidos
+    const body = parsed.data;
+    const updates: Record<string, unknown> = {};
+
     if (body.title !== undefined) updates.title = body.title;
-    if (body.description !== undefined) updates.description = body.description || null;
-    if (body.welcomeMessage !== undefined) updates.welcome_message = body.welcomeMessage || null;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.welcomeMessage !== undefined) updates.welcome_message = body.welcomeMessage;
     if (body.aiPersonality !== undefined) updates.ai_personality = body.aiPersonality;
-    if (body.passingScore !== undefined) {
-      const score = Number(body.passingScore);
-      if (Number.isNaN(score) || score < 0 || score > 100) {
-        return NextResponse.json({ error: 'Invalid passingScore. Must be between 0 and 100.' }, { status: 400 });
-      }
-      updates.passing_score = score;
-    }
+    if (body.passingScore !== undefined) updates.passing_score = body.passingScore;
 
-    if (Object.keys(updates).length === 0) {
-      return NextResponse.json({ error: 'No valid update fields provided' }, { status: 400 });
-    }
-
-    // 3. Ejecutar actualización
     const { data: updated, error } = await admin
       .from('training_programs')
       .update(updates)
@@ -210,25 +228,24 @@ export async function PATCH(
       program: {
         id: updated.id,
         orgId: updated.org_id,
-        roleId: updated.role_id || undefined,
+        roleId: updated.role_id ?? undefined,
         title: updated.title,
-        description: updated.description || undefined,
+        description: updated.description ?? undefined,
         isDefault: updated.is_default ?? false,
-        welcomeMessage: updated.welcome_message || undefined,
-        aiPersonality: updated.ai_personality || 'friendly',
-        status: updated.status || 'draft',
+        welcomeMessage: updated.welcome_message ?? undefined,
+        aiPersonality: updated.ai_personality ?? 'friendly',
+        status: updated.status ?? 'draft',
         version: updated.version ?? 1,
         passingScore: updated.passing_score ?? 70,
-        publishedAt: updated.published_at || undefined,
+        publishedAt: updated.published_at ?? undefined,
         createdAt: updated.created_at,
         updatedAt: updated.updated_at,
       },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API PATCH Program] Unexpected error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
-    );
+    const message = err instanceof Error ? err.message : 'Unauthorized';
+    const status = (err as { status?: number }).status ?? 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -3,25 +3,21 @@ import { cookies } from 'next/headers';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { TRAINING_COOKIE_NAME } from '@/lib/training/session';
 import { hashOpaqueToken, createOpaqueToken } from '@/lib/training/tokens';
+import { trainingAccessSchema } from '@/lib/training/contracts';
 
 export const runtime = 'nodejs';
 
-interface AccessRequestBody {
-  token?: string;
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as AccessRequestBody;
-    const invitationToken = body.token?.trim();
-
-    if (!invitationToken) {
+    const parsed = trainingAccessSchema.safeParse(await req.json());
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Training token is required' },
+        { error: 'Invalid training token' },
         { status: 400 }
       );
     }
 
+    const invitationToken = parsed.data.token;
     const invitationTokenHash = hashOpaqueToken(invitationToken);
     const supabase = createAdminClient();
 
@@ -52,12 +48,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'This training link has expired' }, { status: 401 });
     }
 
-    // 2. Generar token de sesión temporal opaco y su hash
+    // 2. Revocar sesiones activas anteriores
+    const { error: revokeError } = await supabase
+      .from('training_access_sessions')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('employee_id', employee.id)
+      .is('revoked_at', null);
+
+    if (revokeError) {
+      console.error('[training/access] Failed to revoke previous sessions:', revokeError);
+      // No es bloqueante: continuar
+    }
+
+    // 3. Generar token de sesión temporal opaco y su hash
     const sessionToken = createOpaqueToken();
     const sessionTokenHash = hashOpaqueToken(sessionToken);
-    const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 días
+    const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    // 3. Registrar la sesión temporal en la base de datos
+    // 4. Registrar la sesión temporal en la base de datos
     const { error: sessionError } = await supabase
       .from('training_access_sessions')
       .insert({
@@ -67,24 +75,44 @@ export async function POST(req: NextRequest) {
       });
 
     if (sessionError) {
-      console.error('[training/access] Failed to record access session:', sessionError);
-      return NextResponse.json({ error: 'Failed to create training session' }, { status: 500 });
+      if (sessionError.code === '23505') {
+        // Colisión en el índice único: revocar y reintentar
+        await supabase
+          .from('training_access_sessions')
+          .update({ revoked_at: new Date().toISOString() })
+          .eq('employee_id', employee.id)
+          .is('revoked_at', null);
+
+        const { error: retryError } = await supabase
+          .from('training_access_sessions')
+          .insert({
+            employee_id: employee.id,
+            session_token_hash: sessionTokenHash,
+            expires_at: sessionExpiresAt,
+          });
+
+        if (retryError) {
+          console.error('[training/access] Failed to create session on retry:', retryError);
+          return NextResponse.json({ error: 'Failed to create training session' }, { status: 500 });
+        }
+      } else {
+        console.error('[training/access] Failed to record access session:', sessionError);
+        return NextResponse.json({ error: 'Failed to create training session' }, { status: 500 });
+      }
     }
 
-    // 4. Guardar el token de sesión en una cookie HttpOnly segura
+    // 5. Guardar el token de sesión en una cookie HttpOnly segura
     const cookieStore = await cookies();
     cookieStore.set(TRAINING_COOKIE_NAME, sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 días
+      maxAge: 60 * 60 * 24 * 7,
     });
 
-    return NextResponse.json({
-      success: true,
-    });
-  } catch (error) {
+    return NextResponse.json({ success: true });
+  } catch (error: unknown) {
     console.error('[training/access] Unexpected error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

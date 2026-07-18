@@ -2,15 +2,14 @@ import { create } from 'zustand';
 import type {
   TrainingEmployee,
   TrainingProgram,
-  TrainingModule,
+  EmployeeTrainingModule,
   TrainingProgress,
   TrainingSession,
   TrainingMessage,
   TrainingPhase,
   TrainingProgramStatus,
-  TrainingQuestionAdmin,
-  TrainingModuleSection,
 } from '@/types';
+import { mapEmployeeTrainingModule } from '@/lib/training/mappers';
 
 // ─── Tipos de estado del store ───
 interface TrainingState {
@@ -18,7 +17,7 @@ interface TrainingState {
   phase: TrainingPhase;
   currentModuleId: string | null;
   program: TrainingProgram | null;
-  modules: TrainingModule[];
+  modules: EmployeeTrainingModule[];
   progress: TrainingProgress[];
   currentSession: TrainingSession | null;
   generalMessages: TrainingMessage[];
@@ -40,6 +39,7 @@ interface TrainingState {
   sendModuleMessage: (moduleId: string, message: string) => Promise<void>;
   setAiSpeaking: (speaking: boolean) => void;
   updateProgress: (moduleId: string, updates: Partial<TrainingProgress>) => Promise<void>;
+  incrementTimeSpent: (moduleId: string, minutesDelta: number) => Promise<void>;
   reset: () => void;
 }
 
@@ -60,21 +60,8 @@ function programFromSupabase(row: Record<string, unknown>): TrainingProgram {
   };
 }
 
-function moduleFromSupabase(row: Record<string, unknown>): TrainingModule {
-  return {
-    id: row.id as string,
-    programId: row.program_id as string,
-    title: row.title as string,
-    description: (row.description as string) || undefined,
-    content: (row.content as { sections: TrainingModuleSection[] }) || { sections: [] },
-    sourceDocumentIds: (row.source_document_ids as string[]) || [],
-    sortOrder: (row.sort_order as number) ?? 0,
-    durationEstimate: (row.duration_estimate as number) ?? 15,
-    evaluationEnabled: (row.evaluation_enabled as boolean) ?? false,
-    evaluationQuestions: (row.evaluation_questions as TrainingQuestionAdmin[]) || [],
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
+function moduleFromSupabase(row: Record<string, unknown>): EmployeeTrainingModule {
+  return mapEmployeeTrainingModule(row);
 }
 
 function employeeFromSupabase(row: Record<string, unknown>): TrainingEmployee {
@@ -233,16 +220,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         throw new Error(body.error || 'Failed to start module');
       }
 
-      const data = await response.json();
+      await response.json();
 
       await get().initializeFromSession();
 
       set((state) => ({
         currentModuleId: moduleId,
-        currentSession: data.session,
         moduleMessages: {
           ...state.moduleMessages,
-          [moduleId]: data.session?.messages || [],
+          [moduleId]: [],
         },
         phase: 'module',
         loading: false,
@@ -500,25 +486,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   updateProgress: async (moduleId: string, updates: Partial<TrainingProgress>) => {
     const { progress } = get();
 
-    // Actualizar localmente para feedback inmediato
     const updatedProgress = progress.map((p) =>
       p.moduleId === moduleId ? { ...p, ...updates } : p
     );
     set({ progress: updatedProgress });
+  },
 
-    if (updates.timeSpent !== undefined && updates.timeSpent > 0) {
-      try {
-        await fetch('/api/training/update-progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            moduleId,
-            minutesDelta: updates.timeSpent, // Usar delta correcto en lugar del absoluto anterior
-          }),
-        });
-      } catch (err) {
-        console.error('[TrainingStore] Error updating progress on server:', err);
-      }
+  incrementTimeSpent: async (moduleId: string, minutesDelta: number) => {
+    try {
+      await fetch('/api/training/update-progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ moduleId, minutesDelta }),
+      });
+    } catch (err) {
+      console.error('[TrainingStore] Error updating time on server:', err);
     }
   },
 

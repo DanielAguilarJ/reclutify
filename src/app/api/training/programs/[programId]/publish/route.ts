@@ -5,17 +5,15 @@ import { createAdminClient } from '@/utils/supabase/admin';
 export const runtime = 'nodejs';
 
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   props: { params: Promise<{ programId: string }> }
 ) {
   try {
     const { programId } = await props.params;
 
-    // 1. Autenticar usuario
     const user = await requireAuthenticatedUser();
     const admin = createAdminClient();
 
-    // 2. Invocar RPC para publicación atómica
     const { data: publishedId, error } = await admin.rpc(
       'publish_training_program',
       {
@@ -26,18 +24,28 @@ export async function POST(
 
     if (error) {
       console.error('[API Program Publish] RPC failed:', error);
-      return NextResponse.json({ error: error.message || 'Failed to publish training program' }, { status: 400 });
+
+      if (error.message?.includes('only_draft_programs_can_be_published')) {
+        return NextResponse.json(
+          { error: 'Only draft programs can be published' },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: error.message || 'Failed to publish training program' },
+        { status: 400 }
+      );
     }
 
     return NextResponse.json({
       success: true,
-      programId: publishedId,
+      programId: publishedId as string,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[API Program Publish] Unexpected error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Unauthorized' },
-      { status: err.status || 500 }
-    );
+    const message = err instanceof Error ? err.message : 'Unauthorized';
+    const status = (err as { status?: number }).status ?? 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
+import { completeTrainingModuleSchema } from '@/lib/training/contracts';
 
 export const runtime = 'nodejs';
 
@@ -12,13 +13,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized training session' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { moduleId } = body;
-
-    if (!moduleId) {
-      return NextResponse.json({ error: 'moduleId is required' }, { status: 400 });
+    const parsed = completeTrainingModuleSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Invalid request', issues: parsed.error.flatten() },
+        { status: 400 }
+      );
     }
 
+    const { moduleId } = parsed.data;
     const admin = createAdminClient();
 
     // 2. Invocar RPC para completar módulo sin evaluación de manera transaccional
@@ -32,18 +35,19 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) {
       console.error('[Complete Module API] SQL RPC failed:', rpcError);
-      return NextResponse.json({ error: rpcError.message || 'Failed to complete module' }, { status: 400 });
+      return NextResponse.json(
+        { error: rpcError.message || 'Failed to complete module' },
+        { status: 400 }
+      );
     }
 
     return NextResponse.json({
       success: true,
-      ...rpcResult,
+      ...(rpcResult as Record<string, unknown>),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Complete Module API] Unexpected error:', error);
-    return NextResponse.json(
-      { error: error.message || 'Internal Server Error' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'Internal Server Error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

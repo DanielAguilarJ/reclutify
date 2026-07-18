@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
+import { sanitizePublicQuestions } from '@/lib/training/bootstrap';
 
 export const runtime = 'nodejs';
 
@@ -90,9 +91,7 @@ export async function GET() {
      * - token real
      * - interview_data completo
      * - transcript de entrevista
-     *
-     * La personalización será utilizada posteriormente por el endpoint
-     * server-side del tutor, no necesita estar expuesta al navegador.
+     * - personalization_notes (usado server-side por el tutor)
      */
     const safeEmployee = {
       id: employee.id,
@@ -116,47 +115,12 @@ export async function GET() {
       created_at: employee.created_at,
     };
 
-    type RawTrainingQuestion = {
-      question?: unknown;
-      type?: unknown;
-      options?: unknown;
-    };
-
     const safeModules = (modulesResult.data ?? []).map(
-      (module) => {
-        const questions = Array.isArray(
-          module.evaluation_questions,
-        )
-          ? module.evaluation_questions
-          : [];
-
-        return {
-          ...module,
-
-          /*
-           * Nunca enviar correctAnswer ni explanation
-           * al navegador del empleado.
-           */
-          evaluation_questions: questions.map(
-            (question: RawTrainingQuestion) => ({
-              question:
-                typeof question.question === 'string'
-                  ? question.question
-                  : '',
-              type:
-                typeof question.type === 'string'
-                  ? question.type
-                  : 'open_ended',
-              options: Array.isArray(question.options)
-                ? question.options.filter(
-                    (option): option is string =>
-                      typeof option === 'string',
-                  )
-                : [],
-            }),
-          ),
-        };
-      },
+      (module: Record<string, unknown>) => ({
+        ...module,
+        // Nunca enviar correctAnswer ni explanation al navegador del empleado.
+        evaluation_questions: sanitizePublicQuestions(module.evaluation_questions),
+      })
     );
 
     return NextResponse.json({
@@ -166,7 +130,7 @@ export async function GET() {
       modules: safeModules,
       progress: progressResult.data ?? [],
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('[training/bootstrap] Unexpected error:', error);
 
     return NextResponse.json(

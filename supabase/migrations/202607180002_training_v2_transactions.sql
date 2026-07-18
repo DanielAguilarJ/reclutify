@@ -190,6 +190,11 @@ BEGIN
     RAISE EXCEPTION 'training_program_not_found';
   END IF;
 
+  -- Validar estado: solo drafts pueden publicarse.
+  IF v_program.status <> 'draft' THEN
+    RAISE EXCEPTION 'only_draft_programs_can_be_published';
+  END IF;
+
   -- Evitar condiciones de carrera concurrentes para el mismo org_id y role_id
   PERFORM pg_advisory_xact_lock(
     hashtextextended(
@@ -293,6 +298,22 @@ BEGIN
     )
   );
 
+  -- Validar estado: solo published o archived pueden versionarse.
+  IF v_source.status NOT IN ('published', 'archived') THEN
+    RAISE EXCEPTION 'only_published_or_archived_programs_can_be_versioned';
+  END IF;
+
+  -- Verificar que no exista ya un draft para esta vacante.
+  IF EXISTS (
+    SELECT 1
+    FROM public.training_programs
+    WHERE org_id = v_source.org_id
+      AND role_id = v_source.role_id
+      AND status = 'draft'
+  ) THEN
+    RAISE EXCEPTION 'draft_version_already_exists';
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1
     FROM public.org_members
@@ -375,9 +396,8 @@ DECLARE
   v_module_id UUID;
   v_result JSONB;
 BEGIN
-  IF jsonb_typeof(p_modules) <> 'array'
-     OR jsonb_array_length(p_modules) = 0 THEN
-    RAISE EXCEPTION 'modules_must_be_non_empty_array';
+  IF jsonb_typeof(p_modules) <> 'array' THEN
+    RAISE EXCEPTION 'modules_must_be_array';
   END IF;
 
   SELECT *
@@ -392,6 +412,11 @@ BEGIN
   IF v_program.status <> 'draft' THEN
     RAISE EXCEPTION 'only_draft_programs_can_replace_modules';
   END IF;
+
+  -- Evitar dos reemplazos simultáneos del mismo programa.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended(p_program_id::TEXT, 0)
+  );
 
   IF NOT EXISTS (
     SELECT 1
@@ -645,12 +670,33 @@ BEGIN
     RAISE EXCEPTION 'module_not_assigned_to_employee';
   END IF;
 
+  -- Bloquear fila para evitar evaluaciones duplicadas simultáneas.
+  PERFORM 1
+  FROM public.training_progress
+  WHERE employee_id = p_employee_id
+    AND module_id = p_module_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'training_progress_not_found';
+  END IF;
+
+  -- Validar que el módulo requiere evaluación.
   IF NOT EXISTS (
     SELECT 1
-    FROM public.training_progress progress
-    WHERE progress.employee_id = p_employee_id
-      AND progress.module_id = p_module_id
-      AND progress.status IN ('available', 'in_progress')
+    FROM public.training_modules
+    WHERE id = p_module_id
+      AND evaluation_enabled = true
+  ) THEN
+    RAISE EXCEPTION 'module_does_not_require_evaluation';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.training_progress
+    WHERE employee_id = p_employee_id
+      AND module_id = p_module_id
+      AND status IN ('available', 'in_progress')
   ) THEN
     RAISE EXCEPTION 'module_not_available_for_evaluation';
   END IF;
@@ -816,9 +862,17 @@ BEGIN
   FROM public.training_modules current_module
   JOIN public.training_modules next_module
     ON next_module.program_id = current_module.program_id
-   AND next_module.sort_order > current_module.sort_order
+   AND (
+     next_module.sort_order > current_module.sort_order
+     OR (
+       next_module.sort_order = current_module.sort_order
+       AND next_module.created_at > current_module.created_at
+     )
+   )
   WHERE current_module.id = p_module_id
-  ORDER BY next_module.sort_order
+  ORDER BY
+    next_module.sort_order,
+    next_module.created_at
   LIMIT 1;
 
   IF v_next_module_id IS NOT NULL THEN
@@ -892,5 +946,164 @@ $$;
 
 REVOKE ALL ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) TO service_role;
+
+-- 9. PERSISTENCIA ATÓMICA DE MENSAJES DE CHAT
+CREATE OR REPLACE FUNCTION public.append_training_session_messages(
+  p_employee_id UUID,
+  p_session_id UUID,
+  p_messages JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_current_messages JSONB;
+  v_result JSONB;
+BEGIN
+  IF jsonb_typeof(p_messages) <> 'array' THEN
+    RAISE EXCEPTION 'messages_must_be_array';
+  END IF;
+
+  IF jsonb_array_length(p_messages) < 1
+     OR jsonb_array_length(p_messages) > 2 THEN
+    RAISE EXCEPTION 'invalid_message_batch_size';
+  END IF;
+
+  SELECT COALESCE(messages, '[]'::jsonb)
+  INTO v_current_messages
+  FROM public.training_sessions
+  WHERE id = p_session_id
+    AND employee_id = p_employee_id
+    AND ended_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'active_session_not_found';
+  END IF;
+
+  IF jsonb_array_length(v_current_messages) +
+     jsonb_array_length(p_messages) > 200 THEN
+    RAISE EXCEPTION 'training_session_message_limit_reached';
+  END IF;
+
+  v_result := v_current_messages || p_messages;
+
+  UPDATE public.training_sessions
+  SET messages = v_result
+  WHERE id = p_session_id;
+
+  RETURN v_result;
+END;
+$$;
+
+REVOKE ALL
+ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
+FROM PUBLIC;
+
+GRANT EXECUTE
+ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
+TO service_role;
+
+
+-- 10. CREACIÓN TRANSACCIONAL DE PROGRAMAS DE ENTRENAMIENTO
+CREATE OR REPLACE FUNCTION public.create_training_program(
+  p_actor_user_id UUID,
+  p_role_id TEXT,
+  p_title TEXT,
+  p_description TEXT,
+  p_welcome_message TEXT,
+  p_ai_personality TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_org_id UUID;
+  v_program_id UUID;
+  v_version INTEGER;
+BEGIN
+  SELECT org_id
+  INTO v_org_id
+  FROM public.roles
+  WHERE id = p_role_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'role_not_found';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.org_members
+    WHERE user_id = p_actor_user_id
+      AND org_id = v_org_id
+      AND role IN ('owner', 'admin')
+  ) THEN
+    RAISE EXCEPTION 'forbidden';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended(
+      v_org_id::TEXT || ':' || p_role_id,
+      0
+    )
+  );
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.training_programs
+    WHERE org_id = v_org_id
+      AND role_id = p_role_id
+      AND status = 'draft'
+  ) THEN
+    RAISE EXCEPTION 'draft_version_already_exists';
+  END IF;
+
+  SELECT COALESCE(MAX(version), 0) + 1
+  INTO v_version
+  FROM public.training_programs
+  WHERE org_id = v_org_id
+    AND role_id = p_role_id;
+
+  INSERT INTO public.training_programs (
+    org_id,
+    role_id,
+    title,
+    description,
+    is_default,
+    welcome_message,
+    ai_personality,
+    status,
+    version,
+    passing_score
+  )
+  VALUES (
+    v_org_id,
+    p_role_id,
+    p_title,
+    p_description,
+    false,
+    p_welcome_message,
+    p_ai_personality,
+    'draft',
+    v_version,
+    70
+  )
+  RETURNING id INTO v_program_id;
+
+  RETURN v_program_id;
+END;
+$$;
+
+REVOKE ALL
+ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
+FROM PUBLIC;
+
+GRANT EXECUTE
+ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
+TO service_role;
 
 COMMIT;

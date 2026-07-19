@@ -54,6 +54,7 @@ export default function TrainingModulePage({
     modules,
     progress,
     moduleMessages,
+    moduleEvaluationReady,
     aiSpeaking,
     startModule,
     completeModule,
@@ -244,7 +245,7 @@ export default function TrainingModulePage({
   // Enviar evaluación al endpoint seguro
   const handleSubmitEvaluation = async () => {
     const questionsCount = currentModule?.evaluationQuestions?.length || 0;
-    const answeredCount = Object.keys(answers).length;
+    const answeredCount = Object.values(answers).filter((value) => value.trim().length > 0).length;
 
     if (answeredCount < questionsCount) {
       setEvaluationError(
@@ -395,13 +396,21 @@ export default function TrainingModulePage({
             {!isCompleted && !isEvaluating && !evaluationComplete && (
               <>
                 {currentModule.evaluationEnabled ? (
-                  <button
-                    onClick={() => setIsEvaluating(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#00D3D8] to-[#00A5A8] text-white text-xs font-medium shadow-sm hover:opacity-90 transition-opacity"
-                  >
-                    <Award className="w-3.5 h-3.5" />
-                    {language === 'es' ? 'Tomar Evaluación' : 'Take Evaluation'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {moduleEvaluationReady?.[moduleId] && (
+                      <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-[#00A5A8] font-medium">
+                        <Sparkles className="w-3 h-3" />
+                        {language === 'es' ? 'Zara cree que ya estás listo' : 'Zara thinks you\'re ready'}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => setIsEvaluating(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#00D3D8] to-[#00A5A8] text-white text-xs font-medium shadow-sm hover:opacity-90 transition-opacity"
+                    >
+                      <Award className="w-3.5 h-3.5" />
+                      {language === 'es' ? 'Tomar Evaluación' : 'Take Evaluation'}
+                    </button>
+                  </div>
                 ) : (
                   <button
                     onClick={handleCompleteWithoutEvaluation}

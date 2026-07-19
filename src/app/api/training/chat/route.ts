@@ -551,6 +551,15 @@ You MUST respond with a single valid JSON block only.
 
     if (action !== 'start' && message) {
       apiMessages.push({ role: 'user', content: message.trim() });
+    } else if (action === 'start' && historyMessages.length === 0) {
+      // Un array de mensajes compuesto solo por el system prompt puede producir
+      // respuestas vacías o degeneradas en algunos modelos. Añadimos un turno de
+      // usuario sintético para arrancar la conversación de forma confiable.
+      apiMessages.push({
+        role: 'user',
+        content:
+          '[SYSTEM TURN-DIRECTIVE] Begin the conversation now. Greet the employee warmly and, if in module mode, start teaching the first section of the module.',
+      });
     }
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -650,7 +659,7 @@ You MUST respond with a single valid JSON block only.
       timestamp: now,
     });
 
-    const { data: persistedHistory, error: appendError } = await admin.rpc(
+    let { data: persistedHistory, error: appendError } = await admin.rpc(
       'append_training_session_messages',
       {
         p_employee_id: employee.id,
@@ -658,6 +667,50 @@ You MUST respond with a single valid JSON block only.
         p_messages: messageBatch,
       }
     );
+
+    // Una sesión no puede almacenar más de 200 mensajes (guard en la RPC). En vez
+    // de dejar la conversación muerta para siempre, la rotamos: cerramos la sesión
+    // llena y abrimos una nueva, sembrada con los últimos mensajes para no perder
+    // continuidad visible, y reintentamos guardar el turno actual ahí.
+    if (appendError?.message?.includes('training_session_message_limit_reached')) {
+      const rotatedAt = new Date().toISOString();
+
+      await admin
+        .from('training_sessions')
+        .update({ ended_at: rotatedAt })
+        .eq('id', chatSession.id as string);
+
+      const rotatedSessionId = crypto.randomUUID();
+      const { data: rotatedSession, error: rotateError } = await admin
+        .from('training_sessions')
+        .insert({
+          id: rotatedSessionId,
+          employee_id: employee.id,
+          module_id: mode === 'module' ? moduleId : null,
+          session_type: sessionType,
+          messages: historyMessages.slice(-50),
+          started_at: rotatedAt,
+        })
+        .select('id')
+        .maybeSingle();
+
+      if (rotateError || !rotatedSession) {
+        console.error('[training/chat] Failed to rotate full session:', rotateError);
+        return NextResponse.json(
+          { error: 'Could not save the training conversation' },
+          { status: 500 }
+        );
+      }
+
+      const retry = await admin.rpc('append_training_session_messages', {
+        p_employee_id: employee.id,
+        p_session_id: rotatedSessionId,
+        p_messages: messageBatch,
+      });
+
+      persistedHistory = retry.data;
+      appendError = retry.error;
+    }
 
     if (appendError) {
       console.error('[training/chat] Failed to persist messages:', appendError);

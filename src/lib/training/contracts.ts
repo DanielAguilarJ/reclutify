@@ -389,8 +389,12 @@ export const trainingTutorResponseSchema = z
     type: z.enum(['text', 'feedback']),
     contentCovered: z.boolean().default(false),
     evaluationReady: z.boolean().default(false),
+    // No se exige formato UUID aquí: validateChatCitations() ya descarta de forma
+    // segura cualquier ID que no coincida con un chunk real del contexto. Exigir
+    // `.uuid()` en este nivel tiraba la respuesta ENTERA del tutor (incluyendo un
+    // mensaje perfectamente válido) cuando el modelo emitía una cita mal formada.
     citationChunkIds: z
-      .array(z.string().uuid())
+      .array(z.string().trim().min(1).max(100))
       .max(8)
       .default([]),
   })

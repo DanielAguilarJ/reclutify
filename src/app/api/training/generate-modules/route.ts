@@ -176,11 +176,19 @@ RULES:
 - Create clear, actionable training modules based on the document content.
 - Order modules from basic/foundational concepts to advanced/specialized topics.
 - durationEstimate must be an integer representing estimated minutes.
-- sourceDocumentIds MUST contain only valid UUID string IDs from the documents listed below.
+- sourceDocumentIds is REQUIRED on every module and MUST contain at least one valid UUID string ID from the documents listed below (never an empty array, never omitted).
 - Include practical evaluation questions that test real understanding.
 - Write in the same language as the source documents.
 - Each section body should be comprehensive (at least 3-4 paragraphs of teaching content).
-- evaluationEnabled must be a boolean.`,
+- evaluationEnabled must be a boolean.
+- evaluationQuestions is REQUIRED on every module (never omit the key, never use null):
+  - If evaluationEnabled is true, evaluationQuestions MUST contain at least one question.
+  - If evaluationEnabled is false, evaluationQuestions MUST be exactly an empty array: [].
+- Not every module needs an evaluation: introductory/welcome modules may set evaluationEnabled to false with evaluationQuestions: [].
+- Each evaluation question's "type" must be one of "multiple_choice", "true_false" or "open_ended":
+  - multiple_choice: "options" must have 2-20 unique strings, and "correctAnswer" must equal one of them exactly.
+  - true_false: "options" must be exactly 2 unique strings (e.g. ["True", "False"]), and "correctAnswer" must equal one of them exactly.
+  - open_ended: omit "options" entirely (or use []).`,
             },
             {
               role: 'user',

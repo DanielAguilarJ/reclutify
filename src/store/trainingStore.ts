@@ -44,6 +44,10 @@ interface TrainingState {
   currentSession: TrainingSession | null;
   generalMessages: TrainingMessage[];
   moduleMessages: Record<string, TrainingMessage[]>;
+  // Señal no bloqueante: Zara la marca en true cuando considera que ya
+  // cubrió el contenido del módulo con el empleado. No condiciona el acceso
+  // a la evaluación, solo se usa para mostrar un aviso orientativo.
+  moduleEvaluationReady: Record<string, boolean>;
   loading: boolean;
   aiSpeaking: boolean;
   error: string | null;
@@ -143,6 +147,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   currentSession: null,
   generalMessages: [],
   moduleMessages: {},
+  moduleEvaluationReady: {},
   loading: false,
   aiSpeaking: false,
   error: null,
@@ -346,7 +351,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to initialize tutor');
+      if (!response.ok) {
+        let body: { error?: string } = {};
+        try {
+          body = await response.json();
+        } catch {
+          // ignore malformed/missing error body
+        }
+        throw new Error(body.error || 'Failed to initialize tutor');
+      }
 
       const data = await response.json();
       const tutorMsg: TrainingMessage = {
@@ -425,7 +438,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to initialize module tutor');
+      if (!response.ok) {
+        let body: { error?: string } = {};
+        try {
+          body = await response.json();
+        } catch {
+          // ignore malformed/missing error body
+        }
+        throw new Error(body.error || 'Failed to initialize module tutor');
+      }
 
       const data = await response.json();
       const tutorMsg: TrainingMessage = {
@@ -440,6 +461,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         moduleMessages: {
           ...state.moduleMessages,
           [moduleId]: data.history && data.history.length > 0 ? data.history : [tutorMsg],
+        },
+        moduleEvaluationReady: {
+          ...state.moduleEvaluationReady,
+          [moduleId]: !!data.evaluationReady,
         },
       }));
     } catch (err: unknown) {
@@ -493,6 +518,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         moduleMessages: {
           ...state.moduleMessages,
           [moduleId]: data.history && data.history.length > 0 ? data.history : historyBackup,
+        },
+        moduleEvaluationReady: {
+          ...state.moduleEvaluationReady,
+          [moduleId]: !!data.evaluationReady,
         },
       }));
     } catch (err: unknown) {
@@ -554,6 +583,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       currentSession: null,
       generalMessages: [],
       moduleMessages: {},
+      moduleEvaluationReady: {},
       loading: false,
       aiSpeaking: false,
       error: null,

@@ -80,6 +80,10 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   // Determinar si el programa es de solo lectura (todo excepto borrador es read-only)
   const isReadOnly = program ? program.status !== 'draft' : false;
 
+  // La generación con IA solo usa documentos ya procesados (status 'ready');
+  // el backend rechaza la llamada si ninguno lo está.
+  const readyDocumentsCount = documents.filter((doc) => doc.status === 'ready').length;
+
   // Load program details
   const loadProgramDetails = async () => {
     setLoading(true);
@@ -259,7 +263,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
   // Generate modules with AI
   const handleGenerateModules = async () => {
-    if (isReadOnly || documents.length === 0) return;
+    if (isReadOnly || readyDocumentsCount === 0) return;
     setGeneratingModules(true);
     try {
       const res = await fetch('/api/training/generate-modules', {
@@ -806,23 +810,32 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
             </p>
           </div>
           {!isReadOnly && (
-            <button
-              onClick={handleGenerateModules}
-              disabled={generatingModules || documents.length === 0}
-              className="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-medium py-2.5 px-4 rounded-xl text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {generatingModules ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {language === 'es' ? 'Generando...' : 'Generating...'}
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4" />
-                  {language === 'es' ? 'Generar Módulos con AI' : 'Generate Modules with AI'}
-                </>
+            <div className="flex flex-col items-end gap-1">
+              <button
+                onClick={handleGenerateModules}
+                disabled={generatingModules || readyDocumentsCount === 0}
+                className="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-medium py-2.5 px-4 rounded-xl text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {generatingModules ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {language === 'es' ? 'Generando...' : 'Generating...'}
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    {language === 'es' ? 'Generar Módulos con AI' : 'Generate Modules with AI'}
+                  </>
+                )}
+              </button>
+              {readyDocumentsCount === 0 && documents.length > 0 && (
+                <p className="text-[11px] text-warning">
+                  {language === 'es'
+                    ? 'Los documentos asociados aún se están procesando. Espera a que estén listos.'
+                    : 'Associated documents are still processing. Wait until they are ready.'}
+                </p>
               )}
-            </button>
+            </div>
           )}
         </div>
 

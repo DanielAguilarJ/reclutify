@@ -18,14 +18,14 @@ interface FluentMock {
   is: (col: string, val: unknown) => FluentMock;
   order: (col: string, opt?: unknown) => FluentMock;
   limit: (n: number) => FluentMock;
-  maybeSingle: () => Promise<any>;
-  single: () => Promise<any>;
+  maybeSingle: () => Promise<unknown>;
+  single: () => Promise<unknown>;
   insert: (obj: unknown) => FluentMock;
   delete: () => FluentMock;
-  then: (resolve: (val: any) => any) => Promise<any>;
+  then: (resolve: (val: unknown) => unknown) => Promise<unknown>;
 }
 
-const createFluentMock = (resolvedValue: any, errorValue: any = null): FluentMock => {
+const createFluentMock = (resolvedValue: unknown, errorValue: unknown = null): FluentMock => {
   const fluent: FluentMock = {
     select: () => fluent,
     eq: () => fluent,
@@ -60,11 +60,11 @@ const mockFrom = vi.fn((table: string) => {
         single: mockInsertDoc,
         maybeSingle: mockInsertDoc,
       }),
-    } as any);
+    } as unknown as FluentMock);
     // Custom delete chain
     fluent.delete = () => ({
       eq: mockDeleteDoc,
-    } as any);
+    } as unknown as FluentMock);
     return fluent;
   }
   if (table === 'training_program_documents') {
@@ -73,14 +73,14 @@ const mockFrom = vi.fn((table: string) => {
       eq: () => ({
         eq: () => ({
           maybeSingle: mockSelectAssoc,
-        } as any),
+        } as unknown as FluentMock),
         order: () => ({
           limit: () => ({
             maybeSingle: mockSelectMaxAssoc,
           }),
         }),
-      } as any),
-    } as any);
+      } as unknown as FluentMock),
+    } as unknown as FluentMock);
     fluent.insert = mockInsertAssoc;
     return fluent;
   }

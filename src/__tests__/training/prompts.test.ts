@@ -14,12 +14,12 @@ interface FluentMock {
   limit: (n: number) => FluentMock;
   order: (col: string, opt?: unknown) => FluentMock;
   textSearch: (col: string, val: unknown) => FluentMock;
-  maybeSingle: () => Promise<any>;
-  single: () => Promise<any>;
-  then: (resolve: (val: any) => any) => Promise<any>;
+  maybeSingle: () => Promise<unknown>;
+  single: () => Promise<unknown>;
+  then: (resolve: (val: unknown) => unknown) => Promise<unknown>;
 }
 
-const createFluentMock = (resolvedValue: any, errorValue: any = null): FluentMock => {
+const createFluentMock = (resolvedValue: unknown, errorValue: unknown = null): FluentMock => {
   const fluent: FluentMock = {
     select: () => fluent,
     eq: () => fluent,

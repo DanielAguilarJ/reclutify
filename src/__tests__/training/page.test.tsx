@@ -65,6 +65,7 @@ const mockStoreDefault = {
   moduleMessages: {
     'mod-1': [{ role: 'assistant', content: 'Tutor message' }],
   },
+  moduleEvaluationReady: {},
   aiSpeaking: false,
   startModule: vi.fn().mockResolvedValue(undefined),
   completeModule: vi.fn(),

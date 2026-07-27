@@ -181,6 +181,10 @@ export default function InterviewRoom({
         if (
           message.role === "user" &&
           hasQuestion &&
+          (
+            message.kind === "answer" ||
+            message.kind == null
+          ) &&
           message.content.trim().length > 0
         ) {
           return true;
@@ -542,14 +546,6 @@ export default function InterviewRoom({
       freshTimerSeconds >= totalDurationSecs * 0.9 && freshIsLastTopic;
     // ═══════════════════════════════════════════════════════════
 
-    // Save transcript entry FIRST, before any early returns.
-    addTranscriptEntry({
-      role: "user",
-      content: text,
-      timestamp: Date.now(),
-      kind: "answer",
-    });
-
     // Bug 16 fix: confused-candidate detection.
     // If the candidate replied with a SINGLE confused word (or a fragment under
     // 6 words that clearly isn't an answer), don't penalize the topic budget
@@ -568,7 +564,21 @@ export default function InterviewRoom({
         trimmedText,
       );
 
-    if (isSingleConfusedWord || isShortConfusedFragment) {
+    const isClarificationRequest =
+      isSingleConfusedWord || isShortConfusedFragment;
+
+    // Preserve clarification requests in the transcript without treating them
+    // as substantive answers to the current interview question.
+    addTranscriptEntry({
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+      kind: isClarificationRequest
+        ? "clarification"
+        : "answer",
+    });
+
+    if (isClarificationRequest) {
       // Re-deliver Zara's previous question simplified, without consuming budget.
       const lastZaraMsg = useInterviewStore
         .getState()

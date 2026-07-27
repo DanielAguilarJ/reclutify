@@ -55,6 +55,7 @@ export interface Topic {
 export type TranscriptEntryKind =
   | 'question'
   | 'answer'
+  | 'clarification'
   | 'rephrase'
   | 'transition'
   | 'error'

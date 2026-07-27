@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useState, useTransition, useEffect } from 'react';
-import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert, Loader2, GraduationCap } from 'lucide-react';
+import { PlusCircle, Users, Ticket, Headset, Crown, PieChart, ChevronDown, Building2, Check, ShieldAlert, Loader2, GraduationCap, UsersRound } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { switchOrganization } from '@/app/actions/organizations';
 import { createClient } from '@/utils/supabase/client';
@@ -68,6 +68,7 @@ export default function AdminSidebarNav({ organizations, activeOrgId }: AdminSid
     { label: language === 'es' ? 'Crear Puesto' : 'Create Role', href: '/admin/create-role', icon: PlusCircle },
     { label: language === 'es' ? 'Candidatos' : 'Pipeline', href: '/admin/pipeline', icon: Users },
     { label: language === 'es' ? 'Capacitación' : 'Training', href: '/admin/training', icon: GraduationCap },
+    { label: language === 'es' ? 'Entrevista Grupal' : 'Group Interview', href: '/admin/group-interview', icon: UsersRound },
     { label: language === 'es' ? 'Equidad (Sesgo)' : 'AI Fairness', href: '/admin/analytics/bias', icon: ShieldAlert },
     { label: language === 'es' ? 'Telemetría AI' : 'AI Telemetry', href: '/admin/telemetry', icon: PieChart },
     { label: 'Tickets', href: '/admin/tickets', icon: Ticket },

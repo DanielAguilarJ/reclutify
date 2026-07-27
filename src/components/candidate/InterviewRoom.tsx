@@ -756,6 +756,13 @@ export default function InterviewRoom({
 
       clearTimeout(fetchTimeout);
 
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(
+          errorData?.error || `Chat request failed with status ${response.status}`,
+        );
+      }
+
       const data = await response.json();
       if (data.message) {
         let aiMessage = data.message;

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown, Link2, Copy, Check } from 'lucide-react';
+import { Sparkles, X, Plus, Briefcase, Loader2, Crown, FileText, MapPin, DollarSign, Clock, ChevronDown, ChevronUp, Wand2, Globe, AlertTriangle, RefreshCw, ArrowUp, ArrowDown, Link2, Copy, Check, Users } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useTicketStore } from '@/store/ticketStore';
@@ -1753,6 +1753,23 @@ export default function CreateRolePage() {
                           </span>
                         </p>
                       </div>
+                      <Link
+                        href={`/admin/group-interview/${role.id}`}
+                        onClick={(event) =>
+                          event.stopPropagation()
+                        }
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 transition-colors shrink-0"
+                        title={
+                          language === "es"
+                            ? "Iniciar entrevista grupal presencial"
+                            : "Start in-person group interview"
+                        }
+                      >
+                        <Users className="h-3 w-3" />
+                        {language === "es"
+                          ? "Entrevista grupal"
+                          : "Group interview"}
+                      </Link>
                       {/* Copy public link button */}
                       {role.publicToken && (
                         <button

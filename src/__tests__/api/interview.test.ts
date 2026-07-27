@@ -45,7 +45,7 @@ describe('Interview Chat API (/api/chat)', () => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'google/gemini-3.6-flash',
         messages: [
           {
             role: 'system',
@@ -76,7 +76,7 @@ describe('Interview Chat API (/api/chat)', () => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'google/gemini-3.6-flash',
         messages: [
           { role: 'system', content: 'You are Zara, conducting an interview.' },
           { role: 'user', content: 'Test question' },
@@ -125,7 +125,7 @@ describe('Interview Chat API (/api/chat)', () => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'google/gemini-3.6-flash',
         messages: [
           { role: 'system', content: 'You are Zara, evaluating a candidate.' },
           { role: 'user', content: 'Evaluate this transcript...' },

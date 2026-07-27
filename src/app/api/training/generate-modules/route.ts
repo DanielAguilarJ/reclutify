@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
       .join('\n\n');
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-2.5-flash';
+    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-3.6-flash';
 
     if (!OPENROUTER_API_KEY) {
       return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });

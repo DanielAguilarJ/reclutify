@@ -168,7 +168,7 @@ DESCRIPTION: ${description || 'Not provided — infer from the title'}`;
         'X-Title': 'Reclutify AI Interviewer',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v4-flash',
+        model: 'google/gemini-3.6-flash',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage }

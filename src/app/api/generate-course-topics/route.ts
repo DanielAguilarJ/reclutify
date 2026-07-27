@@ -97,7 +97,7 @@ Generate 5-6 sales conversation topics with specific talking points in Spanish. 
         'X-Title': 'Reclutify Coach Platform',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v4-flash',
+        model: 'google/gemini-3.6-flash',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

@@ -162,7 +162,7 @@ ${truncatedText}`;
         'X-Title': 'Reclutify Course Document Parser',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v4-flash',
+        model: 'google/gemini-3.6-flash',
         messages: [{ role: 'user', content: extractionPrompt }],
         response_format: { type: 'json_object' },
         temperature: 0.1,

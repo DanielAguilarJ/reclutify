@@ -803,7 +803,7 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
           'X-Title': 'Reclutify AI Interviewer',
         },
         body: JSON.stringify({
-          model: 'x-ai/grok-4.20',
+          model: 'google/gemini-3.6-flash',
           messages: modelMessages,
           // reasoning removed — adds 3–8s latency per turn with negligible benefit
           // for a real-time live interview. Reserved for async evaluation tasks.
@@ -836,7 +836,7 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
       // LOG THE ERROR — this is the most valuable telemetry
       logTelemetry({
         turnIndex: recentMessages.length + 1,
-        model: 'x-ai/grok-4.20',
+        model: 'google/gemini-3.6-flash',
         promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
         errorText: `HTTP ${response.status}: ${errorData}`,
         durationMs,
@@ -869,7 +869,7 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
     // --- TELEMETRY LOGGING (Async — never blocks response) ---
     logTelemetry({
       turnIndex: recentMessages.length + 1,
-      model: 'x-ai/grok-4.20',
+      model: 'google/gemini-3.6-flash',
       promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
       responseText: aiMessage,
       reasoningText: reasoning || null,
@@ -994,7 +994,7 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
           candidate_name: null,
           role_title: null,
           turn_index: 0,
-          model: 'x-ai/grok-4.20',
+          model: 'google/gemini-3.6-flash',
           error_text: `CRASH: ${err.message}\n\nStack: ${err.stack || 'N/A'}`,
           duration_ms: 0,
         });

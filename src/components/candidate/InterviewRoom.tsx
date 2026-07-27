@@ -103,6 +103,9 @@ export default function InterviewRoom({
   const candidateTurnSubmissionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const completeCandidateTurnRef = useRef<() => void>(() => {});
   const processingLockRef = useRef<boolean>(false); // hard lock to prevent concurrent API calls
+  // Makes interview finalization idempotent. Timer, AI response and manual
+  // termination can converge on endInterview(), but finalization must run once.
+  const endingInterviewRef = useRef<boolean>(false);
   // Ref to always point to the latest handleCandidateUtterance — solves stale closure
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(
     async () => {},
@@ -148,24 +151,47 @@ export default function InterviewRoom({
   const GRACE_CAP_MULT = 2; // safety net: never exceed 2× the planned duration
   const absoluteMaxSecs = totalDurationSeconds * GRACE_CAP_MULT;
 
-  // Has at least one real (non-control) assistant message been delivered on the last topic?
-  const lastTopicHasQuestion =
+  // The final topic is covered only after Zara has delivered a real question
+  // and the candidate has submitted an answer after that question. Merely
+  // delivering the first question must never trigger the timer hard-stop.
+  const lastTopicHasAnsweredQuestion =
     isLastTopic &&
     (() => {
       const start = topicStartIndexRef.current;
+      let hasQuestion = false;
+
       for (let i = start; i < transcript.length; i++) {
-        const m = transcript[i];
+        const message = transcript[i];
+
         if (
-          m.role === "assistant" &&
-          !m.content.includes("[NEXT_TOPIC]") &&
-          !m.content.includes("[END_INTERVIEW]")
+          message.role === "assistant" &&
+          (
+            message.kind === "question" ||
+            (
+              message.kind == null &&
+              !message.content.includes("[NEXT_TOPIC]") &&
+              !message.content.includes("[END_INTERVIEW]")
+            )
+          )
+        ) {
+          hasQuestion = true;
+          continue;
+        }
+
+        if (
+          message.role === "user" &&
+          hasQuestion &&
+          message.content.trim().length > 0
         ) {
           return true;
         }
       }
+
       return false;
     })();
-  const allTopicsCovered = isLastTopic && lastTopicHasQuestion;
+
+  const allTopicsCovered =
+    isLastTopic && lastTopicHasAnsweredQuestion;
   const isGracePeriod =
     hasStarted && timerSeconds >= totalDurationSeconds && !allTopicsCovered;
 
@@ -258,6 +284,7 @@ export default function InterviewRoom({
         role: "assistant",
         content: closingMsg,
         timestamp: Date.now(),
+        kind: "closing",
       });
       speakText(closingMsg).then(() => endInterview());
     }
@@ -516,7 +543,12 @@ export default function InterviewRoom({
     // ═══════════════════════════════════════════════════════════
 
     // Save transcript entry FIRST, before any early returns.
-    addTranscriptEntry({ role: "user", content: text, timestamp: Date.now() });
+    addTranscriptEntry({
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+      kind: "answer",
+    });
 
     // Bug 16 fix: confused-candidate detection.
     // If the candidate replied with a SINGLE confused word (or a fragment under
@@ -561,6 +593,7 @@ export default function InterviewRoom({
         role: "assistant",
         content: rephraseMsg,
         timestamp: Date.now(),
+        kind: "rephrase",
       });
       await speakText(rephraseMsg);
       processingLockRef.current = false;
@@ -590,6 +623,7 @@ export default function InterviewRoom({
           role: "assistant",
           content: closingMsg,
           timestamp: Date.now(),
+          kind: "closing",
         });
         await speakText(closingMsg);
         processingLockRef.current = false;
@@ -604,6 +638,7 @@ export default function InterviewRoom({
           role: "assistant",
           content: transitionMsg,
           timestamp: Date.now(),
+          kind: "transition",
         });
         await speakText(transitionMsg);
         syncAdvanceTopic();
@@ -640,6 +675,7 @@ export default function InterviewRoom({
       const allMessages = latestTranscript.map((m) => ({
         role: m.role,
         content: m.content,
+        kind: m.kind,
       }));
       // Safety: ensure the user message we just added is included
       const lastEntry = allMessages[allMessages.length - 1];
@@ -648,7 +684,11 @@ export default function InterviewRoom({
         lastEntry.content !== text ||
         lastEntry.role !== "user"
       ) {
-        allMessages.push({ role: "user", content: text });
+        allMessages.push({
+          role: "user",
+          content: text,
+          kind: "answer",
+        });
       }
 
       // Frontend Guard: Hard-coded question counter — Bug 6 fix.
@@ -659,10 +699,16 @@ export default function InterviewRoom({
       const assistantMsgsInTopic = latestTranscript
         .slice(topicStartIndexRef.current)
         .filter(
-          (m) =>
-            m.role === "assistant" &&
-            !m.content.includes("[NEXT_TOPIC]") &&
-            !m.content.includes("[END_INTERVIEW]"),
+          (message) =>
+            message.role === "assistant" &&
+            (
+              message.kind === "question" ||
+              (
+                message.kind == null &&
+                !message.content.includes("[NEXT_TOPIC]") &&
+                !message.content.includes("[END_INTERVIEW]")
+              )
+            ),
         );
       const zaraQsInTopic = assistantMsgsInTopic.length;
 
@@ -680,6 +726,7 @@ export default function InterviewRoom({
             role: "assistant",
             content: closingMsg,
             timestamp: Date.now(),
+            kind: "closing",
           });
           await speakText(closingMsg);
           endInterview();
@@ -693,6 +740,7 @@ export default function InterviewRoom({
             role: "assistant",
             content: transitionMsg,
             timestamp: Date.now(),
+            kind: "transition",
           });
           await speakText(transitionMsg);
           syncAdvanceTopic();
@@ -800,6 +848,11 @@ export default function InterviewRoom({
             role: "assistant",
             content: aiMessage,
             timestamp: Date.now(),
+            kind: finishInterview
+              ? "closing"
+              : advanceTopic
+                ? "transition"
+                : "question",
           });
           await speakText(aiMessage);
         }
@@ -846,6 +899,7 @@ export default function InterviewRoom({
         role: "assistant",
         content: errorMsg,
         timestamp: Date.now(),
+        kind: "error",
       });
       await speakText(errorMsg);
     } finally {
@@ -993,6 +1047,7 @@ export default function InterviewRoom({
       const allMessages = freshTranscript.map((m) => ({
         role: m.role,
         content: m.content,
+        kind: m.kind,
       }));
       const allTopics = freshTopics.map((t, idx) => ({
         label: t.label,
@@ -1043,7 +1098,25 @@ export default function InterviewRoom({
       });
 
       clearTimeout(fetchTimeout);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(
+          errorData?.error ||
+            `Topic opening request failed with status ${response.status}`,
+        );
+      }
+
       const data = await response.json();
+
+      if (
+        typeof data.message !== "string" ||
+        !data.message.trim()
+      ) {
+        throw new Error(
+          "Topic opening response did not contain a message",
+        );
+      }
 
       if (data.message) {
         // Defensive strip: this call's only job is to deliver the opening
@@ -1059,14 +1132,29 @@ export default function InterviewRoom({
             role: "assistant",
             content: aiMessage,
             timestamp: Date.now(),
+            kind: "question",
           });
           await speakText(aiMessage);
         }
       }
     } catch (error) {
-      // Non-fatal: if this automated follow-up fails, the candidate can still
-      // speak whenever they're ready and the normal flow picks up from there.
       console.error("askOpeningQuestionForTopic error:", error);
+
+      if (!interviewActiveRef.current) return;
+
+      const fallbackQuestion =
+        language === "es"
+          ? `Cuéntame sobre tu experiencia en ${freshCurrentTopic?.label || "este tema"}.`
+          : `Tell me about your experience with ${freshCurrentTopic?.label || "this topic"}.`;
+
+      addTranscriptEntry({
+        role: "assistant",
+        content: fallbackQuestion,
+        timestamp: Date.now(),
+        kind: "question",
+      });
+
+      await speakText(fallbackQuestion);
     }
   };
 
@@ -1236,6 +1324,12 @@ export default function InterviewRoom({
         status: idx === 0 ? "current" : "upcoming",
       }));
 
+      const openingController = new AbortController();
+      const openingTimeout = setTimeout(
+        () => openingController.abort(),
+        30000,
+      );
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1266,7 +1360,18 @@ export default function InterviewRoom({
           sessionId: guaranteedSessionId,
           interviewMode: activeInterviewMode,
         }),
+        signal: openingController.signal,
       });
+
+      clearTimeout(openingTimeout);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(
+          errorData?.error ||
+            `Opening request failed with status ${response.status}`,
+        );
+      }
 
       const data = await response.json();
       if (data.message) {
@@ -1281,6 +1386,7 @@ export default function InterviewRoom({
           role: "assistant",
           content: aiGreeting,
           timestamp: Date.now(),
+          kind: "question",
         });
         await speakText(aiGreeting);
       } else {
@@ -1293,6 +1399,7 @@ export default function InterviewRoom({
           role: "assistant",
           content: fallbackGreeting,
           timestamp: Date.now(),
+          kind: "question",
         });
         await speakText(fallbackGreeting);
       }
@@ -1307,6 +1414,7 @@ export default function InterviewRoom({
         role: "assistant",
         content: fallbackGreeting,
         timestamp: Date.now(),
+        kind: "question",
       });
       await speakText(fallbackGreeting);
     }
@@ -1519,6 +1627,19 @@ export default function InterviewRoom({
   };
 
   const endInterview = () => {
+    if (endingInterviewRef.current) return;
+    endingInterviewRef.current = true;
+
+    const finalInterviewState = useInterviewStore.getState();
+    const finalAdminState = useAdminStore.getState();
+
+    const finalTranscript = finalInterviewState.transcript;
+    const finalTimerSeconds = finalInterviewState.timerSeconds;
+    const finalSessionId =
+      finalInterviewState.sessionId ||
+      publicResultId ||
+      `cand-${Date.now()}`;
+
     interviewActiveRef.current = false;
     candidateTurnActiveRef.current = false;
     candidateTurnSubmissionPendingRef.current = false;
@@ -1569,31 +1690,38 @@ export default function InterviewRoom({
     }
 
     // Save duration
-    localStorage.setItem("tempDuration", timerSeconds.toString());
+    localStorage.setItem(
+      "tempDuration",
+      finalTimerSeconds.toString(),
+    );
 
     // CRITICAL: Force-save transcript to admin store before transitioning
     // This ensures data is persisted even if InterviewComplete fails
-    const currentSessionId =
-      sessionId || publicResultId || `cand-${Date.now()}`;
-    if (!sessionId) setSessionId(currentSessionId);
+    if (!finalInterviewState.sessionId) {
+      finalInterviewState.setSessionId(finalSessionId);
+    }
 
-    const exists = candidates.find((c) => c.id === currentSessionId);
+    const exists = finalAdminState.candidates.find(
+      (candidateResult) =>
+        candidateResult.id === finalSessionId,
+    );
+
     if (exists) {
-      updateCandidate(currentSessionId, {
-        transcript,
-        duration: timerSeconds,
-        status: "in-progress", // Will be updated to 'completed' by InterviewComplete
+      finalAdminState.updateCandidate(finalSessionId, {
+        transcript: finalTranscript,
+        duration: finalTimerSeconds,
+        status: "in-progress",
       });
     } else {
-      addCandidate({
-        id: currentSessionId,
-        candidate,
+      finalAdminState.addCandidate({
+        id: finalSessionId,
+        candidate: finalInterviewState.candidate,
         roleId,
         roleTitle: currentRole?.title || "Candidate",
         date: Date.now(),
         status: "in-progress",
-        transcript,
-        duration: timerSeconds,
+        transcript: finalTranscript,
+        duration: finalTimerSeconds,
         source: publicResultId ? "public_link" : "ticket",
       });
     }
@@ -1617,7 +1745,7 @@ export default function InterviewRoom({
         localStorage.setItem("tempVideoUrl", localUrl);
 
         try {
-          const filename = `recording-${sessionId || Date.now()}.webm`;
+          const filename = `recording-${finalSessionId}.webm`;
           const contentType = "video/webm";
 
           // Step 1 – ask the API for a presigned PUT URL (tiny JSON, well within Vercel limits)

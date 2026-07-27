@@ -52,10 +52,19 @@ export interface Topic {
   rubric?: TopicRubric;
 }
 
+export type TranscriptEntryKind =
+  | 'question'
+  | 'answer'
+  | 'rephrase'
+  | 'transition'
+  | 'error'
+  | 'closing';
+
 export interface TranscriptEntry {
   role: 'assistant' | 'user';
   content: string;
   timestamp: number;
+  kind?: TranscriptEntryKind;
   sentiment?: SentimentData;  // Module 5: Sentiment Analysis
 }
 

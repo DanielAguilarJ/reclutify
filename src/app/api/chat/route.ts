@@ -26,6 +26,82 @@ export async function POST(req: NextRequest) {
       isOpeningPhase: clientOpeningPhase = false,
     } = rawBody;
 
+    const validMessageRoles = new Set(['assistant', 'user']);
+
+    const hasValidMessages =
+      Array.isArray(recentMessages) &&
+      recentMessages.length <= 250 &&
+      recentMessages.every(
+        (message: unknown) => {
+          if (
+            typeof message !== 'object' ||
+            message === null
+          ) {
+            return false;
+          }
+
+          const candidateMessage = message as {
+            role?: unknown;
+            content?: unknown;
+          };
+
+          return (
+            typeof candidateMessage.role === 'string' &&
+            validMessageRoles.has(candidateMessage.role) &&
+            typeof candidateMessage.content === 'string' &&
+            candidateMessage.content.length <= 8000
+          );
+        }
+      );
+
+    const hasValidTopics =
+      Array.isArray(allTopics) &&
+      allTopics.length > 0 &&
+      allTopics.length <= 20 &&
+      allTopics.every(
+        (topic: unknown) =>
+          typeof topic === 'object' &&
+          topic !== null &&
+          typeof (topic as { label?: unknown }).label === 'string' &&
+          (topic as { label: string }).label.trim().length > 0 &&
+          (topic as { label: string }).label.length <= 300
+      );
+
+    const hasValidCoreFields =
+      typeof currentTopic === 'string' &&
+      currentTopic.trim().length > 0 &&
+      currentTopic.length <= 300 &&
+      typeof roleTitle === 'string' &&
+      roleTitle.length <= 500 &&
+      typeof roleDescription === 'string' &&
+      roleDescription.length <= 20000 &&
+      (language === 'es' || language === 'en') &&
+      Number.isInteger(currentTopicIndex) &&
+      currentTopicIndex >= 0 &&
+      Number.isInteger(topicStartIndex) &&
+      topicStartIndex >= 0 &&
+      typeof timerSeconds === 'number' &&
+      Number.isFinite(timerSeconds) &&
+      timerSeconds >= 0;
+
+    if (
+      !hasValidMessages ||
+      !hasValidTopics ||
+      !hasValidCoreFields
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid chat request payload' },
+        { status: 400 }
+      );
+    }
+
+    if (currentTopicIndex >= allTopics.length) {
+      return NextResponse.json(
+        { error: 'Current topic index is out of range' },
+        { status: 400 }
+      );
+    }
+
     // ─── Telemetry Helper ───
     // Logs every detail needed to reproduce and debug any issue.
     // Runs asynchronously so it never blocks the response to the candidate.
@@ -122,10 +198,20 @@ export async function POST(req: NextRequest) {
     const safeTopicStart = Math.max(0, Math.min(topicStartIndex || 0, recentMessages.length));
     const messagesInCurrentTopic = recentMessages.slice(safeTopicStart);
     const assistantMessagesInTopic = messagesInCurrentTopic.filter(
-      (m: { role: string; content: string }) =>
-        m.role === 'assistant' &&
-        !m.content.includes('[NEXT_TOPIC]') &&
-        !m.content.includes('[END_INTERVIEW]')
+      (message: {
+        role: string;
+        content: string;
+        kind?: string;
+      }) =>
+        message.role === 'assistant' &&
+        (
+          message.kind === 'question' ||
+          (
+            message.kind == null &&
+            !message.content.includes('[NEXT_TOPIC]') &&
+            !message.content.includes('[END_INTERVIEW]')
+          )
+        )
     );
     const zaraQuestionsInCurrentTopic = assistantMessagesInTopic.length;
 
@@ -697,58 +783,6 @@ Never re-use the same opener ("¿Cómo manejarías…?", "¿Cómo mantienes…?"
     }
 
 
-    // ─── BUG FIX #4: Fire sentiment analysis IN PARALLEL with main AI call ───
-    // Previously, sentiment ran AFTER the AI response, adding 1-3s extra latency.
-    // Now both calls run concurrently — the candidate hears Zara faster.
-    const lastCandidateMessage = recentMessages.filter((m: { role: string }) => m.role === 'user').pop();
-    let sentimentPromise: Promise<Record<string, unknown> | null> | null = null;
-    if (lastCandidateMessage) {
-      sentimentPromise = (async () => {
-        try {
-          const sentimentResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://reclutify.com',
-              'X-Title': 'Reclutify AI Interviewer',
-            },
-            body: JSON.stringify({
-              model: 'deepseek/deepseek-v4-flash',
-              messages: [
-                {
-                  role: 'system',
-                  content: `Analyze this interview response for sentiment signals. Return JSON only: { "confidence": <0-100>, "evasion": <boolean>, "keySignals": ["<signal1>", "<signal2>"] }
-Rules:
-- confidence: How confident/assured the candidate sounds (0=very anxious/uncertain, 100=very confident/clear)
-- evasion: true if the candidate avoids answering directly, gives vague non-answers, or redirects
-- keySignals: 2-3 brief labels like "specific examples", "vague language", "strong technical depth", "hedging", "clear articulation", "inconsistency"
-Return ONLY valid JSON, no markdown.`
-                },
-                {
-                  role: 'user',
-                  content: `Candidate response: "${lastCandidateMessage.content}"`
-                }
-              ],
-              response_format: { type: 'json_object' },
-              temperature: 0.3,
-            }),
-          });
-          if (sentimentResponse.ok) {
-            const sentimentData = await sentimentResponse.json();
-            const sentimentContent = sentimentData.choices?.[0]?.message?.content || '';
-            const sentimentMatch = sentimentContent.match(/\{[\s\S]*\}/);
-            if (sentimentMatch) {
-              return JSON.parse(sentimentMatch[0]);
-            }
-          }
-          return null;
-        } catch {
-          return null;
-        }
-      })();
-    }
-
     const startTime = Date.now();
 
     // ─── Server-side timeout on the OpenRouter call ───
@@ -892,19 +926,58 @@ Return ONLY valid JSON, no markdown.`
     aiMessage = aiMessage.replace(/^\[INSTRUCTION[^\]]*\].*?\n/i, '').trim();
     aiMessage = aiMessage.replace(/^\[SYSTEM INSTRUCTION[^\]]*\].*?\n/i, '').trim();
 
-    // ===== Sentiment Analysis — fire-and-forget (non-blocking) =====
-    // Sentiment runs in the background; we no longer await it before replying
-    // to the candidate. This removes 1–3s of extra latency per turn.
-    // NOTE: sentiment will be null in the frontend response. Admin-side display
-    // of confidence/evasion signals is a known temporary loss until a background
-    // persistence path is added (store to telemetry by sessionId + turnIndex).
-    if (sentimentPromise) {
-      sentimentPromise.catch((err) => {
-        console.error('[Sentiment] Background error:', err);
-      });
+    // The server, not the language model, owns interview state transitions.
+    // Strip every model-generated control tag, then append only the action
+    // authorized by deterministic server state.
+    aiMessage = aiMessage
+      .replace(/\[NEXT_TOPIC\]/g, '')
+      .replace(/\[END_INTERVIEW\]/g, '')
+      .trim();
+
+    const serverAction:
+      | 'continue'
+      | 'next_topic'
+      | 'end_interview' =
+      isClosingPhase && isLastTopic
+        ? 'end_interview'
+        : mustAdvanceNow && isLastTopic
+          ? 'end_interview'
+          : mustAdvanceNow
+            ? 'next_topic'
+            : 'continue';
+
+    if (!aiMessage) {
+      if (serverAction === 'next_topic') {
+        const nextTopicLabel =
+          allTopics?.[currentTopicIndex + 1]?.label ||
+          (language === 'es'
+            ? 'el siguiente tema'
+            : 'the next topic');
+
+        aiMessage =
+          language === 'es'
+            ? `Muy bien, pasemos ahora a ${nextTopicLabel}.`
+            : `Great, let's move on to ${nextTopicLabel}.`;
+      } else if (serverAction === 'end_interview') {
+        aiMessage =
+          language === 'es'
+            ? 'Muchas gracias por tu tiempo. El equipo revisará tu entrevista y se pondrá en contacto contigo.'
+            : 'Thank you very much for your time. The team will review your interview and contact you.';
+      } else {
+        return NextResponse.json(
+          { error: 'AI response did not contain a usable message' },
+          { status: 502 }
+        );
+      }
     }
 
-    return NextResponse.json({ message: aiMessage, sentiment: null });
+    if (serverAction === 'next_topic') {
+      aiMessage = `${aiMessage} [NEXT_TOPIC]`;
+    } else if (serverAction === 'end_interview') {
+      aiMessage = `${aiMessage} [END_INTERVIEW]`;
+    }
+
+    return NextResponse.json({ message: aiMessage });
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.error('Chat API error:', err);

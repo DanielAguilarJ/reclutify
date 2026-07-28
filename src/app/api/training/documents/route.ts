@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
           let aiSummary = '';
           let aiTopics: unknown[] = [];
           const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-          const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+          const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-3.6-flash';
 
           if (docStatus === 'ready' && OPENROUTER_API_KEY && extractedText.trim().length >= 50) {
             const aiController = new AbortController();

@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
 
     // 7. Generar notas de personalización vía AI (opcional/no-bloqueante)
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-3.6-flash';
+    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
 
     if (OPENROUTER_API_KEY && employee.interview_data) {
       try {

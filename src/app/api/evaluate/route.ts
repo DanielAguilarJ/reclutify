@@ -126,7 +126,7 @@ Now produce the evaluation JSON exactly as specified in the system message. Use 
         'X-Title': 'Reclutify AI Interviewer',
       },
       body: JSON.stringify({
-        model: process.env.TRAINING_AI_MODEL ?? 'google/gemini-3.6-flash',
+        model: 'x-ai/grok-4.20',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage }

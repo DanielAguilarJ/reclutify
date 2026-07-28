@@ -675,7 +675,7 @@ Return ONLY valid JSON, no markdown.`
           'X-Title': 'Reclutify AI Interviewer',
         },
         body: JSON.stringify({
-          model: process.env.TRAINING_AI_MODEL ?? 'google/gemini-3.6-flash',
+          model: 'x-ai/grok-4.20',
           messages: modelMessages,
           // reasoning removed — adds 3–8s latency per turn with negligible benefit
           // for a real-time live interview. Reserved for async evaluation tasks.
@@ -708,7 +708,7 @@ Return ONLY valid JSON, no markdown.`
       // LOG THE ERROR — this is the most valuable telemetry
       logTelemetry({
         turnIndex: recentMessages.length + 1,
-        model: 'google/gemini-3.6-flash',
+        model: 'x-ai/grok-4.20',
         promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
         errorText: `HTTP ${response.status}: ${errorData}`,
         durationMs,
@@ -741,7 +741,7 @@ Return ONLY valid JSON, no markdown.`
     // --- TELEMETRY LOGGING (Async — never blocks response) ---
     logTelemetry({
       turnIndex: recentMessages.length + 1,
-      model: 'google/gemini-3.6-flash',
+      model: 'x-ai/grok-4.20',
       promptText: systemPrompt + '\n\n[Instruction]: ' + instructionContent,
       responseText: aiMessage,
       reasoningText: reasoning || null,
@@ -827,7 +827,7 @@ Return ONLY valid JSON, no markdown.`
           candidate_name: null,
           role_title: null,
           turn_index: 0,
-          model: 'google/gemini-3.6-flash',
+          model: 'x-ai/grok-4.20',
           error_text: `CRASH: ${err.message}\n\nStack: ${err.stack || 'N/A'}`,
           duration_ms: 0,
         });

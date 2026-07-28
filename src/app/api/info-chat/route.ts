@@ -388,7 +388,7 @@ ${customInstructionsBlock}`;
         'X-Title': 'Reclutify Info Session',
       },
       body: JSON.stringify({
-        model: process.env.TRAINING_AI_MODEL ?? 'google/gemini-3.6-flash',
+        model: 'x-ai/grok-4.20',
         messages: modelMessages,
         reasoning: { enabled: true },
         provider: { require_parameters: true },

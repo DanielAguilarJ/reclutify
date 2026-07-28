@@ -171,7 +171,7 @@ ${text}`;
          'X-Title': 'Reclutify CV Parser',
       },
       body: JSON.stringify({
-        model: process.env.TRAINING_AI_MODEL ?? 'google/gemini-3.6-flash',
+        model: 'google/gemini-2.5-flash',
         messages: [{ role: 'user', content: extractionPrompt }],
         response_format: { type: 'json_object' },
         temperature: 0.1,

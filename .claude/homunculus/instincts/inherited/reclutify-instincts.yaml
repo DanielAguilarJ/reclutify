@@ -1,0 +1,583 @@
+# Instincts generated from https://github.com/DanielAguilarJ/reclutify
+# Generated: 2026-07-29T00:44:37.148Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: reclutify-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix
+
+## Evidence
+
+- 2 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix(training): direct-to-storage uploads, typed failures and diagnostics, fix(security): close SECURITY DEFINER RPCs and candidate_invites to anon
+
+---
+id: reclutify-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Commit Length
+
+## Action
+
+Write moderate-length commit messages (~72 characters)
+
+## Evidence
+
+- Average commit message length: 72 chars
+- Based on 2 commits
+
+---
+id: reclutify-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: reclutify-import-alias
+trigger: "when importing modules"
+confidence: 0.85
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Import Alias
+
+## Action
+
+Use path aliases (@/, ~/) instead of relative imports
+
+## Evidence
+
+- Import analysis shows alias pattern
+- Example: import { x } from '@/lib/x'
+
+---
+id: reclutify-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: reclutify-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: __tests__, app, components, lib
+
+---
+id: reclutify-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: reclutify-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: reclutify-test-mocking
+trigger: "when mocking dependencies in tests"
+confidence: 0.75
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Test Mocking
+
+## Action
+
+Use vi.mock for mocking
+
+## Evidence
+
+- Mocking pattern detected: vi.mock
+- Consistent across test files
+
+---
+id: reclutify-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Test Types
+
+## Action
+
+Write unit, integration tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration
+- Coverage config: no
+
+---
+id: reclutify-workflow-add-or-update-database-table-or-function
+trigger: "when doing add or update database table or function"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Workflow Add Or Update Database Table Or Function
+
+## Action
+
+Follow the add-or-update-database-table-or-function workflow:
+1. Create or update SQL migration files in supabase/migrations/ (e.g., add table, function, RLS, revoke privileges).
+2. Update supabase/repair or foundation SQL scripts if needed.
+3. Update src/lib/database.types.ts to reflect new/changed database types.
+4. Update backend logic or API handlers to use new/changed tables or functions.
+5. Update or add tests to cover new/changed logic.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: supabase/migrations/*.sql, supabase/repair_*.sql, src/lib/database.types.ts
+
+---
+id: reclutify-workflow-add-or-update-api-endpoint
+trigger: "when doing add or update api endpoint"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Workflow Add Or Update Api Endpoint
+
+## Action
+
+Follow the add-or-update-api-endpoint workflow:
+1. Create or update route handler in src/app/api/...
+2. Update or create supporting logic in src/lib/...
+3. Update or add corresponding tests in src/__tests__/...
+4. Document the endpoint or update related documentation.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/app/api/**/*.ts, src/lib/**/*.ts, src/__tests__/**/*.ts
+
+---
+id: reclutify-workflow-feature-development-with-specs-and-tests
+trigger: "when doing feature development with specs and tests"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/DanielAguilarJ/reclutify
+---
+
+# Reclutify Workflow Feature Development With Specs And Tests
+
+## Action
+
+Follow the feature-development-with-specs-and-tests workflow:
+1. Write or update design, requirements, and tasks markdown files in .kiro/specs/...
+2. Implement feature in src/app/ and/or src/lib/...
+3. Add or update tests in src/__tests__/...
+4. Update documentation in docs/ and/or README.md
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: .kiro/specs/**/*.md, src/app/**/*.tsx, src/app/**/*.ts
+
+---
+id: reclutify-camelcase-files
+trigger: "When naming a new file or renaming an existing file in the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Camelcase Files
+
+## Action
+
+Use camelCase for file names
+
+## Evidence
+
+- Pattern in namingConventions.files
+- Consistent usage in src/
+
+---
+id: reclutify-camelcase-functions
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Camelcase Functions
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+- Consistent usage in src/
+
+---
+id: reclutify-pascalcase-classes
+trigger: "When defining a new class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Pascalcase Classes
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+- Consistent usage in src/
+
+---
+id: reclutify-screaming-snake-constants
+trigger: "When defining a constant value"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Screaming Snake Constants
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+- Consistent usage in src/
+
+---
+id: reclutify-alias-imports
+trigger: "When importing modules in TypeScript files"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Alias Imports
+
+## Action
+
+Use alias-based import paths
+
+## Evidence
+
+- Pattern in importStyle: alias
+- Examples in src/
+
+---
+id: reclutify-named-exports
+trigger: "When exporting modules or functions"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Named Exports
+
+## Action
+
+Use named exports instead of default exports
+
+## Evidence
+
+- Pattern in exportStyle: named
+- Examples in src/
+
+---
+id: reclutify-vitest-file-pattern
+trigger: "When creating a new test file"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Vitest File Pattern
+
+## Action
+
+Name the file with the pattern *.test.ts
+
+## Evidence
+
+- Pattern in testing.filePattern
+- Examples in src/__tests__/
+
+---
+id: reclutify-vi-mock
+trigger: "When mocking dependencies in tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Vi Mock
+
+## Action
+
+Use vi.mock for mocking
+
+## Evidence
+
+- Pattern in testing.mockingStyle
+- Examples in src/__tests__/
+
+---
+id: reclutify-unit-integration-tests
+trigger: "When writing tests for new or changed logic"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Unit Integration Tests
+
+## Action
+
+Write both unit and integration tests as appropriate
+
+## Evidence
+
+- Pattern in testing.testTypes
+- Examples in src/__tests__/
+
+---
+id: reclutify-try-catch-errors
+trigger: "When handling errors in code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Try Catch Errors
+
+## Action
+
+Use try-catch blocks for error handling
+
+## Evidence
+
+- Pattern in errorHandling.style
+- Examples in src/
+
+---
+id: reclutify-conventional-commits-fix
+trigger: "When making a commit to fix a bug or issue"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Conventional Commits Fix
+
+## Action
+
+Use the conventional commit format with the 'fix' prefix (e.g., fix(scope): message)
+
+## Evidence
+
+- Pattern in commits.prefixes
+- Examples: 'fix(training): ...', 'fix(security): ...'
+
+---
+id: reclutify-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Commit Length
+
+## Action
+
+Keep the commit message concise, around 72 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+- Examples in commit history
+
+---
+id: reclutify-add-or-update-database-table-or-function
+trigger: "When someone needs to create, modify, or secure a database table or function"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Add Or Update Database Table Or Function
+
+## Action
+
+Follow the workflow: update migration files in supabase/migrations, repair scripts if needed, update src/lib/database.types.ts, backend logic, and tests
+
+## Evidence
+
+- Workflow definition
+- Commit sequences and file patterns in workflow
+
+---
+id: reclutify-add-or-update-api-endpoint
+trigger: "When someone wants to expose new backend functionality via an API route"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Add Or Update Api Endpoint
+
+## Action
+
+Follow the workflow: update/create route handler in src/app/api, supporting logic in src/lib, tests in src/__tests__, and documentation
+
+## Evidence
+
+- Workflow definition
+- Commit sequences and file patterns in workflow
+
+---
+id: reclutify-feature-development-with-specs-and-tests
+trigger: "When building a significant new feature or repairing a major subsystem"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: DanielAguilarJ/reclutify
+---
+
+# Reclutify Feature Development With Specs And Tests
+
+## Action
+
+Follow the workflow: update specs in .kiro/specs, implement in src/app or src/lib, add tests in src/__tests__, and update documentation
+
+## Evidence
+
+- Workflow definition
+- Commit sequences and file patterns in workflow
+

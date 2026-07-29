@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import * as mammoth from 'mammoth';
 
+import { extractPdfText } from '@/lib/pdf-text';
+
 // pdf-parse uses Node-only deps (file IO, native PDF parsing). Force the Node
 // runtime so Next.js doesn't try to bundle it for the Edge runtime, which
 // silently fails and surfaces as a 500 at request time.
@@ -31,19 +33,10 @@ export async function POST(request: Request) {
 
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
-        // Dynamic import isolates pdf-parse's side-effect-heavy module init to
-        // request time and lets us pick up the correct default export across
-        // both CJS-published versions (1.x) and the dual export shape used by
-        // newer builds.
-        const mod = (await import('pdf-parse')) as unknown as
-          | { default?: (buf: Buffer) => Promise<{ text: string }> }
-          | ((buf: Buffer) => Promise<{ text: string }>);
-        const pdfParse = typeof mod === 'function' ? mod : mod.default;
-        if (typeof pdfParse !== 'function') {
-          throw new Error('pdf-parse module did not expose a callable parser');
-        }
-        const data = await pdfParse(buffer);
-        text = data.text;
+        // Extractor compartido: importa el parser interno de pdf-parse en lugar
+        // del entry point del paquete, cuyo bloque de depuración hace
+        // `readFileSync` al cargarse. Ver src/lib/pdf-text.ts.
+        text = await extractPdfText(buffer);
       } catch (pdfError) {
         const err = pdfError as Error;
         console.error('[parse-resume] PDF parsing error:', {

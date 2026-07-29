@@ -34,7 +34,11 @@ const pdfParseState = vi.hoisted(() => ({
   text: 'Extracted PDF text that is long enough to pass the fifty character rule',
 }));
 
-vi.mock('pdf-parse', () => ({
+// El especificador tiene que ser exactamente el que usa `src/lib/pdf-text.ts`:
+// el parser interno (`pdf-parse/lib/pdf-parse.js`), no el entry point del
+// paquete. Mockear `'pdf-parse'` no interceptaría nada y se cargaría el módulo
+// real, cuyo `index.js` hace IO de ficheros al evaluarse.
+vi.mock('pdf-parse/lib/pdf-parse.js', () => ({
   default: async () => ({ text: pdfParseState.text }),
 }));
 

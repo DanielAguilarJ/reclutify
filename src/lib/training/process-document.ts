@@ -2,6 +2,7 @@ import 'server-only';
 
 import * as mammoth from 'mammoth';
 
+import { extractPdfText } from '@/lib/pdf-text';
 import { documentAiAnalysisSchema } from '@/lib/training/contracts';
 import { TrainingDocumentError } from '@/lib/training/document-errors';
 import {
@@ -160,17 +161,10 @@ async function extractTrainingText(
   fileBuffer: Buffer,
 ): Promise<string> {
   if (fileKind === 'pdf') {
-    const mod = (await import('pdf-parse')) as unknown as
-      | { default?: (buf: Buffer) => Promise<{ text: string }> }
-      | ((buf: Buffer) => Promise<{ text: string }>);
-    const pdfParse = typeof mod === 'function' ? mod : mod.default;
-
-    if (typeof pdfParse !== 'function') {
-      throw new Error('pdf-parse is not a callable function');
-    }
-
-    const parsed = await pdfParse(fileBuffer);
-    return parsed.text;
+    // El extractor centralizado documenta por qué no se importa `pdf-parse`
+    // directamente (su `index.js` hace IO en tiempo de carga). Sus errores se
+    // propagan: el llamante los clasifica como `TEXT_EXTRACTION_FAILED`.
+    return await extractPdfText(fileBuffer);
   }
 
   if (fileKind === 'docx') {

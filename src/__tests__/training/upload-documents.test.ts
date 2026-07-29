@@ -5,8 +5,13 @@ import { MAX_TRAINING_FILE_SIZE } from '@/lib/training/documents';
 
 vi.mock('server-only', () => ({}));
 
-// Mock pdf-parse and mammoth to avoid loading real binaries/files
-vi.mock('pdf-parse', () => ({
+// Mock pdf-parse and mammoth to avoid loading real binaries/files.
+//
+// El especificador tiene que ser exactamente el que usa `src/lib/pdf-text.ts`:
+// el parser interno, no el entry point del paquete. Mockear `'pdf-parse'` aquí
+// no interceptaría nada y cargaría el módulo real. Ver src/lib/pdf-text.ts para
+// el porqué del subpath.
+vi.mock('pdf-parse/lib/pdf-parse.js', () => ({
   default: async () => ({ text: 'Extracted PDF text that is long enough to pass validation rules' }),
 }));
 vi.mock('mammoth', () => ({

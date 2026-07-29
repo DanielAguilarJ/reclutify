@@ -77,6 +77,45 @@ interface UploadItemState {
  */
 const buildFileKey = (file: File) => `${file.name}::${file.size}::${file.lastModified}`;
 
+/**
+ * Texto para el administrador según el `code` que devuelve
+ * `POST /api/training/generate-modules`.
+ *
+ * La ruta responde siempre con `{ error, code }`: el `error` es un texto en
+ * inglés estable para cualquier consumidor de la API, y el `code` es lo que
+ * permite elegir aquí un mensaje bilingüe y accionable. El catálogo del servidor
+ * (`src/lib/training/module-generation.ts`) es `server-only`, así que no se
+ * puede importar desde un componente de cliente; el `code` es justamente el
+ * contrato que evita duplicar los textos por accidente. Un `code` desconocido
+ * cae en el `error` de la respuesta.
+ */
+const GENERATE_MODULES_ERROR_MESSAGES: Record<string, { es: string; en: string }> = {
+  AI_NOT_CONFIGURED: {
+    es: 'El servicio de IA no está configurado en el servidor (falta OPENROUTER_API_KEY). Revisa el diagnóstico del centro de capacitación.',
+    en: 'The AI service is not configured on the server (OPENROUTER_API_KEY is missing). Check the training center diagnostics.',
+  },
+  AI_UNAVAILABLE: {
+    es: 'El servicio de IA rechazó la petición. Suele ser clave inválida, saldo agotado o límite de uso: el motivo exacto queda en el log del servidor. Vuelve a intentarlo en unos minutos.',
+    en: 'The AI service rejected the request. Usually an invalid key, exhausted credit or a rate limit: the exact reason is in the server log. Try again in a few minutes.',
+  },
+  AI_TIMEOUT: {
+    es: 'La generación tardó demasiado y se canceló. No se guardó nada. Vuelve a intentarlo, y si se repite reduce el número de documentos asociados.',
+    en: 'Generation took too long and was cancelled. Nothing was saved. Try again, and if it keeps happening reduce the number of associated documents.',
+  },
+  AI_INVALID_JSON: {
+    es: 'La IA devolvió una respuesta ilegible. No se guardó nada. Vuelve a intentarlo.',
+    en: 'The AI returned an unreadable response. Nothing was saved. Try again.',
+  },
+  AI_INVALID_STRUCTURE: {
+    es: 'La IA no logró devolver módulos con el formato correcto, ni tras un reintento. No se guardó nada. Vuelve a intentarlo; si se repite, revisa que los documentos tengan contenido claro y suficiente.',
+    en: 'The AI could not return modules in the correct format, even after a retry. Nothing was saved. Try again; if it keeps happening, check that the documents have clear, sufficient content.',
+  },
+  AI_NO_VALID_SOURCE: {
+    es: 'La IA generó un módulo sin ningún documento válido de este programa. No se guardó nada. Vuelve a intentarlo.',
+    en: 'The AI generated a module with no valid document from this program. Nothing was saved. Try again.',
+  },
+};
+
 export default function ConfigureProgramPage(props: { params: Promise<{ programId: string }> }) {
   const { programId } = use(props.params);
   const { language } = useAppStore();
@@ -550,7 +589,19 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to generate modules');
+        // El `code` distingue los cuatro fallos que antes compartían un `502`
+        // opaco. El `error` de la respuesta queda como respaldo para los fallos
+        // que no son de IA (programa no draft, sin documentos ready, etc.).
+        const mapped =
+          typeof body.code === 'string'
+            ? GENERATE_MODULES_ERROR_MESSAGES[body.code]
+            : undefined;
+
+        throw new Error(
+          mapped
+            ? (language === 'es' ? mapped.es : mapped.en)
+            : body.error || (language === 'es' ? 'No se pudieron generar los módulos' : 'Failed to generate modules')
+        );
       }
 
       const data = await res.json();

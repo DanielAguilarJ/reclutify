@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from '../../app/api/training/generate-modules/route';
+import { buildModuleRepairInstruction } from '../../lib/training/module-generation';
 import { NextRequest } from 'next/server';
 
 vi.mock('server-only', () => ({}));
@@ -316,5 +317,29 @@ describe('Generate Modules Endpoint (/api/training/generate-modules)', () => {
     expect(res.status).toBe(500);
     const data = await res.json() as Record<string, unknown>;
     expect(data.error).toBe('Could not persist generated modules');
+  });
+});
+
+/**
+ * Instrucción de reparación del segundo intento.
+ *
+ * Es técnica y va en inglés, pero se envía junto con el JSON que el modelo ya
+ * escribió en el idioma del programa: si no prohíbe explícitamente reescribir,
+ * el modelo puede devolver el contenido traducido al idioma de la propia
+ * instrucción y una reparación de forma se convierte en un cambio de contenido.
+ */
+describe('Module repair instruction', () => {
+  it('forbids translating or rewriting the content already generated', () => {
+    const instruction = buildModuleRepairInstruction([
+      'modules.0.evaluationQuestions.1.correctAnswer: must match an option',
+    ]);
+
+    expect(instruction).toContain('Do NOT translate or rewrite');
+    expect(instruction).toContain('in the language you already used');
+    // Sigue siendo una reparación: el JSON vuelve completo y corregido.
+    expect(instruction).toContain('Return the SAME JSON object');
+    expect(instruction).toContain(
+      'modules.0.evaluationQuestions.1.correctAnswer'
+    );
   });
 });

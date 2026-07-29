@@ -1,3 +1,5 @@
+import type { TrainingContentLanguage } from '@/lib/training/content-language';
+
 export interface CvExperience {
   company: string;
   title: string;
@@ -154,6 +156,13 @@ export interface TrainingProgram {
   isDefault: boolean;
   welcomeMessage?: string;
   aiPersonality: string;
+  /**
+   * Idioma en el que la IA genera el contenido del programa y en el que se
+   * presenta la interfaz del empleado. El dominio y el fallback viven en
+   * `@/lib/training/content-language`; aquí se expone ya normalizado, así que
+   * nunca contiene un valor fuera de la unión.
+   */
+  contentLanguage: TrainingContentLanguage;
   status: TrainingProgramStatus;
   version: number;
   passingScore: number;

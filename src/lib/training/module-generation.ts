@@ -592,6 +592,14 @@ export function flattenZodIssues(error: ZodErrorLike): string[] {
  * Se envía junto con la respuesta previa del propio modelo (como turno
  * `assistant`), de modo que la petición es "aquí está tu JSON y aquí lo que
  * falla en él; devuélvelo corregido".
+ *
+ * IDIOMA: esta instrucción es técnica y va dirigida al modelo, no al empleado,
+ * así que se queda en inglés independientemente del idioma del programa (el
+ * prompt de sistema ya lleva la directiva de idioma del contenido). Lo que sí
+ * necesita es prohibir explícitamente la retraducción: al pedir "devuelve el
+ * mismo JSON corregido" un modelo puede aprovechar para reescribir el contenido
+ * —y traducirlo al idioma de esta instrucción—, lo que convertiría una
+ * reparación de forma en un cambio de contenido.
  */
 export function buildModuleRepairInstruction(issues: string[]): string {
   const listed = issues.slice(0, MAX_REPAIR_ISSUES);
@@ -608,6 +616,7 @@ ${listed.map((issue) => `- ${issue}`).join('\n')}${
 Return the SAME JSON object with exactly those problems fixed. Requirements:
 - Output only the corrected JSON object, no prose, no markdown fences.
 - Keep every module, section and question you already wrote; do not shorten or drop content to make validation pass.
+- Do NOT translate or rewrite the content you already produced. Keep every title, description, body, key point, question, option and explanation in the language you already used, word for word, except where a listed error forces a change.
 - Paths use dot notation over the JSON you returned: "modules.0.evaluationQuestions.1.correctAnswer" is the correctAnswer of the second question of the first module.
 - correctAnswer must match one of that question's options exactly, character for character.
 - true_false questions need exactly 2 unique options; open_ended questions must omit "options"; multiple_choice needs 2-20 unique options.

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextRequest, NextResponse } from 'next/server';
+import { resolveSupabaseServerKey } from '@/lib/supabase-server-key';
 
 export async function POST(req: NextRequest) {
   try {
@@ -44,7 +45,10 @@ export async function POST(req: NextRequest) {
       try {
         const { createClient } = await import('@supabase/supabase-js');
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+        // La telemetría es accesoria: si no hay clave utilizable se omite el
+        // registro y la entrevista continúa. Con la clave anon se intenta igual;
+        // un rechazo de RLS cae en el `catch` de abajo, que tampoco propaga.
+        const supabaseKey = resolveSupabaseServerKey('chat/logTelemetry');
         if (!supabaseUrl || !supabaseKey) return;
 
         const supabase = createClient(supabaseUrl, supabaseKey);
@@ -819,7 +823,7 @@ Return ONLY valid JSON, no markdown.`
     try {
       const { createClient } = await import('@supabase/supabase-js');
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      const supabaseKey = resolveSupabaseServerKey('chat/crashTelemetry');
       if (supabaseUrl && supabaseKey) {
         const supabase = createClient(supabaseUrl, supabaseKey);
         await supabase.from('interview_telemetry').insert({

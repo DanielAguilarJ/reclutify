@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { classifySupabaseKeyShape, type SupabaseKeyShape } from '@/lib/supabase-key';
 import type { createAdminClient } from '@/utils/supabase/admin';
 
 /**
@@ -89,6 +90,11 @@ export interface TrainingDiagnosticsSummary {
 export interface TrainingDiagnosticsResult {
   ok: boolean;
   source: TrainingDiagnosticsSource;
+  /**
+   * Por variable, si es utilizable. Nunca contiene valores. Para
+   * `SUPABASE_SERVICE_ROLE_KEY` es `false` también cuando está definida con una
+   * forma inválida, para no contradecir a su check.
+   */
   env: Record<string, boolean>;
   checks: TrainingCheck[];
   summary: TrainingDiagnosticsSummary;
@@ -261,9 +267,17 @@ export const TRAINING_SCHEMA_CHECKS: readonly TrainingCheckDefinition[] = [
 // 3. VARIABLES DE ENTORNO
 // ============================================================
 
+export const SERVICE_ROLE_KEY_ENV = 'SUPABASE_SERVICE_ROLE_KEY';
+
 /**
- * Solo se comprueba la presencia. El valor NUNCA se lee para la respuesta,
- * para no filtrar claves al cliente.
+ * De casi todas las variables solo se comprueba la presencia. El valor NUNCA
+ * llega a la respuesta: ni entero, ni en fragmentos, ni como longitud o prefijo.
+ *
+ * `SUPABASE_SERVICE_ROLE_KEY` es la excepción y se inspecciona además su FORMA
+ * (ver más abajo), porque comprobar la presencia dejaba pasar justo el fallo que
+ * este diagnóstico existe para atrapar: con el literal `service_role` como valor
+ * el check decía `ok` mientras cada operación de administración moría con
+ * `401 Invalid API key`.
  */
 export const TRAINING_ENV_CHECKS: readonly TrainingCheckDefinition[] = [
   {
@@ -287,10 +301,12 @@ export const TRAINING_ENV_CHECKS: readonly TrainingCheckDefinition[] = [
     id: 'env.SUPABASE_SERVICE_ROLE_KEY',
     label: 'Variable SUPABASE_SERVICE_ROLE_KEY',
     severity: 'critical',
+    // Remediación del caso «ausente». Los casos de forma inválida la
+    // reemplazan por una específica en `buildServiceRoleKeyCheck`.
     remediation:
       'Definir SUPABASE_SERVICE_ROLE_KEY en el entorno del despliegue',
     kind: 'env',
-    key: 'SUPABASE_SERVICE_ROLE_KEY',
+    key: SERVICE_ROLE_KEY_ENV,
   },
   {
     // Degradación aceptada por los Requisitos 3.7 y 10.3: sin la clave el
@@ -310,24 +326,106 @@ function isEnvVariablePresent(name: string): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-/** Presencia de variables de entorno, sin exponer ningún valor. */
-export function collectEnvPresence(): Record<string, boolean> {
-  const env: Record<string, boolean> = {};
+/**
+ * Lo que se sabe del entorno sin mirar ningún valor.
+ *
+ * - `usable`: por variable, si sirve. Para `SUPABASE_SERVICE_ROLE_KEY` «sirve»
+ *   exige forma válida, no solo presencia; así el mapa nunca contradice al
+ *   check correspondiente.
+ * - `serviceRoleKeyShape`: etiqueta de una enumeración cerrada. Es la única
+ *   información que sale de la inspección del valor, y con ella se elige la
+ *   remediación sin filtrar nada.
+ */
+export interface TrainingEnvSnapshot {
+  usable: Record<string, boolean>;
+  serviceRoleKeyShape: SupabaseKeyShape;
+}
+
+/** Estado del entorno, sin exponer ningún valor. */
+export function collectEnvSnapshot(): TrainingEnvSnapshot {
+  const serviceRoleKeyShape = classifySupabaseKeyShape(
+    process.env[SERVICE_ROLE_KEY_ENV],
+  );
+
+  const usable: Record<string, boolean> = {};
 
   for (const check of TRAINING_ENV_CHECKS) {
-    env[check.key] = isEnvVariablePresent(check.key);
+    usable[check.key] =
+      check.key === SERVICE_ROLE_KEY_ENV
+        ? serviceRoleKeyShape === 'service-role'
+        : isEnvVariablePresent(check.key);
   }
 
-  return env;
+  return { usable, serviceRoleKeyShape };
+}
+
+/**
+ * Los tres desenlaces del check de la clave de servicio, sobre el modelo de
+ * `status` que ya existe:
+ *
+ * - forma válida            → `ok`
+ * - ausente                 → `missing` con la remediación «definir la variable»
+ * - presente, forma inválida→ `missing` con remediación propia y un `detail` que
+ *   aclara que la variable SÍ está definida
+ *
+ * La forma inválida es `missing` a propósito: no hay clave de servicio utilizable,
+ * así que debe contar como fallo crítico y romper `ok` igual que la ausencia.
+ * `unknown` no encaja —significa «no se pudo determinar» y no invalida `ok`—, y la
+ * distinción que le falta a `status` la aportan `remediation` y `detail`.
+ *
+ * La clave `anon` tiene mensaje propio porque es el error más traicionero: es un
+ * JWT legítimo, así que parece correcta, pero no puede saltarse RLS y el módulo
+ * falla de forma intermitente.
+ */
+function buildServiceRoleKeyCheck(
+  definition: TrainingCheckDefinition,
+  shape: SupabaseKeyShape,
+): TrainingCheck {
+  if (shape === 'service-role') {
+    return { ...definition, status: 'ok' };
+  }
+
+  if (shape === 'missing') {
+    return { ...definition, status: 'missing' };
+  }
+
+  // Lo que este `detail` añade es exactamente lo que `status` no puede decir:
+  // que la variable sí está definida. No menciona el valor de ninguna forma.
+  const detail =
+    'La variable está definida, pero su valor no tiene la forma de una clave de servicio';
+
+  if (shape === 'anon') {
+    return {
+      ...definition,
+      status: 'missing',
+      remediation:
+        'SUPABASE_SERVICE_ROLE_KEY contiene la clave anon (publishable) del proyecto, que no puede saltarse RLS. Abrir Supabase > Project Settings > API keys y copiar el VALOR de la fila service_role (el secreto que empieza por sb_secret_, o el JWT heredado), luego volver a desplegar',
+      detail,
+    };
+  }
+
+  return {
+    ...definition,
+    status: 'missing',
+    remediation:
+      'SUPABASE_SERVICE_ROLE_KEY no tiene la forma de una clave de servicio. Abrir Supabase > Project Settings > API keys y copiar el VALOR de la fila service_role, no el nombre de la fila ni un marcador de posición, luego volver a desplegar',
+    detail,
+  };
 }
 
 export function buildEnvChecks(
-  env: Record<string, boolean> = collectEnvPresence(),
+  snapshot: TrainingEnvSnapshot = collectEnvSnapshot(),
 ): TrainingCheck[] {
-  return TRAINING_ENV_CHECKS.map(definition => ({
-    ...definition,
-    status: env[definition.key] ? 'ok' : 'missing',
-  }));
+  return TRAINING_ENV_CHECKS.map(definition => {
+    if (definition.key === SERVICE_ROLE_KEY_ENV) {
+      return buildServiceRoleKeyCheck(definition, snapshot.serviceRoleKeyShape);
+    }
+
+    return {
+      ...definition,
+      status: snapshot.usable[definition.key] ? 'ok' : 'missing',
+    };
+  });
 }
 
 // ============================================================
@@ -874,17 +972,17 @@ export function isTrainingEnvironmentOk(
 /** Resultado completo: esquema más variables de entorno. */
 export function buildTrainingDiagnostics(
   collection: TrainingEnvironmentCollection,
-  env: Record<string, boolean> = collectEnvPresence(),
+  snapshot: TrainingEnvSnapshot = collectEnvSnapshot(),
 ): TrainingDiagnosticsResult {
   const checks = [
     ...buildSchemaChecks(collection.report),
-    ...buildEnvChecks(env),
+    ...buildEnvChecks(snapshot),
   ];
 
   return {
     ok: isTrainingEnvironmentOk(checks),
     source: collection.source,
-    env,
+    env: snapshot.usable,
     checks,
     summary: summarizeTrainingChecks(checks),
   };

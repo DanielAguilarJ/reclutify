@@ -15,6 +15,7 @@ import {
   trainingQuestionAdminSchema,
   manualTrainingModuleSchema,
 } from '../../lib/training/contracts';
+import { TRAINING_CONTENT_LANGUAGES } from '../../lib/training/content-language';
 
 describe('Training Center V2 Contract Integrity', () => {
   // ─── trainingTutorResponseSchema ───
@@ -142,6 +143,55 @@ describe('Training Center V2 Contract Integrity', () => {
       title: 'Updated title',
     });
     expect(result.success).toBe(true);
+  });
+
+  // ─── content language ───
+  it('accepts every supported content language in updateTrainingProgramSchema', () => {
+    for (const language of TRAINING_CONTENT_LANGUAGES) {
+      const result = updateTrainingProgramSchema.safeParse({
+        contentLanguage: language,
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects an unsupported content language in updateTrainingProgramSchema', () => {
+    const result = updateTrainingProgramSchema.safeParse({
+      contentLanguage: 'fr',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a null content language in updateTrainingProgramSchema', () => {
+    // El programa siempre tiene idioma (columna NOT NULL): "sin idioma" no es un
+    // estado representable, así que `null` no es un borrado válido.
+    const result = updateTrainingProgramSchema.safeParse({
+      contentLanguage: null,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts createTrainingProgramSchema without content language', () => {
+    // Ausente significa "aplica el DEFAULT de la base de datos".
+    const result = createTrainingProgramSchema.safeParse({
+      roleId: 'role-123',
+      title: 'Program 1',
+      aiPersonality: 'friendly_mentor',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.contentLanguage).toBeUndefined();
+    }
+  });
+
+  it('rejects an unsupported content language in createTrainingProgramSchema', () => {
+    const result = createTrainingProgramSchema.safeParse({
+      roleId: 'role-123',
+      title: 'Program 1',
+      aiPersonality: 'friendly_mentor',
+      contentLanguage: 'fr',
+    });
+    expect(result.success).toBe(false);
   });
 
   // ─── attachTrainingDocumentSchema ───

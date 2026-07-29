@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { resolveSupabaseServerKey } from '@/lib/supabase-server-key';
 import type { InfoChatRequest, InfoChatResponse, DetectedObjection, ClosingMode } from '@/types/informes';
 
 // ─── Helper: Load coach settings + course overrides ───
@@ -15,7 +16,10 @@ async function loadAIConfig(orgId: string, courseId: string) {
   try {
     const { createClient } = await import('@supabase/supabase-js');
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    // Cae a la clave anon si la de servicio falta O tiene forma inválida; con
+    // anon se leen igual estas tablas cuando RLS lo permite, y si no, la ruta
+    // sigue con los valores por defecto.
+    const supabaseKey = resolveSupabaseServerKey('info-chat/loadAIConfig');
     if (!supabaseUrl || !supabaseKey) return defaults;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -63,7 +67,7 @@ async function getOrgIdForCourse(courseId: string): Promise<string | null> {
   try {
     const { createClient } = await import('@supabase/supabase-js');
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseKey = resolveSupabaseServerKey('info-chat/getOrgIdForCourse');
     if (!supabaseUrl || !supabaseKey) return null;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -453,7 +457,7 @@ ${customInstructionsBlock}`;
     try {
       const { createClient } = await import('@supabase/supabase-js');
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      const supabaseKey = resolveSupabaseServerKey('info-chat/telemetry');
       if (supabaseUrl && supabaseKey && sessionId) {
         const supabase = createClient(supabaseUrl, supabaseKey);
         await supabase.from('info_session_telemetry').insert({

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TRAINING_CONTENT_LANGUAGES } from './content-language';
 
 // ─── Schemas existentes ───
 
@@ -305,6 +306,11 @@ export const createTrainingProgramSchema = z
       'strict_teacher',
       'casual_colleague',
     ]),
+    // Opcional a propósito: si no llega, la columna
+    // `training_programs.content_language` aplica su DEFAULT ('es') y la ruta
+    // no envía el campo. El dominio es el mismo que el del `CHECK` de la
+    // migración y el de `TrainingContentLanguage`.
+    contentLanguage: z.enum(TRAINING_CONTENT_LANGUAGES).optional(),
   })
   .strict();
 
@@ -326,6 +332,10 @@ export const updateTrainingProgramSchema = z
     aiPersonality: z
       .enum(['friendly_mentor', 'strict_teacher', 'casual_colleague'])
       .optional(),
+    // Opcional como el resto de la actualización parcial. No admite `null`: el
+    // programa siempre tiene un idioma de contenido (la columna es NOT NULL), y
+    // "sin idioma" no es un estado representable.
+    contentLanguage: z.enum(TRAINING_CONTENT_LANGUAGES).optional(),
     passingScore: z.number().int().min(0).max(100).optional(),
   })
   .strict()

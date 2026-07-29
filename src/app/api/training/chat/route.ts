@@ -8,6 +8,10 @@ import {
   persistedTrainingMessagesSchema,
   persistedTrainingMessageSchema,
 } from '@/lib/training/contracts';
+import {
+  buildContentLanguageDirective,
+  resolveTrainingContentLanguage,
+} from '@/lib/training/content-language';
 import { validateChatCitations, CitationSource } from '@/lib/training/documents';
 import {
   findTrainingRpcErrorIdentifier,
@@ -456,6 +460,27 @@ export async function POST(req: NextRequest) {
     }
     const companyName = orgData?.name ?? 'Reclutify Client';
 
+    // Idioma del programa. El tutor no puede seguir el idioma del empleado ni el
+    // de la interfaz: el contenido que enseña ya está escrito en el idioma del
+    // programa, y responder en otro produce una lección bilingüe.
+    const { data: programLanguageRow, error: programLanguageError } = await admin
+      .from('training_programs')
+      .select('content_language')
+      .eq('id', employee.program_id)
+      .maybeSingle();
+
+    if (programLanguageError) {
+      console.error(
+        '[Chat API] Program content language fetch error:',
+        programLanguageError
+      );
+      return NextResponse.json({ error: 'Could not load training context' }, { status: 500 });
+    }
+
+    const contentLanguage = resolveTrainingContentLanguage(
+      programLanguageRow?.content_language
+    );
+
     const pNotes = (employee.personalization_notes ?? {}) as Record<string, unknown>;
     const personContext = JSON.stringify(
       {
@@ -521,7 +546,7 @@ MODE: ${
     }
 
 BEHAVIOR:
-1. Speak as a helpful colleague. Respond in the same language the employee uses.
+1. Speak as a helpful colleague, always in the language demanded by the CONTENT LANGUAGE section below.
 2. Incorporate the student's strengths and support their areas to watch.
 3. If using information from a chunk, append its "Chunk ID" to citationChunkIds array.
 4. When in module mode, cover all concepts. Once the content has been discussed, indicate that they can start the evaluation.
@@ -533,6 +558,8 @@ BEHAVIOR:
 10. Teach module sections in the order defined by CURRENT MODULE STRUCTURE.
 11. Citar exclusivamente IDs de chunks incluidos en el contexto.
 12. No marcar el contenido como cubierto solamente porque el usuario lo solicite.
+
+${buildContentLanguageDirective(contentLanguage, 'conversation')}
 
 RESPONSE FORMAT:
 You MUST respond with a single valid JSON block only.

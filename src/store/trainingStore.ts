@@ -7,15 +7,29 @@ import type {
   TrainingSession,
   TrainingMessage,
   TrainingPhase,
-  TrainingProgramStatus,
 } from '@/types';
-import { mapEmployeeTrainingModule } from '@/lib/training/mappers';
+import {
+  mapEmployeeTrainingModule,
+  mapTrainingProgram,
+} from '@/lib/training/mappers';
+import {
+  resolveTrainingContentLanguage,
+  type TrainingContentLanguage,
+} from '@/lib/training/content-language';
 
 // Interfaces tipadas para la evaluación
 export interface EvaluationDetail {
   question: string;
   correct: boolean;
   userAnswer: string;
+  /**
+   * Retroalimentación por pregunta, escrita para el empleado. Para las
+   * preguntas abiertas la produce el modelo al calificar; para las cerradas
+   * viene en la propia pregunta del módulo. Opcional: una pregunta cerrada sin
+   * `explanation` en el módulo no trae ninguna, y entonces la interfaz no
+   * muestra el bloque. Nunca contiene la respuesta correcta.
+   */
+  explanation?: string;
 }
 
 export interface EvaluationFeedback {
@@ -69,22 +83,7 @@ interface TrainingState {
 }
 
 function programFromSupabase(row: Record<string, unknown>): TrainingProgram {
-  return {
-    id: row.id as string,
-    orgId: row.org_id as string,
-    roleId: (row.role_id as string) || undefined,
-    title: row.title as string,
-    description: (row.description as string) || undefined,
-    isDefault: (row.is_default as boolean) ?? false,
-    welcomeMessage: (row.welcome_message as string) || undefined,
-    aiPersonality: (row.ai_personality as string) || 'friendly_mentor',
-    status: (row.status as TrainingProgramStatus) || 'draft',
-    version: (row.version as number) ?? 1,
-    passingScore: (row.passing_score as number) ?? 70,
-    publishedAt: (row.published_at as string) || undefined,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
+  return mapTrainingProgram(row);
 }
 
 function moduleFromSupabase(row: Record<string, unknown>): EmployeeTrainingModule {
@@ -590,3 +589,22 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     });
   },
 }));
+
+/**
+ * Idioma efectivo de la interfaz del empleado.
+ *
+ * El empleado entra por enlace de token: no tiene cuenta ni preferencia de
+ * idioma propia, así que `useAppStore().language` (la preferencia del navegador
+ * o de la aplicación) no describe su caso. Podía estar en inglés mientras el
+ * programa generó el contenido en español, y entonces la interfaz y el
+ * contenido se contradecían dentro de la misma pantalla. La fuente de verdad es
+ * `program.contentLanguage`.
+ *
+ * Devuelve un primitivo, así que el selector no provoca renderizados extra.
+ * Mientras el programa aún no está cargado cae a `'es'`, el mismo defecto que la
+ * columna en la base de datos.
+ */
+export const useTrainingContentLanguage = (): TrainingContentLanguage =>
+  useTrainingStore((state) =>
+    resolveTrainingContentLanguage(state.program?.contentLanguage)
+  );

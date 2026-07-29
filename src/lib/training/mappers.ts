@@ -1,8 +1,52 @@
 import type {
   EmployeeTrainingModule,
+  TrainingProgram,
+  TrainingProgramStatus,
   TrainingQuestionPublic,
   TrainingModuleSection,
 } from '@/types';
+import { resolveTrainingContentLanguage } from './content-language';
+
+/**
+ * Mapea una fila de `training_programs` al tipo de dominio `TrainingProgram`.
+ *
+ * `contentLanguage` se normaliza con `resolveTrainingContentLanguage`: la
+ * columna es `NOT NULL DEFAULT 'es'`, pero una fila leída por un despliegue que
+ * se adelantó a la migración llega sin la clave, y un valor fuera de la unión
+ * (`'fr'`, un número, un objeto) nunca debe propagarse al tipo de dominio ni a
+ * las directivas de prompt. Ambos casos caen a `'es'`.
+ */
+export function mapTrainingProgram(
+  row: Record<string, unknown>
+): TrainingProgram {
+  return {
+    id: String(row.id ?? ''),
+    orgId: String(row.org_id ?? ''),
+    roleId: typeof row.role_id === 'string' ? row.role_id : undefined,
+    title: String(row.title ?? ''),
+    description:
+      typeof row.description === 'string' ? row.description : undefined,
+    isDefault: typeof row.is_default === 'boolean' ? row.is_default : false,
+    welcomeMessage:
+      typeof row.welcome_message === 'string' ? row.welcome_message : undefined,
+    aiPersonality:
+      typeof row.ai_personality === 'string' && row.ai_personality.length > 0
+        ? row.ai_personality
+        : 'friendly_mentor',
+    contentLanguage: resolveTrainingContentLanguage(row.content_language),
+    status:
+      typeof row.status === 'string'
+        ? (row.status as TrainingProgramStatus)
+        : 'draft',
+    version: typeof row.version === 'number' ? row.version : 1,
+    passingScore:
+      typeof row.passing_score === 'number' ? row.passing_score : 70,
+    publishedAt:
+      typeof row.published_at === 'string' ? row.published_at : undefined,
+    createdAt: String(row.created_at ?? ''),
+    updatedAt: String(row.updated_at ?? ''),
+  };
+}
 
 /**
  * Mapea una fila de la base de datos de training_modules al tipo público

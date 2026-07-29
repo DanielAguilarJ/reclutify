@@ -1618,6 +1618,7 @@ export type Database = {
       training_programs: {
         Row: {
           ai_personality: string | null
+          content_language: string
           created_at: string | null
           description: string | null
           id: string
@@ -1634,6 +1635,7 @@ export type Database = {
         }
         Insert: {
           ai_personality?: string | null
+          content_language?: string
           created_at?: string | null
           description?: string | null
           id?: string
@@ -1650,6 +1652,7 @@ export type Database = {
         }
         Update: {
           ai_personality?: string | null
+          content_language?: string
           created_at?: string | null
           description?: string | null
           id?: string

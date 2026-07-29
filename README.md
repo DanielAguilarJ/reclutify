@@ -37,6 +37,8 @@ Plataforma SaaS de reclutamiento con inteligencia artificial. Conduce entrevista
 4. **Run database migrations:**
    Apply the Supabase migrations in `supabase/migrations/` to your Supabase project.
 
+   > Training Center: see [`docs/training-center-operations.md`](docs/training-center-operations.md) for the migration order, the environment diagnostics endpoint, and the risk warning on the consolidated repair migration.
+
 5. **Start the development server:**
    ```bash
    npm run dev
@@ -105,6 +107,14 @@ See [`.env.example`](.env.example) for a complete list of required environment v
 - **Cloudflare R2** — Video storage
 - **Resend / Brevo** — Email notifications
 - **PostHog** — Privacy-first analytics
+
+---
+
+## 📚 Docs
+
+| Document | Description |
+|----------|-------------|
+| [`docs/training-center-operations.md`](docs/training-center-operations.md) | Training Center runbook: environment diagnostics, migration order, upload flow and manual verification checklist |
 
 ---
 

@@ -6,6 +6,10 @@ import {
   completeTrainingModuleRpcResultSchema,
 } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import {
+  findTrainingRpcErrorIdentifier,
+  resolveTrainingRpcError,
+} from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -43,42 +47,22 @@ export async function POST(req: NextRequest) {
         rpcError
       );
 
-      if (
-        rpcError.message?.includes(
-          'module_requires_evaluation'
-        )
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              'Module requires evaluation and cannot be completed directly',
-          },
-          { status: 409 }
-        );
-      }
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
 
-      if (
-        rpcError.message?.includes(
-          'module_not_available'
-        )
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              'Module is not available for completion',
-          },
-          { status: 409 }
-        );
-      }
+      if (resolved) {
+        // `module_not_available` lo comparten esta ruta y start-module. Allí el
+        // texto genérico del catálogo es exacto; aquí el mensaje precisa qué
+        // acción quedó bloqueada ("for completion"), información que el cliente
+        // perdería con el genérico. Se conserva solo el texto: el
+        // reconocimiento del identificador ya está centralizado en el catálogo.
+        const message =
+          findTrainingRpcErrorIdentifier(rpcError) === 'module_not_available'
+            ? 'Module is not available for completion'
+            : resolved.message;
 
-      if (
-        rpcError.message?.includes(
-          'module_not_assigned'
-        )
-      ) {
         return NextResponse.json(
-          { error: 'Module not found or not assigned' },
-          { status: 404 }
+          { error: message },
+          { status: resolved.status }
         );
       }
 

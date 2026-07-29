@@ -362,6 +362,36 @@ export const trainingDocumentUploadMetadataSchema = z
   })
   .strict();
 
+// Cuerpo de `POST /api/training/documents/upload-url`. `fileName` y `fileSize`
+// son lo que el navegador *declara* antes de subir el archivo: sirven para
+// rechazar pronto y para construir la ruta de destino, no como validación
+// definitiva. El tamaño y el tipo reales se revalidan sobre los bytes en
+// `processTrainingDocument` tras la descarga.
+export const trainingDocumentUploadUrlSchema = z
+  .object({
+    programId: z.string().uuid(),
+    scope: z.enum(['role', 'organization']),
+    fileName: z.string().trim().min(1).max(500),
+    fileSize: z.number().int().positive(),
+  })
+  .strict();
+
+// Cuerpo de `POST /api/training/documents/process`. Todos estos campos vienen
+// del cliente, incluido `storagePath`, así que ninguno es de fiar por sí solo:
+// el esquema solo garantiza la *forma*. La ruta reconstruye la ruta esperada a
+// partir del programa (`org_id`, `role_id`) y compara, de modo que un
+// `storagePath` que apunte a otra organización se rechaza antes de descargar
+// nada. El tamaño y el tipo reales se validan sobre los bytes descargados.
+export const trainingDocumentProcessSchema = z
+  .object({
+    programId: z.string().uuid(),
+    scope: z.enum(['role', 'organization']),
+    documentId: z.string().uuid(),
+    storagePath: z.string().trim().min(1).max(1_000),
+    fileName: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 // ─── Schemas nuevos — respuestas de IA ───
 
 export const documentAiAnalysisSchema = z

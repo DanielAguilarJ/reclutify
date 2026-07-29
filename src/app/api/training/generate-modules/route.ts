@@ -5,6 +5,7 @@ import {
   generatedTrainingModulesSchema,
 } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -68,10 +69,13 @@ export async function POST(req: NextRequest) {
 
     const programDocs = filteredAssocs.slice(0, 20);
 
+    // Precondición de estado, no petición malformada: el contrato de la ruta
+    // (diseño, sección 7) fija `409` para "sin documentos ready", igual que el
+    // resto de guards de estado de este módulo (Requisito 5.1).
     if (programDocs.length === 0) {
       return NextResponse.json(
         { error: 'No ready documents found. Please upload and process documents first.' },
-        { status: 400 }
+        { status: 409 }
       );
     }
 
@@ -292,31 +296,12 @@ Create the training modules using only the informational content inside the deli
         rpcError
       );
 
-      if (rpcError.message?.includes('only_draft_programs_can_replace_modules')) {
-        return NextResponse.json(
-          { error: 'Create a new program version before regenerating modules' },
-          { status: 409 }
-        );
-      }
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
 
-      if (rpcError.message?.includes('program_modules_are_in_use')) {
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Modules cannot be regenerated while employees are in training' },
-          { status: 409 }
-        );
-      }
-
-      if (rpcError.message?.includes('training_program_not_found')) {
-        return NextResponse.json(
-          { error: 'Training program not found' },
-          { status: 404 }
-        );
-      }
-
-      if (rpcError.message?.includes('forbidden')) {
-        return NextResponse.json(
-          { error: 'Forbidden' },
-          { status: 403 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

@@ -9,6 +9,10 @@ import {
   persistedTrainingMessageSchema,
 } from '@/lib/training/contracts';
 import { validateChatCitations, CitationSource } from '@/lib/training/documents';
+import {
+  findTrainingRpcErrorIdentifier,
+  resolveTrainingRpcError,
+} from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -672,7 +676,15 @@ You MUST respond with a single valid JSON block only.
     // de dejar la conversación muerta para siempre, la rotamos: cerramos la sesión
     // llena y abrimos una nueva, sembrada con los últimos mensajes para no perder
     // continuidad visible, y reintentamos guardar el turno actual ahí.
-    if (appendError?.message?.includes('training_session_message_limit_reached')) {
+    //
+    // El identificador se reconoce con el catálogo compartido en lugar de un
+    // `includes` sobre el texto: PostgREST envuelve el mensaje de formas
+    // distintas (`'exception: ...'`) y el catálogo ya normaliza esos envoltorios
+    // (diseño, sección 6). La rotación en sí no cambia.
+    if (
+      findTrainingRpcErrorIdentifier(appendError) ===
+      'training_session_message_limit_reached'
+    ) {
       const rotatedAt = new Date().toISOString();
 
       await admin
@@ -714,6 +726,17 @@ You MUST respond with a single valid JSON block only.
 
     if (appendError) {
       console.error('[training/chat] Failed to persist messages:', appendError);
+
+      // Si la rotación no bastó (p. ej. la sesión se cerró en paralelo y la RPC
+      // lanzó `active_session_not_found`, o el lote volvió a exceder el límite),
+      // el catálogo da un motivo concreto en lugar del 500 opaco. Un error no
+      // catalogado conserva el fallback actual.
+      const resolved = resolveTrainingRpcError(appendError, 'en');
+
+      if (resolved) {
+        return NextResponse.json({ error: resolved.message }, { status: resolved.status });
+      }
+
       return NextResponse.json(
         { error: 'Could not save the training conversation' },
         { status: 500 }

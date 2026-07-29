@@ -4,6 +4,16 @@ import { createHash } from 'node:crypto';
 
 export const MAX_TRAINING_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
 
+/**
+ * Bucket privado donde viven los documentos de capacitación.
+ *
+ * Vive aquí y no en cada ruta porque los tres transportes que tocan el bucket
+ * (subida heredada, emisión de URL firmada y procesamiento) tienen que coincidir
+ * exactamente: una discrepancia en el nombre se manifestaría como un fallo de
+ * storage difícil de diagnosticar.
+ */
+export const TRAINING_DOCUMENTS_BUCKET = 'training-documents';
+
 export const ALLOWED_TRAINING_MIME_TYPES = new Set([
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -74,6 +84,55 @@ export function sanitizeTrainingFileName(name: string): string {
     .slice(0, 150);
 
   return normalized || 'document';
+}
+
+/**
+ * Ruta canónica de un documento dentro del bucket:
+ * `{orgId}/{scope|roleId}/{documentId}/{nombreSaneado}` (Requisito 3.1).
+ *
+ * POR QUÉ ES UNA FUNCIÓN COMPARTIDA
+ * ---------------------------------
+ * Tres sitios necesitan esta derivación y tienen que producir el mismo
+ * resultado bit a bit:
+ *
+ * 1. `POST /api/training/documents` (heredado) la usa para subir el objeto.
+ * 2. `POST /api/training/documents/upload-url` la usa para firmar la URL de
+ *    subida directa.
+ * 3. `POST /api/training/documents/process` la usa para **verificar** que la
+ *    ruta que declara el cliente es la que el servidor habría emitido.
+ *
+ * El tercer uso es de seguridad, no de conveniencia: si la derivación se
+ * duplicara y una copia divergiera, la comprobación del paso 3 dejaría de
+ * detectar rutas ajenas. Todos los segmentos provienen del servidor —`orgId` y
+ * `roleId` del programa, `documentId` generado al firmar— y el único dato del
+ * cliente, `fileName`, se sanea aquí, así que no puede introducir separadores
+ * ni escapar del prefijo de la organización.
+ */
+export function buildTrainingDocumentStoragePath(input: {
+  orgId: string;
+  scope: 'role' | 'organization';
+  roleId: string | null;
+  documentId: string;
+  fileName: string;
+}): string {
+  const { orgId, scope, roleId, documentId, fileName } = input;
+
+  if (scope === 'role' && !roleId) {
+    // Los llamadores rechazan este caso con 400 antes de llegar aquí. Si algo
+    // se cuela, es preferible fallar que construir una ruta con `null` dentro.
+    throw new Error(
+      'buildTrainingDocumentStoragePath: scope "role" requires a roleId',
+    );
+  }
+
+  const scopeSegment = scope === 'organization' ? 'organization' : roleId;
+
+  return [
+    orgId,
+    scopeSegment,
+    documentId,
+    sanitizeTrainingFileName(fileName),
+  ].join('/');
 }
 
 export function sha256(buffer: Buffer): string {

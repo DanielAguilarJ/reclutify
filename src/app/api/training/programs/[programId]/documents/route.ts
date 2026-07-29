@@ -7,6 +7,7 @@ import {
   detachTrainingDocumentQuerySchema,
 } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -250,6 +251,19 @@ export async function POST(
 
     if (assocError) {
       console.error('[API Program Documents] Association failed:', assocError);
+
+      // La asociación puede rebotar con una excepción del esquema (por ejemplo
+      // un guard de programa ya publicado). El catálogo la traduce; cualquier
+      // otro fallo conserva el 500 genérico de esta ruta.
+      const resolved = resolveTrainingRpcError(assocError, 'en');
+
+      if (resolved) {
+        return NextResponse.json(
+          { error: resolved.message },
+          { status: resolved.status }
+        );
+      }
+
       return NextResponse.json(
         { error: 'Could not associate document' },
         { status: 500 }
@@ -299,12 +313,16 @@ export async function DELETE(
 
     if (rpcError) {
       console.error('[API Program Documents] Detach RPC failed:', rpcError);
-      if (rpcError.message?.includes('training_document_in_use')) {
+
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
+
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Document is used by one or more modules. Remove it from those modules first.' },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
+
       return NextResponse.json({ error: 'Failed to detach document' }, { status: 500 });
     }
 

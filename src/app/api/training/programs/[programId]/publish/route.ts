@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -24,45 +25,17 @@ export async function POST(
     if (error) {
       console.error('[API Program Publish] RPC failed:', error);
 
-      if (error.message?.includes('only_draft_programs_can_be_published')) {
-        return NextResponse.json(
-          { error: 'Only draft programs can be published' },
-          { status: 409 }
-        );
-      }
+      // El catálogo cubre `only_draft_programs_can_be_published`, `forbidden`,
+      // `training_program_not_found`, `training_program_has_no_role`,
+      // `training_program_has_no_modules` y
+      // `training_program_has_unready_documents` con el mismo status y texto
+      // que esta ruta devolvía de forma manual (Requisitos 6.1, 6.3).
+      const resolved = resolveTrainingRpcError(error, 'en');
 
-      if (error.message?.includes('forbidden')) {
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Forbidden' },
-          { status: 403 }
-        );
-      }
-
-      if (error.message?.includes('training_program_not_found')) {
-        return NextResponse.json(
-          { error: 'Training program not found' },
-          { status: 404 }
-        );
-      }
-
-      if (error.message?.includes('training_program_has_no_role')) {
-        return NextResponse.json(
-          { error: 'Assign a role to the program before publishing' },
-          { status: 409 }
-        );
-      }
-
-      if (error.message?.includes('training_program_has_no_modules')) {
-        return NextResponse.json(
-          { error: 'Add at least one module before publishing' },
-          { status: 409 }
-        );
-      }
-
-      if (error.message?.includes('training_program_has_unready_documents')) {
-        return NextResponse.json(
-          { error: 'All required documents must finish processing before publishing' },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

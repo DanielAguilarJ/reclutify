@@ -51,9 +51,19 @@ import {
  *    es que un objeto rechazado **no se queda en el bucket**, porque nadie más
  *    va a limpiarlo: la fila nunca existió y el navegador ya terminó su parte.
  *
- * Un archivo por petición: la duración es predecible (`maxDuration = 60`, con
- * el análisis de IA acotado a 45 s dentro de `processTrainingDocument`) y el
- * fallo de un archivo no arrastra a los demás del lote.
+ * Un archivo por petición: la duración es predecible y el fallo de un archivo
+ * no arrastra a los demás del lote.
+ *
+ * PRESUPUESTO DE TIEMPO — `maxDuration` no basta
+ * ----------------------------------------------
+ * `maxDuration = 60` es una *petición* a la plataforma: hay planes que no la
+ * conceden y cortan la función a su techo **fuera** del handler, sin log de esta
+ * ruta y sin respuesta útil. Por eso el análisis con IA no se limita a un
+ * `AbortController` por llamada: `analyzeTrainingDocumentText` administra un
+ * presupuesto de tiempo total (`TRAINING_ANALYSIS_TIME_BUDGET_MS`, 35 s) que
+ * deja margen para la descarga, la extracción de texto y las inserciones, y
+ * degrada a análisis parcial marcado si se agota. Ver
+ * `@/lib/training/document-analysis`.
  */
 
 export const runtime = 'nodejs';

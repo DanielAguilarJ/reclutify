@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/training/documents/process/route';
 import {
@@ -450,5 +450,120 @@ describe('Process endpoint document status (/api/training/documents/process)', (
     expect(body.document.status).toBe('ready');
     expect(mockInsertChunks).toHaveBeenCalled();
     expect(mockStorageRemove).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Parcialidad del análisis con IA: visible y no bloqueante
+// ============================================================
+
+describe('Process endpoint partial AI analysis (/api/training/documents/process)', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    delete process.env.TRAINING_ANALYSIS_CHAR_BUDGET;
+    process.env.OPENROUTER_API_KEY = '';
+  });
+
+  it('saves the document and states that the analysis only covers part of it', async () => {
+    // Un texto que no cabe en una pasada. El presupuesto por pasada se baja por
+    // entorno para no tener que fabricar 90.000 caracteres en la prueba.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+    process.env.TRAINING_ANALYSIS_CHAR_BUDGET = '2000';
+
+    const paragraph =
+      'La revisión del equipo de protección personal se hace antes de cada turno. ' +
+      'El supervisor registra la lectura de presión en la bitácora de la planta.\n\n';
+    const longText = paragraph.repeat(50); // ~7.500 caracteres, varios bloques.
+
+    respondWithBytes([longText]);
+
+    // Uno de los bloques falla en la red: el análisis cubre el resto y el
+    // resultado tiene que decirlo, en vez de pasar por completo.
+    const mockFetch = vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { messages: Array<{ content: string }> };
+      const content = body.messages[1].content;
+
+      if (content.includes('This is part 2 of')) {
+        throw new Error('network down');
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Resumen del contenido analizado.',
+                  topics: [
+                    { title: 'Seguridad', description: 'Normas del turno', keyPoints: ['Casco'] },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+      };
+    });
+
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await POST(buildRequest(processBody({ fileName: 'manual-largo.txt' })));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    // El documento se guarda igual: la parcialidad del análisis no bloquea.
+    expect(body.document.status).toBe('ready');
+    expect(mockInsertDoc).toHaveBeenCalled();
+    expect(mockInsertChunks).toHaveBeenCalled();
+    expect(mockInsertAssoc).toHaveBeenCalled();
+    expect(mockStorageRemove).not.toHaveBeenCalled();
+
+    // Y la parcialidad consta en los dos campos que el administrador lee.
+    expect(body.document.aiSummary).toContain('ANÁLISIS PARCIAL');
+    expect(body.document.aiSummary).toContain('Resumen del contenido analizado.');
+    expect(body.document.processingError).toContain('Análisis de IA parcial');
+    expect(body.document.processingError).toMatch(/\d+ de \d+ bloques/);
+  });
+
+  it('does not touch ai_summary when the whole text fits in one pass', async () => {
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+
+    const mockFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: 'Resumen completo del documento.',
+                topics: [],
+              }),
+            },
+          },
+        ],
+      }),
+    }));
+
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await POST(buildRequest(processBody({ fileName: 'manual.txt' })));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Una sola llamada y ningún aviso: el caso normal no cambia.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(body.document.aiSummary).toBe('Resumen completo del documento.');
+    expect(body.document.processingError).toBeUndefined();
   });
 });

@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 vi.mock('server-only', () => ({}));
 
 import { GET } from '@/app/api/training/diagnostics/route';
+import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
 import {
   TRAINING_DOCUMENTS_BUCKET,
   TRAINING_ENVIRONMENT_FUNCTIONS,
@@ -180,6 +181,7 @@ const ENV_KEYS = [
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
   'OPENROUTER_API_KEY',
+  'TRAINING_AI_MODEL',
 ] as const;
 
 /**
@@ -220,6 +222,9 @@ describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'anon-key';
     process.env.SUPABASE_SERVICE_ROLE_KEY = FAKE_SERVICE_ROLE_KEY;
     process.env.OPENROUTER_API_KEY = 'openrouter-key';
+    // Sin variable de modelo: el entorno sano usa el defecto del proyecto, que
+    // es un desenlace correcto y no debe contar como advertencia.
+    delete process.env.TRAINING_AI_MODEL;
 
     // Camino preferente: la RPC de reporte existe y el entorno está sano.
     mockRpc.mockImplementation(async (name: string) => {
@@ -564,5 +569,105 @@ describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain(FAKE_ANON_JWT);
     expect(serialized).not.toContain(FAKE_ANON_JWT.slice(0, 12));
+  });
+
+  // ============================================================
+  // Los tres desenlaces de TRAINING_AI_MODEL
+  //
+  // El diagnóstico no comprobaba esta variable: un identificador mal escrito no
+  // salía en el panel y solo aparecía como un 404 de OpenRouter en los logs del
+  // servidor. La verificación es de FORMA, sin red: el catálogo de OpenRouter no
+  // se puede consultar desde aquí.
+  // ============================================================
+
+  it('reports the default model as ok when TRAINING_AI_MODEL is not set', async () => {
+    delete process.env.TRAINING_AI_MODEL;
+
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.TRAINING_AI_MODEL');
+    expect(check.status).toBe('ok');
+    // No basta con no fallar: el reporte tiene que decir qué modelo se usa.
+    expect(check.detail).toContain(DEFAULT_AI_MODEL);
+    expect(body.env.TRAINING_AI_MODEL).toBe(true);
+    expect(body.summary.warnings).toBe(0);
+    expect(body.summary.failed).toBe(0);
+    expect(body.ok).toBe(true);
+  });
+
+  it('reports the default model as ok when TRAINING_AI_MODEL is empty', async () => {
+    // `TRAINING_AI_MODEL=` en el entorno: la forma que invita `.env.example` y la
+    // que deja una variable borrada a medias en el panel del despliegue.
+    process.env.TRAINING_AI_MODEL = '   ';
+
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.TRAINING_AI_MODEL');
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain(DEFAULT_AI_MODEL);
+    expect(body.env.TRAINING_AI_MODEL).toBe(true);
+    expect(body.summary.warnings).toBe(0);
+    expect(body.ok).toBe(true);
+  });
+
+  it('reports a well-shaped configured model as ok, naming the model in use', async () => {
+    process.env.TRAINING_AI_MODEL = 'google/gemini-2.5-flash';
+
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.TRAINING_AI_MODEL');
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain('google/gemini-2.5-flash');
+    // El modelo configurado manda: el reporte no puede anunciar el defecto.
+    expect(check.detail).not.toContain(DEFAULT_AI_MODEL);
+    expect(body.env.TRAINING_AI_MODEL).toBe(true);
+    expect(body.summary.warnings).toBe(0);
+    expect(body.ok).toBe(true);
+  });
+
+  it('flags a malformed TRAINING_AI_MODEL as a warning with actionable remediation', async () => {
+    // Los tres errores de dedo que sí se pueden afirmar sin red: falta el
+    // proveedor, hay espacios internos, hay caracteres imposibles en un slug.
+    // Ninguno comparte texto con el identificador por defecto, porque la última
+    // aserción exige que el valor no aparezca en la respuesta y la remediación
+    // sí nombra el defecto como ejemplo.
+    const malformedValues = [
+      'gpt-4o-mini',
+      'openai/gpt 4o mini',
+      '${OPENAI_MODEL}',
+    ];
+
+    for (const value of malformedValues) {
+      process.env.TRAINING_AI_MODEL = value;
+
+      const res = await GET(request(`?orgId=${ORG_ID}`));
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as DiagnosticsBody;
+      const check = findCheck(body, 'env.TRAINING_AI_MODEL');
+
+      expect(check.status, `${value} should be reported as a problem`).toBe(
+        'missing',
+      );
+      // Advertencia, no fallo crítico: rompe todas las rutas de IA y solo esas,
+      // el mismo radio que OPENROUTER_API_KEY ausente.
+      expect(check.severity).toBe('warning');
+      expect(check.remediation).toContain('proveedor/modelo');
+      expect(check.remediation).toContain(DEFAULT_AI_MODEL);
+      // Distinguible de «no está configurada»: la variable sí está definida.
+      expect(check.detail).toContain('definida');
+
+      expect(body.env.TRAINING_AI_MODEL).toBe(false);
+      expect(body.summary.warnings).toBe(1);
+      expect(body.summary.failed).toBe(0);
+      expect(body.ok).toBe(true);
+
+      // Un valor sin forma de identificador puede ser cualquier cosa (incluida
+      // una clave pegada en la variable equivocada), así que no se devuelve.
+      expect(JSON.stringify(body)).not.toContain(value);
+    }
   });
 });

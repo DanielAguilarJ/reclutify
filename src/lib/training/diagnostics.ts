@@ -1,5 +1,10 @@
 import 'server-only';
 
+import {
+  DEFAULT_AI_MODEL,
+  TRAINING_AI_MODEL_ENV,
+  resolveTrainingAiModel,
+} from '@/lib/ai-model';
 import { classifySupabaseKeyShape, type SupabaseKeyShape } from '@/lib/supabase-key';
 import type { createAdminClient } from '@/utils/supabase/admin';
 
@@ -91,9 +96,14 @@ export interface TrainingDiagnosticsResult {
   ok: boolean;
   source: TrainingDiagnosticsSource;
   /**
-   * Por variable, si es utilizable. Nunca contiene valores. Para
-   * `SUPABASE_SERVICE_ROLE_KEY` es `false` también cuando está definida con una
-   * forma inválida, para no contradecir a su check.
+   * Por variable, si es utilizable. Nunca contiene valores. Dos variables no se
+   * limitan a la presencia, para no contradecir a sus checks:
+   *
+   * - `SUPABASE_SERVICE_ROLE_KEY` es `false` también cuando está definida con
+   *   una forma inválida.
+   * - `TRAINING_AI_MODEL` es `true` cuando está ausente (se usa el modelo por
+   *   defecto, que sí es utilizable) y `false` solo cuando su valor no tiene
+   *   forma de identificador de modelo.
    */
   env: Record<string, boolean>;
   checks: TrainingCheck[];
@@ -270,14 +280,21 @@ export const TRAINING_SCHEMA_CHECKS: readonly TrainingCheckDefinition[] = [
 export const SERVICE_ROLE_KEY_ENV = 'SUPABASE_SERVICE_ROLE_KEY';
 
 /**
- * De casi todas las variables solo se comprueba la presencia. El valor NUNCA
- * llega a la respuesta: ni entero, ni en fragmentos, ni como longitud o prefijo.
+ * De las variables que son claves solo se comprueba la presencia, y su valor
+ * NUNCA llega a la respuesta: ni entero, ni en fragmentos, ni como longitud o
+ * prefijo.
  *
- * `SUPABASE_SERVICE_ROLE_KEY` es la excepción y se inspecciona además su FORMA
- * (ver más abajo), porque comprobar la presencia dejaba pasar justo el fallo que
- * este diagnóstico existe para atrapar: con el literal `service_role` como valor
- * el check decía `ok` mientras cada operación de administración moría con
- * `401 Invalid API key`.
+ * Dos variables se inspeccionan además por FORMA (ver más abajo), porque
+ * comprobar la presencia dejaba pasar justo los fallos que este diagnóstico
+ * existe para atrapar:
+ *
+ * - `SUPABASE_SERVICE_ROLE_KEY`: con el literal `service_role` como valor el
+ *   check decía `ok` mientras cada operación de administración moría con
+ *   `401 Invalid API key`.
+ * - `TRAINING_AI_MODEL`: no se comprobaba en absoluto. Un identificador mal
+ *   escrito no aparecía en el panel y solo se manifestaba como un `404` de
+ *   OpenRouter en los logs del servidor, así que desde la interfaz la IA
+ *   «no funcionaba» sin motivo visible.
  */
 export const TRAINING_ENV_CHECKS: readonly TrainingCheckDefinition[] = [
   {
@@ -319,6 +336,33 @@ export const TRAINING_ENV_CHECKS: readonly TrainingCheckDefinition[] = [
     kind: 'env',
     key: 'OPENROUTER_API_KEY',
   },
+  {
+    // Por qué `warning` y no `critical` (ver `buildTrainingAiModelCheck` para
+    // los tres desenlaces): un identificador mal escrito rompe TODAS las rutas
+    // de IA, y solo esas. El radio de daño es el mismo que el de
+    // `OPENROUTER_API_KEY` ausente, que ya es `warning` por los Requisitos 3.7
+    // y 10.3: se contrata, se asigna, se estudia, se califican las preguntas
+    // cerradas y se publica igual. Marcarlo `critical` pondría `ok` en `false` y
+    // afirmaría que el entorno de capacitación no es usable, que es falso, y lo
+    // igualaría a que falte la clave de servicio, que sí tumba cada operación
+    // de administración. Un panel que exagera la severidad se acaba ignorando.
+    //
+    // Lo que NO es equivalente a que falte la clave: sin clave el código lo sabe
+    // y degrada a propósito (responde 503 «AI service not configured»); con un
+    // identificador inválido el código cree estar configurado y muere en un 404
+    // de OpenRouter que nadie relaciona con esta variable. Esa asimetría se
+    // paga en el diagnóstico —que es lo que arregla este check— y en la
+    // remediación, no en la severidad.
+    id: 'env.TRAINING_AI_MODEL',
+    label: 'Variable TRAINING_AI_MODEL',
+    severity: 'warning',
+    // Única remediación del único desenlace que falla (forma inválida). La
+    // ausencia y la forma válida son `ok` y no muestran remediación.
+    remediation:
+      `TRAINING_AI_MODEL debe tener la forma proveedor/modelo, como ${DEFAULT_AI_MODEL}. Corregir el valor en el entorno del despliegue —o borrar la variable para volver al modelo por defecto— y volver a desplegar`,
+    kind: 'env',
+    key: TRAINING_AI_MODEL_ENV,
+  },
 ];
 
 function isEnvVariablePresent(name: string): boolean {
@@ -327,36 +371,118 @@ function isEnvVariablePresent(name: string): boolean {
 }
 
 /**
- * Lo que se sabe del entorno sin mirar ningún valor.
+ * Desenlaces de `TRAINING_AI_MODEL`.
+ *
+ * - `default`: ausente, vacía o de solo espacios. `resolveTrainingAiModel` cae
+ *   a `DEFAULT_AI_MODEL`, así que el entorno es correcto.
+ * - `valid`: el valor tiene forma de identificador de OpenRouter.
+ * - `invalid`: el valor no puede ser un identificador, así que toda llamada de
+ *   IA responde 404.
+ */
+export type TrainingAiModelShape = 'default' | 'valid' | 'invalid';
+
+export interface TrainingAiModelStatus {
+  shape: TrainingAiModelShape;
+  /**
+   * Modelo que las rutas de IA enviarán de verdad, resuelto con la MISMA
+   * función que ellas (`resolveTrainingAiModel`). Con `shape: 'invalid'` es el
+   * valor inválido tal cual: la resolución no inventa un respaldo, y por eso el
+   * 404 llega hasta el usuario.
+   */
+  model: string;
+}
+
+/**
+ * FORMA de un identificador de modelo de OpenRouter: `proveedor/modelo`, con
+ * una variante opcional tras `:` (`…-instruct:free`, `…-sonnet:thinking`).
+ *
+ * ALCANCE: SOLO FORMA. El diagnóstico no hace red, así que no puede preguntarle
+ * al catálogo de OpenRouter si el modelo existe: `google/gemini-9.9-turbo` tiene
+ * forma perfecta y también da 404. Lo que sí se puede afirmar sin red es que un
+ * valor sin `/`, con espacios internos o con caracteres imposibles en un slug
+ * NUNCA es un identificador, y ese es justo el error de dedo que se persigue.
+ *
+ * Es deliberadamente permisiva con los separadores interiores (`gpt-4o-2024-08-06`,
+ * `qwen/qwen-2.5-72b-instruct`, `openrouter/auto`): un falso positivo aquí
+ * gritaría «configuración rota» sobre un modelo que funciona, que es peor que
+ * dejar pasar un valor raro, el cual de todos modos se manifestará como 404.
+ */
+const AI_MODEL_ID_SHAPE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i;
+
+/**
+ * Clasifica `TRAINING_AI_MODEL` por su forma, sin red y sin lanzar.
+ *
+ * Se apoya en `resolveTrainingAiModel` para no duplicar la regla de «vacía o
+ * solo espacios cuenta como ausente», que es la que provocó el fallo parcial
+ * que documenta `src/lib/ai-model.ts`.
+ */
+export function classifyTrainingAiModel(
+  rawValue: string | undefined = process.env[TRAINING_AI_MODEL_ENV],
+): TrainingAiModelStatus {
+  const model = resolveTrainingAiModel(rawValue);
+  const configured = typeof rawValue === 'string' ? rawValue.trim() : '';
+
+  if (configured.length === 0) {
+    return { shape: 'default', model };
+  }
+
+  return {
+    shape: AI_MODEL_ID_SHAPE.test(configured) ? 'valid' : 'invalid',
+    model,
+  };
+}
+
+/**
+ * Lo que se sabe del entorno sin mirar el valor de ninguna clave.
  *
  * - `usable`: por variable, si sirve. Para `SUPABASE_SERVICE_ROLE_KEY` «sirve»
- *   exige forma válida, no solo presencia; así el mapa nunca contradice al
+ *   exige forma válida, no solo presencia, y para `TRAINING_AI_MODEL` la
+ *   ausencia también sirve (se usa el defecto); así el mapa nunca contradice al
  *   check correspondiente.
  * - `serviceRoleKeyShape`: etiqueta de una enumeración cerrada. Es la única
- *   información que sale de la inspección del valor, y con ella se elige la
+ *   información que sale de la inspección de la clave, y con ella se elige la
  *   remediación sin filtrar nada.
+ * - `trainingAiModel`: forma y modelo resultante. Aquí sí viaja el valor, porque
+ *   un identificador de modelo no es un secreto.
  */
 export interface TrainingEnvSnapshot {
   usable: Record<string, boolean>;
   serviceRoleKeyShape: SupabaseKeyShape;
+  /**
+   * Forma de `TRAINING_AI_MODEL` y modelo resultante. A diferencia de las
+   * claves, el identificador del modelo NO es un secreto (ver
+   * `buildTrainingAiModelCheck`), así que aquí sí viaja el valor.
+   */
+  trainingAiModel: TrainingAiModelStatus;
 }
 
-/** Estado del entorno, sin exponer ningún valor. */
+/** Estado del entorno, sin exponer ninguna clave. */
 export function collectEnvSnapshot(): TrainingEnvSnapshot {
   const serviceRoleKeyShape = classifySupabaseKeyShape(
     process.env[SERVICE_ROLE_KEY_ENV],
   );
 
+  const trainingAiModel = classifyTrainingAiModel();
+
   const usable: Record<string, boolean> = {};
 
   for (const check of TRAINING_ENV_CHECKS) {
-    usable[check.key] =
-      check.key === SERVICE_ROLE_KEY_ENV
-        ? serviceRoleKeyShape === 'service-role'
-        : isEnvVariablePresent(check.key);
+    if (check.key === SERVICE_ROLE_KEY_ENV) {
+      usable[check.key] = serviceRoleKeyShape === 'service-role';
+      continue;
+    }
+
+    if (check.key === TRAINING_AI_MODEL_ENV) {
+      // «Utilizable» aquí no es «presente»: sin variable se envía el modelo por
+      // defecto, que funciona. Lo único inutilizable es una forma inválida.
+      usable[check.key] = trainingAiModel.shape !== 'invalid';
+      continue;
+    }
+
+    usable[check.key] = isEnvVariablePresent(check.key);
   }
 
-  return { usable, serviceRoleKeyShape };
+  return { usable, serviceRoleKeyShape, trainingAiModel };
 }
 
 /**
@@ -413,12 +539,71 @@ function buildServiceRoleKeyCheck(
   };
 }
 
+/**
+ * Los tres desenlaces del check del modelo de IA, sobre el mismo modelo de
+ * `status` que el resto del archivo:
+ *
+ * - ausente o vacía → `ok`, informando cuál es el defecto en uso. No es un
+ *   fallo: `resolveTrainingAiModel` cae a `DEFAULT_AI_MODEL` a propósito.
+ * - forma válida    → `ok`, informando qué modelo está en uso.
+ * - forma inválida  → `missing`, con la remediación de la definición.
+ *
+ * `missing` es la etiqueta correcta para la forma inválida por la misma razón
+ * que en la clave de servicio: no hay modelo utilizable y el problema está
+ * determinado. `unknown` significa «no se pudo determinar» y no cuenta en el
+ * resumen, así que escondería justo lo que este check existe para mostrar. Con
+ * `severity: 'warning'`, `missing` suma en `summary.warnings` y no invalida `ok`.
+ *
+ * EL MODELO NO ES UN SECRETO: a diferencia de `SUPABASE_SERVICE_ROLE_KEY`, aquí
+ * el valor SÍ puede salir en la respuesta. Un identificador de modelo es un dato
+ * público —viaja en el cuerpo de cada petición a OpenRouter y está escrito en el
+ * código como `DEFAULT_AI_MODEL`—, no hay nada que filtrar y verlo es lo que
+ * hace accionable el reporte. Las reglas de `src/lib/supabase-key.ts` (ni valor,
+ * ni fragmentos, ni longitudes) NO aplican a esta variable.
+ *
+ * Matiz del caso inválido: ahí el valor NO se devuelve. Un valor que no tiene
+ * forma de identificador puede ser cualquier cosa, incluida una clave pegada en
+ * la variable equivocada, y el diagnóstico no va a ser el sitio que la publique.
+ * La remediación ya dice qué forma se espera, que es lo accionable.
+ */
+function buildTrainingAiModelCheck(
+  definition: TrainingCheckDefinition,
+  status: TrainingAiModelStatus,
+): TrainingCheck {
+  if (status.shape === 'default') {
+    return {
+      ...definition,
+      status: 'ok',
+      detail: `Sin configurar: se usa el modelo por defecto ${DEFAULT_AI_MODEL}`,
+    };
+  }
+
+  if (status.shape === 'valid') {
+    return {
+      ...definition,
+      status: 'ok',
+      detail: `Modelo en uso: ${status.model}`,
+    };
+  }
+
+  return {
+    ...definition,
+    status: 'missing',
+    detail:
+      'La variable está definida, pero su valor no tiene la forma proveedor/modelo: se envía tal cual y OpenRouter responde 404 en todas las rutas de IA',
+  };
+}
+
 export function buildEnvChecks(
   snapshot: TrainingEnvSnapshot = collectEnvSnapshot(),
 ): TrainingCheck[] {
   return TRAINING_ENV_CHECKS.map(definition => {
     if (definition.key === SERVICE_ROLE_KEY_ENV) {
       return buildServiceRoleKeyCheck(definition, snapshot.serviceRoleKeyShape);
+    }
+
+    if (definition.key === TRAINING_AI_MODEL_ENV) {
+      return buildTrainingAiModelCheck(definition, snapshot.trainingAiModel);
     }
 
     return {

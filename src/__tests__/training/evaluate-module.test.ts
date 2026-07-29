@@ -108,19 +108,10 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       ],
     };
 
-    mockRpc.mockResolvedValueOnce({
-      data: {
-        score: 0,
-        passed: false,
-        passing_score: 70,
-        attempts: 1,
-        overall_progress: 10,
-        overall_score: 0,
-        feedback: { details: [] },
-      },
-      error: null,
-    });
-
+    // Sin mock de la RPC a propósito: la calificación se rechaza antes de
+    // finalizar nada, y la última aserción lo comprueba. El mock que había aquí
+    // era inalcanzable y además no cumplía `trainingEvaluationRpcResultSchema`,
+    // así que si algún día se alcanzara, mentiría.
     const mockAiResponse = {
       choices: [
         {
@@ -153,6 +144,8 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     expect(res.status).toBe(502);
     const data = await res.json() as Record<string, unknown>;
     expect(data.error).toBe('AI grading returned inconsistent question indexes');
+    // Una calificación inconsistente no se persiste: la evaluación no se cierra.
+    expect(mockRpc).not.toHaveBeenCalled();
   });
 
   it('returns 502 if AI returns missing indexes', async () => {
@@ -474,6 +467,10 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       json: async () => mockAiResponse,
     });
 
+    // `trainingEvaluationRpcResultSchema` es `.strict()`. Este mock traía además
+    // una clave `feedback`, así que la ruta respondía 500 y la prueba pasaba
+    // igual porque la llamada a OpenRouter ocurre ANTES de esta validación:
+    // afirmaba sobre el prompt de una petición que en realidad fallaba.
     mockRpc.mockResolvedValueOnce({
       data: {
         score: 100,
@@ -482,7 +479,6 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
         attempts: 1,
         overallProgress: 10,
         overallScore: 100,
-        feedback: { details: [] },
       },
       error: null,
     });
@@ -495,7 +491,10 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       }),
     });
 
-    await POST(req);
+    const res = await POST(req);
+
+    // El prompt se afirma sobre una petición que sí terminó bien.
+    expect(res.status).toBe(200);
 
     expect(mockFetch).toHaveBeenCalled();
     const fetchArgs = mockFetch.mock.calls[0];
@@ -556,7 +555,11 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       }),
     });
 
-    await POST(req);
+    const res = await POST(req);
+
+    // Afirmar sobre el prompt sin mirar el status deja pasar una petición que
+    // acabó en 500: la llamada a OpenRouter ocurre antes del resto de la ruta.
+    expect(res.status).toBe(200);
 
     const systemPrompt = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
       .content;
@@ -619,7 +622,8 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
       }),
     });
 
-    await POST(req);
+    const res = await POST(req);
+    expect(res.status).toBe(200);
 
     const systemPrompt = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
       .content;

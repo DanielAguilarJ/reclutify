@@ -22,6 +22,14 @@ export interface EvaluationDetail {
   question: string;
   correct: boolean;
   userAnswer: string;
+  /**
+   * Retroalimentación por pregunta, escrita para el empleado. Para las
+   * preguntas abiertas la produce el modelo al calificar; para las cerradas
+   * viene en la propia pregunta del módulo. Opcional: una pregunta cerrada sin
+   * `explanation` en el módulo no trae ninguna, y entonces la interfaz no
+   * muestra el bloque. Nunca contiene la respuesta correcta.
+   */
+  explanation?: string;
 }
 
 export interface EvaluationFeedback {

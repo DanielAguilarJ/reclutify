@@ -652,6 +652,26 @@ export default function TrainingModulePage({
                             {detail.userAnswer}
                           </span>
                         </p>
+
+                        {/*
+                          Retroalimentación de la pregunta. Es texto generado por
+                          IA (o escrito por quien creó el módulo), así que entra
+                          como hijo de JSX y React lo escapa: nunca
+                          `dangerouslySetInnerHTML`. Se muestra tras fallar
+                          aunque exista reintento; ver la nota de la ruta
+                          `evaluate-module`. Si no hay explicación el bloque no
+                          se renderiza.
+                        */}
+                        {detail.explanation ? (
+                          <div className="mt-2 rounded-lg border border-accent/25 bg-accent-soft p-3">
+                            <p className="text-sm font-medium text-accent">
+                              {copy.evaluation.explanation}
+                            </p>
+                            <p className="mt-1 text-sm text-foreground/70">
+                              {detail.explanation}
+                            </p>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>

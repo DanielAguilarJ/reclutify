@@ -198,6 +198,10 @@ export async function POST(req: NextRequest) {
     }
 
     const openEndedResults: { index: number; correct: boolean }[] = [];
+    // Explicación que el modelo escribe para el empleado, por índice de
+    // pregunta. Se generaba y se descartaba: el empleado fallaba una pregunta
+    // abierta y nunca veía por qué.
+    const openEndedExplanations = new Map<number, string>();
 
     if (openEndedToEvaluate.length > 0) {
       const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -356,6 +360,8 @@ Return exactly:
           index: grading.index,
           correct: grading.correct,
         });
+
+        openEndedExplanations.set(grading.index, grading.explanation);
       }
     }
 
@@ -364,12 +370,39 @@ Return exactly:
     const correctCount = allResults.filter((r) => r.correct).length;
     const score = Math.round((correctCount / questions.length) * 100);
 
-    // 7. Construir feedback público (sin correctAnswer ni explanation)
-    const publicDetails = allResults.map((result) => ({
-      question: questions[result.index]?.question ?? 'Question',
-      correct: result.correct,
-      userAnswer: answers[result.index],
-    }));
+    // 7. Construir feedback público (sin correctAnswer ni answerExpected)
+    //
+    // `explanation` SÍ viaja: es la retroalimentación escrita para el empleado.
+    // Para las preguntas abiertas la escribe el modelo al calificar; para las
+    // cerradas ya viene en la propia pregunta del módulo. Si ninguna de las dos
+    // existe, el campo se omite y la interfaz no muestra nada: aquí no se
+    // inventa texto.
+    //
+    // Reintento: `handleRetryEvaluation` permite volver a intentar la
+    // evaluación tras no alcanzar el mínimo, así que la explicación se muestra
+    // sobre preguntas que el empleado puede repetir. Se acepta a propósito —
+    // ver una explicación después de fallar es el objetivo de la evaluación
+    // formativa, y sin ella el reintento es adivinar. Lo que NO se expone es la
+    // respuesta correcta en crudo (`correctAnswer` nunca sale de aquí, y la
+    // regla 7 del prompt de calificación prohíbe al modelo revelar
+    // `answerExpected` en su explicación).
+    const publicDetails: {
+      question: string;
+      correct: boolean;
+      userAnswer: string;
+      explanation?: string;
+    }[] = allResults.map((result) => {
+      const question = questions[result.index];
+      const explanation =
+        openEndedExplanations.get(result.index) ?? question?.explanation;
+
+      return {
+        question: question?.question ?? 'Question',
+        correct: result.correct,
+        userAnswer: answers[result.index],
+        ...(explanation ? { explanation } : {}),
+      };
+    });
 
     const detailFeedback = {
       score,

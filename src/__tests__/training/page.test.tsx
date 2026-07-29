@@ -322,6 +322,65 @@ describe('TrainingModulePage Component Integrity', () => {
     expect(screen.getByText(/75%/)).toBeInTheDocument();
   });
 
+  it('shows the per-question explanation in the review, and nothing when there is none', async () => {
+    const completeModuleMock = vi.fn().mockResolvedValue({
+      score: 50,
+      passed: false,
+      passingScore: 75,
+      feedback: {
+        score: 50,
+        details: [
+          {
+            question: 'Q1',
+            correct: false,
+            userAnswer: 'B',
+            explanation: 'Revisa el protocolo de cierre del turno.',
+          },
+          {
+            question: 'Q2',
+            correct: true,
+            userAnswer: 'A',
+          },
+        ],
+      },
+    });
+    const mockStore = {
+      ...mockStoreDefault,
+      completeModule: completeModuleMock,
+    };
+    mockUseTrainingStore.mockReturnValue(mockStore);
+    mockGetState.mockReturnValue(mockStore);
+
+    render(<TrainingModulePage params={Promise.resolve({ moduleId: 'mod-1' })} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const evalBtn = screen.getByRole('button', { name: /tomar evaluación/i });
+    await act(async () => {
+      evalBtn.click();
+    });
+
+    const radios = screen.getAllByRole('radio');
+    await act(async () => {
+      radios[0].click();
+    });
+
+    const submitBtn = screen.getByRole('button', { name: /enviar evaluación/i });
+    await act(async () => {
+      submitBtn.click();
+    });
+
+    // La retroalimentación se generaba y se descartaba: el empleado fallaba y
+    // no veía por qué.
+    expect(
+      screen.getByText('Revisa el protocolo de cierre del turno.')
+    ).toBeInTheDocument();
+    // Diferenciada del enunciado y de la respuesta con su propio encabezado.
+    expect(screen.getAllByText('Retroalimentación')).toHaveLength(1);
+  });
+
   it('shows locked module does not call startModuleChat', async () => {
     const mockStore = {
       ...mockStoreDefault,

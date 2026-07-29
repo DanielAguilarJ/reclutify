@@ -125,6 +125,8 @@ interface TrainingModuleCopy {
     scoreLine: (score: number, passingScore: number) => string;
     review: string;
     yourAnswer: string;
+    /** Encabezado del bloque de retroalimentación por pregunta. */
+    explanation: string;
     /** Fijado por pruebas. */
     retry: string;
     goToCenter: string;
@@ -235,6 +237,7 @@ const COPY: Record<TrainingContentLanguage, TrainingCopy> = {
           `Puntuación obtenida: ${score}%. Mínimo requerido: ${passingScore}%`,
         review: 'Revisión de Preguntas',
         yourAnswer: 'Tu respuesta: ',
+        explanation: 'Retroalimentación',
         retry: 'Reintentar Evaluación',
         goToCenter: 'Ir al Centro de Capacitación',
       },
@@ -337,6 +340,7 @@ const COPY: Record<TrainingContentLanguage, TrainingCopy> = {
           `Your score: ${score}%. Required minimum: ${passingScore}%`,
         review: 'Questions Review',
         yourAnswer: 'Your answer: ',
+        explanation: 'Feedback',
         retry: 'Retry Evaluation',
         goToCenter: 'Go to Training Center',
       },

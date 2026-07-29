@@ -260,7 +260,9 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns public details response without correctAnswer, answerExpected or explanation', async () => {
+  // La pregunta del módulo no trae `explanation`, así que el detalle tampoco:
+  // el campo se omite en vez de rellenarse con texto inventado.
+  it('returns public details response without correctAnswer or answerExpected, and without explanation when the question has none', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     mockModuleData = {
@@ -300,6 +302,147 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     expect(details?.correctAnswer).toBeUndefined();
     expect(details?.answerExpected).toBeUndefined();
     expect(details?.explanation).toBeUndefined();
+  });
+
+  it('keeps the AI explanation of an open question in the response feedback', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [
+        { question: 'Q1', type: 'open_ended', correctAnswer: 'Cerrar con el protocolo' },
+      ],
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                evaluations: [
+                  {
+                    index: 0,
+                    correct: false,
+                    explanation: 'Falta describir el cierre del turno.',
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        score: 0,
+        passed: false,
+        passingScore: 70,
+        attempts: 1,
+        overallProgress: 10,
+        overallScore: 0,
+      },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'No sé' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as {
+      feedback: { details: Record<string, unknown>[] };
+    };
+
+    // La explicación se generaba y se descartaba antes de persistir.
+    expect(data.feedback.details[0]?.explanation).toBe(
+      'Falta describir el cierre del turno.'
+    );
+    // Y sigue sin filtrarse la respuesta esperada.
+    expect(data.feedback.details[0]?.correctAnswer).toBeUndefined();
+
+    // El mismo detalle es lo que se guarda en `training_progress.ai_feedback`.
+    const persisted = JSON.parse(
+      mockRpc.mock.calls[0][1].p_feedback as string
+    ) as { details: Record<string, unknown>[] };
+
+    expect(persisted.details[0]?.explanation).toBe(
+      'Falta describir el cierre del turno.'
+    );
+  });
+
+  it('takes the explanation of a closed question from the module question', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [
+        {
+          question: 'Q1',
+          type: 'multiple_choice',
+          options: ['yes', 'no'],
+          correctAnswer: 'yes',
+          explanation: 'La política lo permite solo con autorización previa.',
+        },
+        {
+          question: 'Q2',
+          type: 'true_false',
+          options: ['true', 'false'],
+          correctAnswer: 'true',
+        },
+      ],
+    };
+
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        score: 50,
+        passed: false,
+        passingScore: 70,
+        attempts: 1,
+        overallProgress: 10,
+        overallScore: 50,
+      },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [
+          { questionIndex: 0, answer: 'no' },
+          { questionIndex: 1, answer: 'true' },
+        ],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as {
+      feedback: { details: Record<string, unknown>[] };
+    };
+
+    expect(data.feedback.details[0]?.explanation).toBe(
+      'La política lo permite solo con autorización previa.'
+    );
+    // La segunda pregunta no trae explicación: el campo queda ausente y el
+    // resto del detalle se construye igual.
+    expect(data.feedback.details[1]?.explanation).toBeUndefined();
+    expect(data.feedback.details[1]?.question).toBe('Q2');
+    expect(data.feedback.details[1]?.correct).toBe(true);
+    // Ninguna pregunta cerrada llamó al modelo.
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('uses untrusted evaluation data and security system instructions in AI call', async () => {

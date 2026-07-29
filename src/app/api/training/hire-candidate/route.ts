@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { requireAuthenticatedUser } from '@/lib/training/auth';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { createOpaqueToken, hashOpaqueToken } from '@/lib/training/tokens';
+import {
+  buildContentLanguageDirective,
+  resolveTrainingContentLanguage,
+  type TrainingContentLanguage,
+} from '@/lib/training/content-language';
 import { hireTrainingCandidateSchema, trainingPersonalizationSchema } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
 import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
@@ -19,6 +24,65 @@ function escapeHtml(value: string): string {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
 }
+
+/**
+ * Textos del correo de bienvenida por idioma.
+ *
+ * Se extraen a un objeto en lugar de duplicar la plantilla HTML completa por
+ * idioma: la maquetación es la misma y duplicarla garantiza que un arreglo de
+ * estilo se aplique solo a una de las dos copias.
+ *
+ * Las entradas que interpolan datos del empleado son funciones y reciben el
+ * valor **ya escapado**: así el escapado sigue ocurriendo una sola vez, en el
+ * punto de construcción, y no se puede olvidar al añadir un idioma.
+ */
+interface WelcomeEmailCopy {
+  /** Asunto en texto plano; `roleTitle` NO va escapado (no es HTML). */
+  subject: (roleTitle: string) => string;
+  senderName: string;
+  heading: string;
+  subheading: string;
+  greeting: (safeName: string) => string;
+  congratulations: (safeRoleTitle: string) => string;
+  intro: string;
+  cta: string;
+  accessNote: string;
+  footer: string;
+}
+
+const WELCOME_EMAIL_COPY: Record<TrainingContentLanguage, WelcomeEmailCopy> = {
+  es: {
+    subject: (roleTitle) => `Bienvenido a tu capacitación - ${roleTitle}`,
+    senderName: 'Reclutify Onboarding',
+    heading: '¡Bienvenido a tu capacitación!',
+    subheading: 'Centro de Capacitación Reclutify',
+    greeting: (safeName) => `Hola <strong>${safeName}</strong>,`,
+    congratulations: (safeRoleTitle) =>
+      `¡Felicidades por haber sido seleccionado para el puesto de <strong>${safeRoleTitle}</strong>! Nos entusiasma tenerte en el equipo.`,
+    intro:
+      'Tu programa de inducción ya está listo. Usa el botón de abajo para comenzar tu capacitación guiada por IA.',
+    cta: 'Comenzar mi capacitación',
+    accessNote:
+      'Puedes entrar a tu capacitación en cualquier momento con el enlace de arriba.',
+    footer:
+      'Con tecnología de Reclutify &mdash; reclutamiento y capacitación con IA',
+  },
+  en: {
+    subject: (roleTitle) => `Welcome to Your Training - ${roleTitle}`,
+    senderName: 'Reclutify Onboarding',
+    heading: 'Welcome to Your Training!',
+    subheading: 'Reclutify Training Center',
+    greeting: (safeName) => `Hi <strong>${safeName}</strong>,`,
+    congratulations: (safeRoleTitle) =>
+      `Congratulations on being selected for the role of <strong>${safeRoleTitle}</strong>! We're excited to have you on board.`,
+    intro:
+      'Your onboarding training program is ready. Click the button below to get started with your AI-guided learning experience.',
+    cta: 'Start My Training',
+    accessNote:
+      'You can access your training at any time using the link above.',
+    footer: 'Powered by Reclutify &mdash; AI-powered recruitment and training',
+  },
+};
 
 export async function POST(req: NextRequest) {
   try {
@@ -115,6 +179,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Employee was created but record could not be loaded' }, { status: 500 });
     }
 
+    // 6.5 Idioma de contenido del programa. Gobierna tanto las notas de
+    //     personalización (que alimentan el prompt del tutor) como el correo de
+    //     bienvenida.
+    //
+    //     Se lee de la base de datos y se busca por `employee.program_id`, el
+    //     programa que la RPC dejó realmente asignado, no por el `programId` del
+    //     cuerpo de la petición: el idioma del contenido es un dato del programa
+    //     y nunca lo elige quien llama.
+    //
+    //     Un fallo aquí NO tumba la contratación: la RPC ya se confirmó, el
+    //     empleado existe y su enlace es válido. Se registra y se cae al defecto
+    //     del producto, igual que el resto de los pasos no bloqueantes de esta
+    //     ruta.
+    const { data: programLanguageRow, error: programLanguageError } = await admin
+      .from('training_programs')
+      .select('content_language')
+      .eq('id', employee.program_id)
+      .maybeSingle();
+
+    if (programLanguageError) {
+      console.error(
+        '[Hire API] Could not load program content language, falling back to default:',
+        programLanguageError
+      );
+    }
+
+    const contentLanguage = resolveTrainingContentLanguage(
+      programLanguageRow?.content_language
+    );
+
     // 7. Generar notas de personalización vía AI (opcional/no-bloqueante)
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
     const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
@@ -131,7 +225,9 @@ Respond ONLY with a single valid JSON object in exactly this structure:
   "learningStyle": "One short sentence describing how this person seems to learn best",
   "customTips": ["Actionable tip for their trainer or tutor", "..."]
 }
-Each of strengths/areasToWatch/customTips must be a non-empty array of short strings (0 to 10 items each, omit as [] if nothing applies). learningStyle must always be a non-empty string.`;
+Each of strengths/areasToWatch/customTips must be a non-empty array of short strings (0 to 10 items each, omit as [] if nothing applies). learningStyle must always be a non-empty string.
+
+${buildContentLanguageDirective(contentLanguage, 'personalization')}`;
 
         const personalizationInput = {
           employeeName: employee.name,
@@ -220,10 +316,11 @@ Return only the required JSON object described in the system prompt.
       try {
         const safeName = escapeHtml(employee.name);
         const safeRoleTitle = escapeHtml(employee.role_title || '');
-        
+        const copy = WELCOME_EMAIL_COPY[contentLanguage];
+
         const emailHtml = `
 <!DOCTYPE html>
-<html>
+<html lang="${contentLanguage}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -235,39 +332,39 @@ Return only the required JSON object described in the system prompt.
         <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.07);">
           <tr>
             <td style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);padding:40px 40px 30px;text-align:center;">
-              <h1 style="color:#ffffff;margin:0;font-size:28px;font-weight:700;">Welcome to Your Training!</h1>
-              <p style="color:#e0e7ff;margin:10px 0 0;font-size:16px;">Reclutify Training Center</p>
+              <h1 style="color:#ffffff;margin:0;font-size:28px;font-weight:700;">${copy.heading}</h1>
+              <p style="color:#e0e7ff;margin:10px 0 0;font-size:16px;">${copy.subheading}</p>
             </td>
           </tr>
           <tr>
             <td style="padding:40px;">
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 20px;">
-                Hi <strong>${safeName}</strong>,
+                ${copy.greeting(safeName)}
               </p>
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 20px;">
-                Congratulations on being selected for the role of <strong>${safeRoleTitle}</strong>! We're excited to have you on board.
+                ${copy.congratulations(safeRoleTitle)}
               </p>
               <p style="color:#374151;font-size:16px;line-height:1.6;margin:0 0 30px;">
-                Your onboarding training program is ready. Click the button below to get started with your AI-guided learning experience.
+                ${copy.intro}
               </p>
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center">
                     <a href="${trainingUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);color:#ffffff;text-decoration:none;padding:16px 40px;border-radius:8px;font-size:16px;font-weight:600;letter-spacing:0.5px;">
-                      Start My Training
+                      ${copy.cta}
                     </a>
                   </td>
                 </tr>
               </table>
               <p style="color:#9ca3af;font-size:13px;line-height:1.5;margin:30px 0 0;text-align:center;">
-                You can access your training at any time using the link above.
+                ${copy.accessNote}
               </p>
             </td>
           </tr>
           <tr>
             <td style="background-color:#f9fafb;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
               <p style="color:#9ca3af;font-size:12px;margin:0;">
-                Powered by Reclutify &mdash; AI-powered recruitment and training
+                ${copy.footer}
               </p>
             </td>
           </tr>
@@ -289,9 +386,9 @@ Return only the required JSON object described in the system prompt.
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              sender: { name: 'Reclutify Onboarding', email: 'onboarding@reclutify.com' },
+              sender: { name: copy.senderName, email: 'onboarding@reclutify.com' },
               to: [{ email: employee.email, name: employee.name }],
-              subject: `Welcome to Your Training - ${employee.role_title || 'Reclutify'}`,
+              subject: copy.subject(employee.role_title || 'Reclutify'),
               htmlContent: emailHtml,
             }),
             signal: mailController.signal,

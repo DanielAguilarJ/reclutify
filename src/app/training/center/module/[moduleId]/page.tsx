@@ -15,9 +15,9 @@ import {
   AlertCircle,
   BookMarked,
 } from 'lucide-react';
-import { useAppStore } from '@/store/appStore';
 import {
   useTrainingStore,
+  useTrainingContentLanguage,
   type EvaluationDetail,
 } from '@/store/trainingStore';
 import type { TrainingQuestionPublic } from '@/types';
@@ -48,7 +48,9 @@ export default function TrainingModulePage({
 }) {
   const { moduleId } = use(params);
   const router = useRouter();
-  const { language } = useAppStore();
+  // Igual que en el centro de capacitación: el idioma viene del programa, no de
+  // la preferencia de la aplicación.
+  const language = useTrainingContentLanguage();
   const {
     employee,
     modules,

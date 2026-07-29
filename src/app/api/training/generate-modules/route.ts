@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { z } from 'zod';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import {
+  buildContentLanguageDirective,
+  resolveTrainingContentLanguage,
+} from '@/lib/training/content-language';
+import {
   generateModulesRequestSchema,
   generatedTrainingModulesSchema,
 } from '@/lib/training/contracts';
@@ -116,7 +120,7 @@ RULES:
 - durationEstimate must be an integer representing estimated minutes.
 - sourceDocumentIds is REQUIRED on every module and MUST contain at least one valid UUID string ID from the documents listed below (never an empty array, never omitted).
 - Include practical evaluation questions that test real understanding.
-- Write in the same language as the source documents.
+- Write every user-facing string in the language demanded by the CONTENT LANGUAGE section below, even when the source documents are written in another language.
 - Each section body should be comprehensive (at least 3-4 paragraphs of teaching content).
 - evaluationEnabled must be a boolean.
 - evaluationQuestions is REQUIRED on every module (never omit the key, never use null):
@@ -269,8 +273,22 @@ export async function POST(req: NextRequest) {
       })),
     };
 
+    // Idioma del contenido: lo fija el programa (la fila que ya cargó
+    // `requireProgramAdmin`), no los documentos ni el idioma del prompt. La
+    // directiva se añade al final del prompt de sistema, después de las reglas
+    // de estructura, para que quede claro qué se traduce (el contenido) y qué no
+    // (claves y valores de enumeración del JSON).
+    const contentLanguage = resolveTrainingContentLanguage(
+      program.content_language,
+    );
+
     const baseMessages: ChatMessage[] = [
-      { role: 'system', content: MODULE_GENERATION_SYSTEM_PROMPT },
+      {
+        role: 'system',
+        content: `${MODULE_GENERATION_SYSTEM_PROMPT}
+
+${buildContentLanguageDirective(contentLanguage, 'module_content')}`,
+      },
       {
         role: 'user',
         content: `

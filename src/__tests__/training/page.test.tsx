@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import TrainingModulePage from '../../app/training/center/module/[moduleId]/page';
+import type { TrainingContentLanguage } from '../../lib/training/content-language';
 import React from 'react';
 
 // Modern hoisting in Vitest
@@ -37,9 +38,18 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-// Mock trainingStore hook
+// Mock trainingStore hook.
+//
+// `useTrainingContentLanguage` es un selector derivado del programa cargado en
+// el store: la pantalla del empleado ya no usa la preferencia de idioma de la
+// aplicación (entra por enlace de token y no tiene una). Es mutable para poder
+// comprobar que la interfaz sigue al programa; el defecto es español, igual que
+// la columna de la base de datos.
+let mockContentLanguage: TrainingContentLanguage = 'es';
+
 vi.mock('@/store/trainingStore', () => ({
   useTrainingStore: mockUseTrainingStore,
+  useTrainingContentLanguage: () => mockContentLanguage,
 }));
 
 const mockStoreDefault = {
@@ -79,8 +89,45 @@ const mockStoreDefault = {
 describe('TrainingModulePage Component Integrity', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockContentLanguage = 'es';
     mockGetState.mockReturnValue(mockStoreDefault);
     mockUseTrainingStore.mockReturnValue(mockStoreDefault);
+  });
+
+  it('renders the module screen in the content language of the program', async () => {
+    // El empleado no tiene preferencia de idioma: la pantalla habla el idioma
+    // del programa, así que un programa en inglés produce interfaz en inglés.
+    mockContentLanguage = 'en';
+
+    render(<TrainingModulePage params={Promise.resolve({ moduleId: 'mod-1' })} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(
+      screen.getByRole('button', { name: 'Take Evaluation' })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Tomar Evaluación' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Reading List')).toBeInTheDocument();
+  });
+
+  it('renders the module screen in Spanish when the program language is es', async () => {
+    render(<TrainingModulePage params={Promise.resolve({ moduleId: 'mod-1' })} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(
+      screen.getByRole('button', { name: 'Tomar Evaluación' })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Take Evaluation' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Lista de Lectura')).toBeInTheDocument();
   });
 
   it('redirects to /training/center if module progress status is locked', async () => {

@@ -18,12 +18,17 @@ import {
   GraduationCap,
   RotateCcw,
 } from 'lucide-react';
-import { useAppStore } from '@/store/appStore';
-import { useTrainingStore } from '@/store/trainingStore';
+import {
+  useTrainingStore,
+  useTrainingContentLanguage,
+} from '@/store/trainingStore';
 
 export default function TrainingCenterPage() {
   const router = useRouter();
-  const { language } = useAppStore();
+  // El idioma lo fija el programa, no la preferencia de la aplicación: el
+  // empleado entra por enlace de token y su interfaz tiene que hablar el mismo
+  // idioma que el contenido que va a leer.
+  const language = useTrainingContentLanguage();
   const {
     employee,
     program,

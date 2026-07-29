@@ -1,9 +1,19 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { createClient } from '@/utils/supabase/client';
-import { Users, Play, ChevronRight, RotateCcw, CheckCircle2, Loader2, ClipboardList, Sparkles } from 'lucide-react';
+import { useAiVoice } from '@/hooks/useAiVoice';
+import { Users, ChevronRight, RotateCcw, CheckCircle2, Loader2, ClipboardList, Sparkles, Volume2, VolumeX, AudioLines } from 'lucide-react';
+
+/**
+ * La IA suele devolver las preguntas ya numeradas ("1. ¿Como...?"). El numero
+ * se conserva en pantalla pero se quita del texto hablado para que la voz no
+ * lea "uno punto" antes de cada pregunta.
+ */
+function toSpokenText(question: string): string {
+  return question.replace(/^\s*\d{1,2}\s*[.)-]\s+/, '').trim();
+}
 
 // ─── Types ───
 interface RoleOption {
@@ -28,6 +38,12 @@ export default function GroupInterviewPage() {
   const [roleTitle, setRoleTitle] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [loadingRoles, setLoadingRoles] = useState(true);
+
+  // ─── Voz de la IA (Microsoft mai-voice-2 via /api/tts) ───
+  const { speak, stop, isSpeaking, blocked } = useAiVoice({ language });
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  // Evita que la pregunta se vuelva a leer si el efecto se re-ejecuta.
+  const spokenIndexRef = useRef<number | null>(null);
 
   // ─── Fetch roles on mount ───
   useEffect(() => {
@@ -93,6 +109,7 @@ export default function GroupInterviewPage() {
       setQuestions(data.questions);
       setRoleTitle(data.roleTitle);
       setCurrentIndex(0);
+      spokenIndexRef.current = null;
       setSessionState('active');
     } catch (err) {
       setError(err instanceof Error ? err.message : t.errorGenerating);
@@ -100,21 +117,55 @@ export default function GroupInterviewPage() {
     }
   }, [selectedRoleId, language, questionCount, t.errorGenerating]);
 
+  // ─── Lectura automatica de la pregunta activa ───
+  useEffect(() => {
+    if (sessionState !== 'active' || !voiceEnabled) return;
+
+    const question = questions[currentIndex];
+    if (!question) return;
+    if (spokenIndexRef.current === currentIndex) return;
+
+    spokenIndexRef.current = currentIndex;
+    void speak(toSpokenText(question));
+  }, [sessionState, currentIndex, questions, voiceEnabled, speak]);
+
   // ─── Navigation ───
   const nextQuestion = () => {
     if (currentIndex < questions.length - 1) {
       setCurrentIndex(prev => prev + 1);
     } else {
+      stop();
       setSessionState('finished');
     }
   };
 
   const resetSession = () => {
+    stop();
+    spokenIndexRef.current = null;
     setQuestions([]);
     setCurrentIndex(0);
     setSessionState('select-role');
     setSelectedRoleId('');
     setError('');
+  };
+
+  /** Vuelve a leer la pregunta en pantalla (tambien desbloquea el autoplay). */
+  const repeatQuestion = () => {
+    const question = questions[currentIndex];
+    if (!question) return;
+    spokenIndexRef.current = currentIndex;
+    void speak(toSpokenText(question));
+  };
+
+  const toggleVoice = () => {
+    setVoiceEnabled(prev => {
+      if (prev) {
+        // Al silenciar: corta el audio y permite que se vuelva a leer al reactivar.
+        stop();
+        spokenIndexRef.current = null;
+      }
+      return !prev;
+    });
   };
 
   // ─── RENDER ───
@@ -249,11 +300,27 @@ export default function GroupInterviewPage() {
       <div className="max-w-4xl mx-auto">
         {/* Progress bar */}
         <div className="mb-6">
-          <div className="flex items-center justify-between mb-2">
-            <h1 className="text-lg font-bold text-foreground">{roleTitle}</h1>
-            <span className="text-sm font-mono text-muted">
-              {currentIndex + 1} / {questions.length}
-            </span>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <h1 className="text-lg font-bold text-foreground truncate">{roleTitle}</h1>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                onClick={toggleVoice}
+                title={voiceEnabled ? t.muteVoice : t.unmuteVoice}
+                aria-label={voiceEnabled ? t.muteVoice : t.unmuteVoice}
+                aria-pressed={voiceEnabled}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                  voiceEnabled
+                    ? 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15'
+                    : 'border-border/50 text-muted hover:bg-background'
+                }`}
+              >
+                {voiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                <span className="hidden sm:inline">{voiceEnabled ? t.voiceOn : t.voiceOff}</span>
+              </button>
+              <span className="text-sm font-mono text-muted">
+                {currentIndex + 1} / {questions.length}
+              </span>
+            </div>
           </div>
           <div className="h-2 bg-surface rounded-full overflow-hidden">
             <div
@@ -266,18 +333,53 @@ export default function GroupInterviewPage() {
         {/* Question card */}
         <div className="bg-card border border-border/50 rounded-2xl p-8 md:p-12 shadow-sm min-h-[300px] flex flex-col justify-center">
           <div className="flex items-start gap-4 mb-8">
-            <div className="shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-              <span className="text-primary font-bold text-sm">{currentIndex + 1}</span>
+            <div className="relative shrink-0 w-10 h-10">
+              {isSpeaking && (
+                <span className="absolute inset-0 rounded-full bg-primary/25 animate-ping" />
+              )}
+              <div className="relative w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                {isSpeaking ? (
+                  <AudioLines className="h-5 w-5 text-primary animate-pulse" />
+                ) : (
+                  <span className="text-primary font-bold text-sm">{currentIndex + 1}</span>
+                )}
+              </div>
             </div>
             <p className="text-xl md:text-2xl font-medium text-foreground leading-relaxed">
               {questions[currentIndex]}
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-sm text-muted">
-            <Users className="h-4 w-4" />
-            <span>{t.candidatesWriting}</span>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm text-muted">
+              {isSpeaking ? (
+                <>
+                  <AudioLines className="h-4 w-4 text-primary animate-pulse" />
+                  <span className="text-primary font-medium">{t.aiSpeaking}</span>
+                </>
+              ) : (
+                <>
+                  <Users className="h-4 w-4" />
+                  <span>{t.candidatesWriting}</span>
+                </>
+              )}
+            </div>
+
+            <button
+              onClick={repeatQuestion}
+              // Si el autoplay esta bloqueado el boton debe seguir activo: es el
+              // gesto del usuario que desbloquea la reproduccion.
+              disabled={isSpeaking && !blocked}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border/50 text-sm font-medium text-foreground hover:bg-background transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Volume2 className="h-4 w-4" />
+              {t.repeatQuestion}
+            </button>
           </div>
+
+          {blocked && !isSpeaking && (
+            <p className="mt-4 text-xs text-warning">{t.audioBlocked}</p>
+          )}
         </div>
 
         {/* Next button */}
@@ -362,6 +464,13 @@ const es = {
   generating: 'Zara esta preparando las preguntas...',
   generatingHint: 'Esto solo toma unos segundos',
   candidatesWriting: 'Los candidatos estan escribiendo su respuesta en papel',
+  aiSpeaking: 'Zara esta leyendo la pregunta en voz alta...',
+  repeatQuestion: 'Repetir pregunta',
+  voiceOn: 'Voz activada',
+  voiceOff: 'Voz silenciada',
+  muteVoice: 'Silenciar la voz de Zara',
+  unmuteVoice: 'Activar la voz de Zara',
+  audioBlocked: 'El navegador bloqueo la reproduccion automatica. Toca "Repetir pregunta" para escucharla.',
   nextReady: 'Listo, siguiente pregunta',
   finish: 'Finalizar sesion',
   sessionComplete: 'Sesion finalizada',
@@ -388,6 +497,13 @@ const en = {
   generating: 'Zara is preparing the questions...',
   generatingHint: 'This only takes a few seconds',
   candidatesWriting: 'Candidates are writing their answer on paper',
+  aiSpeaking: 'Zara is reading the question out loud...',
+  repeatQuestion: 'Repeat question',
+  voiceOn: 'Voice on',
+  voiceOff: 'Voice muted',
+  muteVoice: "Mute Zara's voice",
+  unmuteVoice: "Unmute Zara's voice",
+  audioBlocked: 'The browser blocked autoplay. Tap "Repeat question" to hear it.',
   nextReady: 'Ready, next question',
   finish: 'Finish session',
   sessionComplete: 'Session complete',

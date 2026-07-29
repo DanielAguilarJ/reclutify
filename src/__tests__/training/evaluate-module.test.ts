@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
 import { POST } from '../../app/api/training/evaluate-module/route';
 import { NextRequest } from 'next/server';
 
@@ -848,5 +849,108 @@ describe('Evaluate Module Endpoint (/api/training/evaluate-module)', () => {
     expect(res.status).toBe(200);
     const data = await res.json() as Record<string, unknown>;
     expect(data.overallScore).toBeNull();
+  });
+});
+
+/**
+ * Modelo de IA que viaja en el cuerpo de la petición a OpenRouter.
+ *
+ * Esta ruta resolvía el modelo con `??`, así que `TRAINING_AI_MODEL=` definida y
+ * vacía enviaba `"model": ""` y OpenRouter respondía `400`: la calificación de
+ * preguntas abiertas se caía mientras hire-candidate, que usaba `||`, seguía
+ * funcionando con el mismo entorno.
+ */
+describe('Evaluate module sends the resolved AI model', () => {
+  let originalModel: string | undefined;
+
+  beforeEach(() => {
+    mockRpc.mockReset();
+    vi.clearAllMocks();
+    originalModel = process.env.TRAINING_AI_MODEL;
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+    mockProgramData = { content_language: 'es' };
+    mockProgressData = { status: 'in_progress' };
+    mockModuleData = {
+      id: '00000000-0000-4000-8000-000000000001',
+      evaluation_enabled: true,
+      evaluation_questions: [
+        { question: 'Q1', type: 'open_ended', correctAnswer: 'A1' },
+      ],
+    };
+  });
+
+  afterEach(() => {
+    if (originalModel === undefined) {
+      delete process.env.TRAINING_AI_MODEL;
+    } else {
+      process.env.TRAINING_AI_MODEL = originalModel;
+    }
+  });
+
+  /** Califica una pregunta abierta y devuelve el `model` que se envió. */
+  const gradeOpenQuestion = async (): Promise<unknown> => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                evaluations: [{ index: 0, correct: true, explanation: 'OK' }],
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    // El esquema del resultado de la RPC es `.strict()`: una clave de más
+    // (`feedback`, por ejemplo) invalida la respuesta y la ruta devuelve 500.
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        score: 100,
+        passed: true,
+        passingScore: 70,
+        attempts: 1,
+        overallProgress: 10,
+        overallScore: 100,
+      },
+      error: null,
+    });
+
+    const req = new NextRequest('http://localhost/api/training/evaluate-module', {
+      method: 'POST',
+      body: JSON.stringify({
+        moduleId: '00000000-0000-4000-8000-000000000001',
+        answers: [{ questionIndex: 0, answer: 'My answer' }],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalled();
+
+    return JSON.parse(mockFetch.mock.calls[0][1].body).model;
+  };
+
+  it('sends the default model when TRAINING_AI_MODEL is not set', async () => {
+    delete process.env.TRAINING_AI_MODEL;
+
+    expect(await gradeOpenQuestion()).toBe(DEFAULT_AI_MODEL);
+  });
+
+  it('sends the default model when TRAINING_AI_MODEL is empty', async () => {
+    // Regresión del bug del `??`.
+    process.env.TRAINING_AI_MODEL = '';
+
+    const model = await gradeOpenQuestion();
+    expect(model).toBe(DEFAULT_AI_MODEL);
+    expect(model).not.toBe('');
+  });
+
+  it('sends the configured model when TRAINING_AI_MODEL is set', async () => {
+    process.env.TRAINING_AI_MODEL = 'google/gemini-2.5-flash';
+
+    expect(await gradeOpenQuestion()).toBe('google/gemini-2.5-flash');
   });
 });

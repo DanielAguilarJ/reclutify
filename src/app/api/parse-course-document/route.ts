@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import * as mammoth from 'mammoth';
 
+import { extractPdfText } from '@/lib/pdf-text';
+
 // pdf-parse uses Node-only deps. Force Node runtime.
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -30,15 +32,10 @@ export async function POST(request: Request) {
     // ─── Parse PDF ───
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
-        const mod = (await import('pdf-parse')) as unknown as
-          | { default?: (buf: Buffer) => Promise<{ text: string }> }
-          | ((buf: Buffer) => Promise<{ text: string }>);
-        const pdfParse = typeof mod === 'function' ? mod : mod.default;
-        if (typeof pdfParse !== 'function') {
-          throw new Error('pdf-parse module did not expose a callable parser');
-        }
-        const data = await pdfParse(buffer);
-        text = data.text;
+        // Extractor compartido: importa el parser interno de pdf-parse en lugar
+        // del entry point del paquete, cuyo bloque de depuración hace
+        // `readFileSync` al cargarse. Ver src/lib/pdf-text.ts.
+        text = await extractPdfText(buffer);
       } catch (pdfError) {
         const err = pdfError as Error;
         console.error('[parse-course-document] PDF error:', err.message);

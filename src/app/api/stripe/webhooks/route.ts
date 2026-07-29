@@ -1,19 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe, PRICE_TIER_MAP } from '@/lib/stripe';
-import { createClient } from '@supabase/supabase-js';
+import { createAdminClient } from '@/utils/supabase/admin';
 import type Stripe from 'stripe';
-
-/**
- * Create a Supabase client for webhook use.
- * Uses the anon key — RLS is bypassed via the SECURITY DEFINER function
- * `update_org_subscription()` so no service_role key is needed.
- */
-function getSupabase() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
-}
 
 /** In Stripe v22 (dahlia), period_end lives on the first SubscriptionItem */
 function getPeriodEnd(subscription: Stripe.Subscription): string | null {
@@ -25,7 +13,15 @@ function getPeriodEnd(subscription: Stripe.Subscription): string | null {
 
 /**
  * Update org subscription via the SECURITY DEFINER function.
- * This bypasses RLS even with the anon key.
+ *
+ * MUST run with `service_role`. The RPC `update_org_subscription()` writes
+ * subscription state from caller-supplied parameters with no identity check,
+ * so `EXECUTE` is being revoked from `anon` and `authenticated`
+ * (`supabase/migrations/202607290002_stripe_revoke_anon_execute.sql`).
+ * `createAdminClient()` requires `SUPABASE_SERVICE_ROLE_KEY` and throws when
+ * it is missing — there is deliberately no anon-key fallback: falling back
+ * would only work while the function stays open to the public API key, which
+ * is the vulnerability being closed.
  */
 async function updateOrgSubscription(params: {
   orgId?: string;
@@ -38,7 +34,20 @@ async function updateOrgSubscription(params: {
   subscriptionStatus?: string;
   subscriptionPeriodEnd?: string | null;
 }) {
-  const supabase = getSupabase();
+  let supabase: ReturnType<typeof createAdminClient>;
+  try {
+    supabase = createAdminClient();
+  } catch (err) {
+    // The POST handler turns this into a 500 (so Stripe retries), which on its
+    // own is indistinguishable from any other handler failure. Log the real
+    // cause explicitly: the webhook is misconfigured, not the event.
+    console.error(
+      '[stripe/webhooks] misconfigured: SUPABASE_SERVICE_ROLE_KEY is required to call update_org_subscription — the anon-key fallback was removed on purpose:',
+      err
+    );
+    throw err;
+  }
+
   const { error } = await supabase.rpc('update_org_subscription', {
     p_org_id:                   params.orgId ?? null,
     p_stripe_customer_id:       params.stripeCustomerId ?? null,

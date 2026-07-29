@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { createAdminClient } from '@/utils/supabase/admin';
 
 // Bug 17 fix: token generator matching the format used by the in-app
 // ticketStore (8-character alphanumeric, omitting visually ambiguous chars).
@@ -35,6 +36,12 @@ export async function POST(req: Request) {
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://reclutify.com';
     const ticketLanguage: 'en' | 'es' = language === 'en' ? 'en' : 'es';
     const supabase = await createClient();
+    // `candidate_invites` pasa a tener RLS activo
+    // (202607290003_candidate_invites_rls.sql) sin políticas de escritura para
+    // `anon`/`authenticated`: la inserción de seguimiento va con `service_role`,
+    // que ignora RLS. El resto de consultas de esta ruta siguen con el cliente
+    // de sesión.
+    const admin = createAdminClient();
     const results = [];
 
     // Resolve org_id once from the role (interview_tickets is org-scoped via RLS).
@@ -72,7 +79,7 @@ export async function POST(req: Request) {
       // 2) Mirror to candidate_invites (legacy tracking table, kept for the
       //    admin pipeline / external integrations).
       const candidateId = candidate.email;
-      const { error: inviteErr } = await supabase.from('candidate_invites').insert({
+      const { error: inviteErr } = await admin.from('candidate_invites').insert({
         id: candidateId,
         role_id: roleId,
         role_title: roleTitle,

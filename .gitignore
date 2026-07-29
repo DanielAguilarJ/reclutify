@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# supabase cli local state (contains pooler connection string)
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

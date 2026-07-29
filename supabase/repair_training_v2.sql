@@ -183,6 +183,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.hire_training_candidate(UUID, TEXT, UUID, TEXT, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.hire_training_candidate(UUID, TEXT, UUID, TEXT, TIMESTAMPTZ) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.hire_training_candidate(UUID, TEXT, UUID, TEXT, TIMESTAMPTZ) TO service_role;
 
 
@@ -279,6 +280,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.publish_training_program(UUID, UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.publish_training_program(UUID, UUID) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.publish_training_program(UUID, UUID) TO service_role;
 
 
@@ -393,6 +395,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.create_training_program_version(UUID, UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.create_training_program_version(UUID, UUID) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.create_training_program_version(UUID, UUID) TO service_role;
 
 
@@ -604,6 +607,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.replace_training_modules(UUID, UUID, JSONB) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.replace_training_modules(UUID, UUID, JSONB) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.replace_training_modules(UUID, UUID, JSONB) TO service_role;
 
 
@@ -638,6 +642,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.calculate_training_progress(UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.calculate_training_progress(UUID) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.calculate_training_progress(UUID) TO service_role;
 
 
@@ -826,6 +831,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.finalize_training_evaluation(UUID, UUID, JSONB, JSONB, NUMERIC, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.finalize_training_evaluation(UUID, UUID, JSONB, JSONB, NUMERIC, TEXT) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.finalize_training_evaluation(UUID, UUID, JSONB, JSONB, NUMERIC, TEXT) TO service_role;
 
 
@@ -926,6 +932,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.complete_training_module_without_evaluation(UUID, UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.complete_training_module_without_evaluation(UUID, UUID) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.complete_training_module_without_evaluation(UUID, UUID) TO service_role;
 
 
@@ -963,6 +970,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) TO service_role;
 
 -- 9. PERSISTENCIA ATÓMICA DE MENSAJES DE CHAT
@@ -1019,6 +1027,10 @@ $$;
 REVOKE ALL
 ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
 FROM PUBLIC;
+
+REVOKE EXECUTE
+ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
+FROM anon, authenticated;
 
 GRANT EXECUTE
 ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
@@ -1120,6 +1132,10 @@ REVOKE ALL
 ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
 FROM PUBLIC;
 
+REVOKE EXECUTE
+ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
+FROM anon, authenticated;
+
 GRANT EXECUTE
 ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
 TO service_role;
@@ -1196,6 +1212,10 @@ $$;
 REVOKE ALL
 ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
 FROM PUBLIC;
+
+REVOKE EXECUTE
+ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
+FROM anon, authenticated;
 
 GRANT EXECUTE
 ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
@@ -1294,6 +1314,10 @@ $$;
 REVOKE ALL
 ON FUNCTION public.start_training_module(UUID, UUID)
 FROM PUBLIC;
+
+REVOKE EXECUTE
+ON FUNCTION public.start_training_module(UUID, UUID)
+FROM anon, authenticated;
 
 GRANT EXECUTE
 ON FUNCTION public.start_training_module(UUID, UUID)

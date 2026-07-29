@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
 import { POST as postChat } from '@/app/api/training/chat/route';
 import { POST as postGenerate } from '@/app/api/training/generate-modules/route';
 import { POST as postHire } from '@/app/api/training/hire-candidate/route';
@@ -501,4 +502,142 @@ describe('Hire candidate welcome email language', () => {
     expect(payload.htmlContent).not.toContain('<script>');
     expect(payload.htmlContent).toContain('Dev &quot;&amp;&quot; Ops');
   });
+});
+
+/**
+ * Modelo de IA que viaja en el cuerpo de la petición a OpenRouter.
+ *
+ * El identificador estaba escrito a mano en cinco sitios y con dos operadores
+ * distintos: `??` en chat, evaluate-module y generate-modules, `||` en
+ * hire-candidate y document-analysis. Con `TRAINING_AI_MODEL=` definida y
+ * **vacía** —la forma que invita `.env.example`— los tres del `??` enviaban
+ * `"model": ""`, que OpenRouter rechaza con `400`, y los dos del `||`
+ * funcionaban. Estas pruebas afirman el campo `model` del cuerpo real, que es lo
+ * único que distingue un defecto aplicado de un defecto aparente.
+ */
+describe('Training routes send the resolved AI model', () => {
+  let originalModel: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    originalModel = process.env.TRAINING_AI_MODEL;
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+    process.env.NEXT_PUBLIC_APP_URL = 'http://localhost';
+    mockProgramRow = buildProgramRow();
+    mockEmployeeRow = buildEmployeeRow();
+    mockRpc.mockResolvedValue({ data: [], error: null });
+  });
+
+  afterEach(() => {
+    if (originalModel === undefined) {
+      delete process.env.TRAINING_AI_MODEL;
+    } else {
+      process.env.TRAINING_AI_MODEL = originalModel;
+    }
+  });
+
+  /** Modelo del cuerpo de la primera llamada a OpenRouter. */
+  const sentModel = (): unknown =>
+    JSON.parse(mockFetch.mock.calls[0][1].body).model;
+
+  const callChat = async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({ message: 'Hello', type: 'text' }) } }],
+      }),
+    });
+
+    const req = new NextRequest('http://localhost/api/training/chat', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'general', message: 'Hi Zara' }),
+    });
+
+    expect((await postChat(req)).status).toBe(200);
+  };
+
+  const callGenerateModules = async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({ modules: [] }) } }],
+      }),
+    });
+
+    const req = new NextRequest('http://localhost/api/training/generate-modules', {
+      method: 'POST',
+      body: JSON.stringify({ programId: PROGRAM_ID }),
+    });
+
+    await postGenerate(req);
+  };
+
+  const callHireCandidate = async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: '00000000-0000-4000-8000-000000000009',
+      error: null,
+    });
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                strengths: [],
+                areasToWatch: [],
+                learningStyle: 'Read',
+                customTips: [],
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const req = new NextRequest('http://localhost/api/training/hire-candidate', {
+      method: 'POST',
+      body: JSON.stringify({
+        candidateResultId: '00000000-0000-4000-8000-000000000008',
+        programId: PROGRAM_ID,
+      }),
+    });
+
+    expect((await postHire(req)).status).toBe(200);
+  };
+
+  const routes: Array<[string, () => Promise<void>]> = [
+    ['chat', callChat],
+    ['generate-modules', callGenerateModules],
+    ['hire-candidate', callHireCandidate],
+  ];
+
+  for (const [name, callRoute] of routes) {
+    it(`${name} sends the default model when TRAINING_AI_MODEL is not set`, async () => {
+      delete process.env.TRAINING_AI_MODEL;
+
+      await callRoute();
+
+      expect(sentModel()).toBe(DEFAULT_AI_MODEL);
+    });
+
+    it(`${name} sends the default model when TRAINING_AI_MODEL is empty`, async () => {
+      // Regresión del bug del `??`: la cadena vacía llegaba a OpenRouter.
+      process.env.TRAINING_AI_MODEL = '';
+
+      await callRoute();
+
+      expect(sentModel()).toBe(DEFAULT_AI_MODEL);
+      expect(sentModel()).not.toBe('');
+    });
+
+    it(`${name} sends the configured model when TRAINING_AI_MODEL is set`, async () => {
+      process.env.TRAINING_AI_MODEL = 'google/gemini-2.5-flash';
+
+      await callRoute();
+
+      expect(sentModel()).toBe('google/gemini-2.5-flash');
+    });
+  }
 });

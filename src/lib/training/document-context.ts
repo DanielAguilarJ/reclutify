@@ -15,7 +15,7 @@ import 'server-only';
  * Tres defectos, y el tercero es el que produce contenido inventado:
  *
  * 1. 60.000 caracteres ≈ 15.000 tokens. El modelo por defecto
- *    (`google/gemini-2.5-flash`) admite del orden de un millón, así que se
+ *    (`google/gemini-3.6-flash`) admite del orden de un millón, así que se
  *    usaba ~1,5 % de la ventana disponible.
  * 2. El reparto ignoraba el tamaño real: una hoja de una página y un manual de
  *    500 recibían lo mismo. El pequeño desperdiciaba su parte y el grande se
@@ -90,9 +90,11 @@ export const TRAINING_CONTEXT_CHAR_BUDGET_ENV = 'TRAINING_CONTEXT_CHAR_BUDGET';
  * `TRAINING_AI_MODEL`, no con el modelo por defecto:
  *
  *   - Ventana del modelo más pequeño que se considera aceptable hoy: 128.000
- *     tokens de entrada. (El modelo por defecto, `google/gemini-2.5-flash`,
- *     admite ~1.000.000: con este presupuesto se queda en ~8 % de su ventana,
- *     que es exactamente el margen que buscamos.)
+ *     tokens de entrada. (El modelo por defecto, `google/gemini-3.6-flash`,
+ *     admite 1.048.576 —la misma ventana que el `google/gemini-2.5-flash`
+ *     anterior, por eso esta aritmética no cambia con el cambio de modelo—:
+ *     con este presupuesto se queda en ~8 % de su ventana, que es exactamente
+ *     el margen que buscamos.)
  *   - Menos el prompt de sistema y los metadatos del programa: ~3.000 tokens.
  *   - Menos sitio para la respuesta del modelo, que son módulos completos con
  *     secciones y preguntas: ~16.000 tokens.

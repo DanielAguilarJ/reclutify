@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { z } from 'zod';
 
+import { resolveTrainingAiModel } from '@/lib/ai-model';
 import { documentAiAnalysisSchema } from '@/lib/training/contracts';
 import { cutAtNaturalBoundary } from '@/lib/training/document-context';
 
@@ -23,7 +24,7 @@ import { cutAtNaturalBoundary } from '@/lib/training/document-context';
  *
  * El corte tampoco era una decisión de coste: 30.000 caracteres son ~7.500
  * tokens, un 0,75 % de la ventana del modelo por defecto
- * (`google/gemini-2.5-flash`, ~1.000.000 de tokens).
+ * (`google/gemini-3.6-flash`, 1.048.576 tokens).
  *
  * ── Qué hace este módulo ─────────────────────────────────────────────────────
  *
@@ -190,15 +191,71 @@ export const TRAINING_ANALYSIS_TIME_BUDGET_MS = 35_000;
  */
 export const ANALYSIS_REDUCE_RESERVE_MS = 12_000;
 
+/** Variable de entorno que ajusta el tope por llamada sin desplegar. */
+export const TRAINING_ANALYSIS_CALL_TIMEOUT_MS_ENV =
+  'TRAINING_ANALYSIS_CALL_TIMEOUT_MS';
+
 /**
- * Tope por llamada individual.
+ * TOPE POR LLAMADA INDIVIDUAL — 20 s
+ * ----------------------------------
+ * El tope existe para que una llamada colgada no se lleve el presupuesto del
+ * *map* completo: se corta, ese bloque **cuenta como no analizado**, el resto
+ * sigue y el resultado sale marcado `partial` con la cobertura real. Es
+ * degradación declarada, no un fallo silencioso: el administrador ve el aviso de
+ * análisis parcial en vez de un resumen que aparenta describir el documento
+ * entero.
  *
- * Un bloque de 30.000 caracteres se resume en bastante menos de 20 s con los
- * modelos de la familia por defecto. El tope existe para que una llamada
- * colgada no se lleve el presupuesto del *map* completo: se corta, ese bloque
- * cuenta como no analizado, y los demás siguen.
+ * ── El supuesto que hay detrás, y por qué es frágil ──────────────────────────
+ *
+ * 20 s se eligieron asumiendo que un bloque de 30.000 caracteres se resume en
+ * bastante menos: es un supuesto de **latencia**, no de tamaño de ventana, y por
+ * tanto depende del modelo configurado. Los modelos de la familia 3.x
+ * —incluido el defecto actual, `google/gemini-3.6-flash`— **razonan por
+ * defecto**: generan tokens de pensamiento antes de responder, así que la misma
+ * entrada tarda más que con 2.5. El supuesto puede dejar de cumplirse sin que
+ * cambie una línea de este archivo.
+ *
+ * Cuando eso pasa, el síntoma no es un error: es cobertura que baja. Los bloques
+ * se cortan a los 20 s, se contabilizan como no analizados y los resúmenes
+ * salen `partial` de forma sistemática. Por eso el tope es ajustable por
+ * entorno: subirlo con `TRAINING_ANALYSIS_CALL_TIMEOUT_MS` es la reacción
+ * inmediata, sin desplegar.
+ *
+ * Ojo con el techo real: el presupuesto total del análisis
+ * (`TRAINING_ANALYSIS_TIME_BUDGET_MS`, 35 s) sigue mandando —el tope por llamada
+ * se aplica con `Math.min` contra lo que quede— así que subir esta variable por
+ * encima del presupuesto del *map* no consigue nada.
  */
-export const ANALYSIS_CALL_TIMEOUT_MS = 20_000;
+export const DEFAULT_ANALYSIS_CALL_TIMEOUT_MS = 20_000;
+
+/**
+ * Lee el tope por llamada del entorno.
+ *
+ * Mismo criterio que `resolveAnalysisCharBudget`: solo un entero positivo en
+ * notación decimal. Cualquier otra cosa —vacío, `0`, negativo, decimal, `abc`,
+ * `1e6`, `Infinity`— cae al defecto. Un valor mal escrito no debe dejar el tope
+ * en cero, que convertiría todas las llamadas en `AbortError` inmediatos y todo
+ * análisis en un resultado vacío.
+ */
+export function resolveAnalysisCallTimeoutMs(
+  rawValue: string | undefined = process.env[TRAINING_ANALYSIS_CALL_TIMEOUT_MS_ENV],
+): number {
+  if (typeof rawValue !== 'string') {
+    return DEFAULT_ANALYSIS_CALL_TIMEOUT_MS;
+  }
+
+  const trimmed = rawValue.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return DEFAULT_ANALYSIS_CALL_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return DEFAULT_ANALYSIS_CALL_TIMEOUT_MS;
+  }
+
+  return parsed;
+}
 
 /**
  * Por debajo de esto no se inicia una llamada.
@@ -762,7 +819,7 @@ export async function analyzeTrainingDocumentText(
   const totalChars = extractedText.length;
 
   const apiKey = process.env.OPENROUTER_API_KEY;
-  const model = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+  const model = resolveTrainingAiModel();
 
   if (!apiKey) {
     return emptyAnalysis(totalChars, 0);
@@ -771,6 +828,7 @@ export async function analyzeTrainingDocumentText(
   const charBudget = options.charBudget ?? resolveAnalysisCharBudget();
   const timeBudgetMs = options.timeBudgetMs ?? TRAINING_ANALYSIS_TIME_BUDGET_MS;
   const concurrency = options.concurrency ?? ANALYSIS_MAP_CONCURRENCY;
+  const callTimeoutMs = resolveAnalysisCallTimeoutMs();
 
   const blocks = splitTextForAnalysis(extractedText, charBudget);
 
@@ -839,7 +897,7 @@ export async function analyzeTrainingDocumentText(
         model,
         systemPrompt: ANALYSIS_SYSTEM_PROMPT,
         userPrompt: buildAnalysisUserPrompt(block, index, blocks.length),
-        timeoutMs: Math.min(ANALYSIS_CALL_TIMEOUT_MS, mapRemaining),
+        timeoutMs: Math.min(callTimeoutMs, mapRemaining),
         label: `block ${index + 1}/${blocks.length}`,
         fileName,
       });
@@ -883,10 +941,7 @@ export async function analyzeTrainingDocumentText(
   }
 
   // ── Fase reduce ──
-  const consolidationTimeout = Math.min(
-    ANALYSIS_CALL_TIMEOUT_MS,
-    remainingMs(),
-  );
+  const consolidationTimeout = Math.min(callTimeoutMs, remainingMs());
 
   const consolidated =
     consolidationTimeout >= ANALYSIS_MIN_CALL_MS

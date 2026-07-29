@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { z } from 'zod';
+import { resolveTrainingAiModel } from '@/lib/ai-model';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import {
   buildContentLanguageDirective,
@@ -295,7 +296,7 @@ export async function POST(req: NextRequest) {
     }
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-2.5-flash';
+    const TRAINING_AI_MODEL = resolveTrainingAiModel();
 
     /**
      * Respuesta de fallo de esta ruta.

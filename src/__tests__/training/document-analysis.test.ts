@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
 import {
   analysisCoveragePercent,
   analyzeTrainingDocumentText,
   ANALYSIS_MAP_CONCURRENCY,
   buildPartialAnalysisNotice,
   consolidateAnalysesLocally,
+  DEFAULT_ANALYSIS_CALL_TIMEOUT_MS,
   DEFAULT_TRAINING_ANALYSIS_CHAR_BUDGET,
   mapWithConcurrencyLimit,
+  resolveAnalysisCallTimeoutMs,
   resolveAnalysisCharBudget,
   splitTextForAnalysis,
 } from '@/lib/training/document-analysis';
@@ -694,5 +697,134 @@ describe('analysisCoveragePercent', () => {
         blocksAnalyzed: 0,
       }),
     ).toBe(0);
+  });
+});
+
+// ============================================================
+// 10. Modelo de IA que viaja en la petición
+// ============================================================
+
+/**
+ * Este módulo resolvía el modelo con `||`, así que la cadena vacía sí caía al
+ * defecto y funcionaba, mientras las tres rutas que usaban `??` enviaban
+ * `"model": ""` y recibían `400` de OpenRouter con el mismo entorno. Ahora las
+ * cinco pasan por `resolveTrainingAiModel`, y lo que se afirma aquí es el campo
+ * `model` del cuerpo real de la petición.
+ */
+describe('analyzeTrainingDocumentText AI model', () => {
+  let originalModel: string | undefined;
+
+  beforeEach(() => {
+    originalModel = process.env.TRAINING_AI_MODEL;
+  });
+
+  afterEach(() => {
+    if (originalModel === undefined) {
+      delete process.env.TRAINING_AI_MODEL;
+    } else {
+      process.env.TRAINING_AI_MODEL = originalModel;
+    }
+  });
+
+  /** Analiza un texto de una sola pasada y devuelve el `model` enviado. */
+  const analyzeAndReadModel = async (): Promise<unknown> => {
+    await analyzeTrainingDocumentText(buildTrainingText(3_000), 'procedimiento.pdf', {
+      charBudget: 30_000,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    const init = mockFetch.mock.calls[0][1] as { body: string };
+    return (JSON.parse(init.body) as { model: unknown }).model;
+  };
+
+  it('sends the default model when TRAINING_AI_MODEL is not set', async () => {
+    delete process.env.TRAINING_AI_MODEL;
+
+    expect(await analyzeAndReadModel()).toBe(DEFAULT_AI_MODEL);
+  });
+
+  it('sends the default model when TRAINING_AI_MODEL is empty', async () => {
+    process.env.TRAINING_AI_MODEL = '';
+
+    const model = await analyzeAndReadModel();
+    expect(model).toBe(DEFAULT_AI_MODEL);
+    expect(model).not.toBe('');
+  });
+
+  it('sends the configured model when TRAINING_AI_MODEL is set', async () => {
+    process.env.TRAINING_AI_MODEL = 'google/gemini-2.5-flash';
+
+    expect(await analyzeAndReadModel()).toBe('google/gemini-2.5-flash');
+  });
+});
+
+// ============================================================
+// 11. Tope por llamada configurable por entorno
+// ============================================================
+
+/**
+ * El tope de 20 s por llamada descansa en un supuesto de **latencia** ("un
+ * bloque de 30.000 caracteres se resume en bastante menos"), y los modelos 3.x
+ * razonan por defecto, así que ese supuesto puede dejar de cumplirse. Es
+ * ajustable por entorno para poder reaccionar sin desplegar; lo que no puede es
+ * quedarse en cero, porque convertiría toda llamada en un `AbortError`
+ * inmediato y todo análisis en un resultado vacío.
+ */
+describe('resolveAnalysisCallTimeoutMs', () => {
+  let originalTimeout: string | undefined;
+
+  beforeEach(() => {
+    originalTimeout = process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS;
+    delete process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS;
+  });
+
+  afterEach(() => {
+    if (originalTimeout === undefined) {
+      delete process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS;
+    } else {
+      process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS = originalTimeout;
+    }
+  });
+
+  it('accepts a positive decimal integer', () => {
+    expect(resolveAnalysisCallTimeoutMs('30000')).toBe(30_000);
+    expect(resolveAnalysisCallTimeoutMs('  45000  ')).toBe(45_000);
+  });
+
+  it('falls back to the default for every invalid value', () => {
+    const invalid = [
+      undefined,
+      '',
+      '   ',
+      '0',
+      '-5',
+      '1.5',
+      'abc',
+      '2e4',
+      'Infinity',
+      'NaN',
+      '20_000',
+      '0x4e20',
+      '9'.repeat(20), // por encima de Number.MAX_SAFE_INTEGER
+    ];
+
+    for (const rawValue of invalid) {
+      expect(resolveAnalysisCallTimeoutMs(rawValue)).toBe(
+        DEFAULT_ANALYSIS_CALL_TIMEOUT_MS,
+      );
+    }
+  });
+
+  it('reads the environment variable when no value is passed', () => {
+    process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS = '25000';
+    expect(resolveAnalysisCallTimeoutMs()).toBe(25_000);
+
+    process.env.TRAINING_ANALYSIS_CALL_TIMEOUT_MS = 'not-a-number';
+    expect(resolveAnalysisCallTimeoutMs()).toBe(DEFAULT_ANALYSIS_CALL_TIMEOUT_MS);
+  });
+
+  it('keeps 20 s as the default', () => {
+    expect(DEFAULT_ANALYSIS_CALL_TIMEOUT_MS).toBe(20_000);
   });
 });

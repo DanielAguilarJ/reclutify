@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act, fireEvent } from '@testing-library/react';
 import React, { Suspense } from 'react';
 import ConfigureProgramPage from '../../app/admin/training/configure/[programId]/page';
+import { focusRing } from '../../components/training/ui';
 import type {
   ClientOcrProgress,
   ClientPdfTextResult,
@@ -486,5 +487,129 @@ describe('ConfigureProgramPage · aviso de contexto', () => {
 
     expect(screen.queryByText('La IA no vio todo el material')).not.toBeInTheDocument();
     expect(screen.getByText('Módulos generados con éxito')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Accesibilidad de la pantalla: dos defectos concretos.
+ *
+ * - La zona de arrastre era un `div` con `onClick`, así que subir un documento
+ *   exigía ratón: con teclado no había forma de abrir el selector de archivos.
+ * - El toast no era región en vivo, así que el desenlace del lote de subida y el
+ *   de la generación no se anunciaban a un lector de pantalla.
+ */
+describe('ConfigureProgramPage · accesibilidad', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAppStore.mockReturnValue({ language: 'es' });
+    mockUseTrainingAdminStore.mockReturnValue({
+      updateProgram: vi.fn(),
+      addModule: vi.fn(),
+      updateModule: vi.fn(),
+      removeModule: vi.fn(),
+      detachDocumentFromProgram: vi.fn(),
+      setError: vi.fn(),
+    });
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function generateModules() {
+    const button = screen.getByRole('button', { name: /Generar Módulos con AI/ });
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    await flush();
+  }
+
+  it('abre el selector de archivos desde un control operable por teclado', async () => {
+    installFetch();
+    await renderPage();
+
+    const selectButton = screen.getByRole('button', { name: 'Seleccionar archivos' });
+
+    // Es un `<button>` de verdad, no un `div` con rol pintado: de ahí salen el
+    // foco por tabulación y la activación con Enter y Espacio, que jsdom no
+    // simula porque las da el navegador.
+    expect(selectButton.tagName).toBe('BUTTON');
+    expect(selectButton).toHaveAttribute('type', 'button');
+    // Y el foco se ve, con el mismo anillo que el resto del módulo.
+    expect(selectButton.className).toContain(focusRing);
+
+    selectButton.focus();
+    expect(selectButton).toHaveFocus();
+
+    const fileInput = document.querySelector('input[type="file"]');
+
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error('file input not found');
+    }
+
+    const openPicker = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
+
+    await act(async () => {
+      fireEvent.click(selectButton);
+    });
+
+    // Una sola vez: el contenedor también abre el selector al hacer clic, así que
+    // sin detener la propagación el diálogo se pediría dos veces.
+    expect(openPicker).toHaveBeenCalledTimes(1);
+  });
+
+  it('anuncia el éxito de la generación en una región en vivo cortés', async () => {
+    installFetch();
+    await renderPage();
+    await generateModules();
+
+    // `status` (cortés): confirma lo que se acaba de pedir, no corta la lectura.
+    expect(screen.getByRole('status')).toHaveTextContent('Módulos generados con éxito');
+  });
+
+  it('anuncia como alerta el material que no entró en el contexto', async () => {
+    installFetch({
+      contextNotice: {
+        budgetChars: 120000,
+        documentLimit: 20,
+        documentsOmittedByLimit: 2,
+        omittedChars: 41000,
+        truncatedDocuments: [
+          { fileName: 'politicas.pdf', includedChars: 30000, omittedChars: 41000 },
+        ],
+      },
+    });
+
+    await renderPage();
+    await generateModules();
+
+    // `alert` (asertivo): cambia lo que el administrador tiene que hacer después.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /Parte del material no entró en el contexto/
+    );
+  });
+
+  it('anuncia como alerta el error del lote, y la zona de arrastre sigue aceptando archivos', async () => {
+    installFetch();
+    await renderPage();
+
+    const file = pdfFile('duplicado.pdf');
+
+    await act(async () => {
+      dropFiles([file]);
+    });
+    await flush();
+
+    // El arrastre sigue siendo el camino de selección: el archivo entra en la cola.
+    expect(screen.getByText('duplicado.pdf')).toBeInTheDocument();
+
+    await act(async () => {
+      dropFiles([file]);
+    });
+    await flush();
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/ya presentes en la lista/);
   });
 });

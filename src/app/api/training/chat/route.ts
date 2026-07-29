@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { resolveTrainingAiModel } from '@/lib/ai-model';
 import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
 import {
@@ -594,7 +595,7 @@ You MUST respond with a single valid JSON block only.
     }
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-2.5-flash';
+    const TRAINING_AI_MODEL = resolveTrainingAiModel();
 
     if (!OPENROUTER_API_KEY) {
       return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });

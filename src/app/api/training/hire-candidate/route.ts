@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { resolveTrainingAiModel } from '@/lib/ai-model';
 import { requireAuthenticatedUser } from '@/lib/training/auth';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { createOpaqueToken, hashOpaqueToken } from '@/lib/training/tokens';
@@ -211,7 +212,7 @@ export async function POST(req: NextRequest) {
 
     // 7. Generar notas de personalización vía AI (opcional/no-bloqueante)
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL || 'google/gemini-2.5-flash';
+    const TRAINING_AI_MODEL = resolveTrainingAiModel();
 
     if (OPENROUTER_API_KEY && employee.interview_data) {
       try {

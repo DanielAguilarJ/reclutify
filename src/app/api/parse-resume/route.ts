@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as mammoth from 'mammoth';
 
+import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
 import { extractPdfText } from '@/lib/pdf-text';
 
 // pdf-parse uses Node-only deps (file IO, native PDF parsing). Force the Node
@@ -164,7 +165,10 @@ ${text}`;
          'X-Title': 'Reclutify CV Parser',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
+        // Sin variable de entorno propia a propósito: `TRAINING_AI_MODEL` es del
+        // centro de capacitación y usarla aquí acoplaría el parseo de CV a un
+        // ajuste que no le corresponde.
+        model: DEFAULT_AI_MODEL,
         messages: [{ role: 'user', content: extractionPrompt }],
         response_format: { type: 'json_object' },
         temperature: 0.1,

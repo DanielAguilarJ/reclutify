@@ -610,6 +610,18 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   };
 
   /**
+   * Abre el selector de archivos del sistema.
+   *
+   * Lo comparten dos disparadores: el clic en cualquier punto de la zona de
+   * arrastre (comodidad de ratón, como antes) y el botón real que la acompaña,
+   * que es el único camino operable con teclado.
+   */
+  const openFilePicker = () => {
+    if (isReadOnly || parsingDocs) return;
+    fileInputRef.current?.click();
+  };
+
+  /**
    * Añade archivos a la cola descartando duplicados y respetando el tope del
    * lote. El duplicado se descarta porque el flujo por archivo lo emparejaría
    * con la misma fila del panel y el servidor lo deduplicaría por checksum de
@@ -1251,11 +1263,40 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
   return (
     <div className="animate-in fade-in duration-500 p-6 space-y-6 max-w-4xl">
-      {/* Toast Notification */}
+      {/*
+        Toast como REGIÓN EN VIVO.
+
+        No lo era: el resultado del lote de subida («3 documento(s) cargado(s), 2
+        con errores») y el de la generación existían solo como color y texto en
+        una esquina, se autodescartaban a los 4 s y un lector de pantalla no
+        anunciaba ninguno. El administrador que no ve la esquina se quedaba sin
+        saber cómo acabó la acción que acababa de lanzar.
+
+        El rol depende del tipo, porque los tres desenlaces no interrumpen igual:
+
+        - `error` y `warning` → `role="alert"` (implícitamente `assertive`).
+          Cambian lo que hay que hacer a continuación: documentos que no se
+          procesaron y siguen en la lista para reintentar, o material que no entró
+          en el contexto y espera en el panel de aviso. Interrumpir es lo correcto,
+          y es además el patrón de alerta de ARIA, que se anuncia al insertarse el
+          nodo con su contenido.
+        - `success` → `role="status"` (implícitamente `polite`). Confirma lo que se
+          acaba de pedir, así que espera su turno en vez de cortar la lectura en
+          curso.
+
+        `aria-atomic` hace que se lea el mensaje completo y no solo el fragmento
+        que cambió cuando un toast reemplaza a otro. El color del error pasa a
+        usar el token `danger` (mismo valor que tenía a mano) para no dejar un
+        color de paleta suelto en el único elemento sin tokenizar del bloque.
+      */}
       {toast && (
-        <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg transition-all animate-in fade-in slide-in-from-top-2 duration-300 text-white font-medium ${
-          toast.type === 'success' ? 'bg-success' : toast.type === 'warning' ? 'bg-warning' : 'bg-red-500'
-        }`}>
+        <div
+          role={toast.type === 'success' ? 'status' : 'alert'}
+          aria-atomic="true"
+          className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg transition-all animate-in fade-in slide-in-from-top-2 duration-300 text-white font-medium ${
+            toast.type === 'success' ? 'bg-success' : toast.type === 'warning' ? 'bg-warning' : 'bg-danger'
+          }`}
+        >
           {toast.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
           <span className="text-sm">{toast.message}</span>
         </div>
@@ -1484,14 +1525,30 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               </button>
             </div>
 
+            {/*
+              Zona de arrastre + botón real.
+
+              Antes era un `div` con `onClick` y nada más: con teclado no había
+              forma de abrir el selector, así que la única vía de subir un
+              documento exigía ratón. Se deja el `div` como zona de arrastre —los
+              eventos de arrastre solo tienen sentido sobre un contenedor— y la
+              operabilidad la aporta un `<button>` de verdad dentro de él.
+
+              Por qué el botón y no `role="button" + tabIndex` en el contenedor:
+              el rol `button` marca a sus descendientes como presentacionales, así
+              que las tres líneas de ayuda (formatos, tope del lote, aviso del
+              OCR) se aplastarían dentro del nombre accesible y se leerían como
+              parte del propio botón. Además el botón trae Enter y Espacio del
+              navegador, sin manejador de teclas que mantener sincronizado, y el
+              estado `parsingDocs` se expresa con `disabled` en vez de inventar
+              un `aria-disabled` sobre un `div`. El `input[type=file]` sigue fuera
+              del botón: anidarlo dentro sería HTML inválido.
+            */}
             <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              onClick={() => {
-                if (parsingDocs) return;
-                fileInputRef.current?.click();
-              }}
+              onClick={openFilePicker}
               className={`relative flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed transition-all ${
                 parsingDocs ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
               } ${
@@ -1512,7 +1569,21 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               <p className="text-sm font-medium text-foreground">
                 {language === 'es' ? 'Arrastra archivos aquí o haz clic para seleccionar' : 'Drag files here or click to select'}
               </p>
-              <p className="text-xs text-muted mt-1">
+              <button
+                type="button"
+                onClick={(event) => {
+                  // El contenedor también abre el selector: sin esto el clic en
+                  // el botón burbujearía y lo abriría dos veces.
+                  event.stopPropagation();
+                  openFilePicker();
+                }}
+                disabled={parsingDocs}
+                className={`mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-1.5 text-xs font-semibold text-foreground transition-colors hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-60 ${focusRing}`}
+              >
+                <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                {language === 'es' ? 'Seleccionar archivos' : 'Select files'}
+              </button>
+              <p className="text-xs text-muted mt-3">
                 {language === 'es'
                   ? `PDF, DOCX, TXT, MD (Máx ${MAX_TRAINING_FILE_SIZE_MB} MB · hasta ${MAX_UPLOAD_BATCH} archivos por lote)`
                   : `PDF, DOCX, TXT, MD (Max ${MAX_TRAINING_FILE_SIZE_MB} MB · up to ${MAX_UPLOAD_BATCH} files per batch)`}

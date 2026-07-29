@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, UserCheck, GraduationCap, Loader2, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
@@ -13,7 +13,7 @@ interface HireModalProps {
 }
 
 export default function HireModal({ candidate, language, onClose }: HireModalProps) {
-  const { programs, fetchTrainingData } = useTrainingAdminStore();
+  const { programs, modules, fetchTrainingData } = useTrainingAdminStore();
   const [selectedProgramId, setSelectedProgramId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -26,12 +26,18 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
     fetchTrainingData();
   }, [fetchTrainingData]);
 
-  // Filtrar programas elegibles
-  const eligiblePrograms = programs.filter(
-    (program) =>
-      program.roleId === candidate.roleId &&
-      program.status === 'published'
-  );
+  // Filtrar programas elegibles: mismos requisitos que la RPC hire_training_candidate
+  // (publicado, con puesto asignado y con al menos un módulo).
+  const eligiblePrograms = useMemo(() => {
+    const programIdsWithModules = new Set(modules.map((m) => m.programId));
+    return programs.filter(
+      (program) =>
+        program.status === 'published' &&
+        !!program.roleId &&
+        program.roleId === candidate.roleId &&
+        programIdsWithModules.has(program.id)
+    );
+  }, [programs, modules, candidate.roleId]);
 
   useEffect(() => {
     if (eligiblePrograms.length > 0 && !selectedProgramId) {
@@ -164,9 +170,9 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                 ) : (
                   <div className="p-4 rounded-xl border-2 border-dashed border-border/30 text-center">
                     <p className="text-xs text-muted mb-2">
-                      {language === 'es' 
-                        ? 'No hay programas publicados para este puesto' 
-                        : 'No published programs for this role'}
+                      {language === 'es'
+                        ? 'No hay programas de capacitación publicados para este puesto. Publica un programa con módulos y asígnalo a la vacante.'
+                        : 'There are no published training programs for this role. Publish a program with modules and assign it to the job opening.'}
                     </p>
                     <a href="/admin/training" className="text-xs text-primary hover:underline font-medium">
                       {language === 'es' ? 'Ir a configurar un programa' : 'Go configure a program'}

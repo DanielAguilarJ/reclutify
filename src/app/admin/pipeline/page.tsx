@@ -3,13 +3,14 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, ArrowUpRight, Clock, CheckCircle2, AlertCircle, AlertTriangle, Bot, Loader2, ArrowUpDown } from 'lucide-react';
+import { Search, ArrowUpRight, Clock, CheckCircle2, AlertCircle, AlertTriangle, Bot, Loader2, ArrowUpDown, UserCheck } from 'lucide-react';
 import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useRoles } from '@/hooks/useRoles';
 import { useCandidates } from '@/hooks/useCandidates';
 import type { CandidateResult } from '@/types';
 import CompareModal from '@/components/admin/CompareModal';
+import HireModal from '@/components/admin/HireModal';
 
 export default function PipelinePage() {
   const { candidates, roles, updateCandidate } = useAdminStore();
@@ -24,6 +25,7 @@ export default function PipelinePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showCompare, setShowCompare] = useState(false);
+  const [hireCandidate, setHireCandidate] = useState<CandidateResult | null>(null);
 
   const handleProcessPartial = async (candidate: CandidateResult) => {
     setEvaluatingId(candidate.id);
@@ -363,14 +365,30 @@ export default function PipelinePage() {
                     </div>
                   )}
                   {candidate.evaluation && (
-                    <Link
-                      href={`/admin/report/${candidate.id}`}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover
-                        transition-colors"
-                    >
-                      {language === 'es' ? 'Ver Reporte' : 'View Report'}
-                      <ArrowUpRight className="h-3 w-3" />
-                    </Link>
+                    <div className="inline-flex items-center gap-3">
+                      <button
+                        onClick={() => setHireCandidate(candidate)}
+                        title={language === 'es' ? 'Contratar e iniciar capacitación' : 'Hire and start training'}
+                        aria-label={
+                          language === 'es'
+                            ? `Contratar a ${candidate.candidate.name}`
+                            : `Hire ${candidate.candidate.name}`
+                        }
+                        className="inline-flex items-center gap-1 text-xs font-medium text-success hover:text-success/80
+                          transition-colors cursor-pointer"
+                      >
+                        <UserCheck className="h-3 w-3" />
+                        {language === 'es' ? 'Contratar' : 'Hire'}
+                      </button>
+                      <Link
+                        href={`/admin/report/${candidate.id}`}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover
+                          transition-colors"
+                      >
+                        {language === 'es' ? 'Ver Reporte' : 'View Report'}
+                        <ArrowUpRight className="h-3 w-3" />
+                      </Link>
+                    </div>
                   )}
                 </td>
               </motion.tr>
@@ -385,6 +403,15 @@ export default function PipelinePage() {
           candidates={selectedCandidates}
           onClose={() => setShowCompare(false)}
           language={language}
+        />
+      )}
+
+      {/* Hire Modal — reutiliza el flujo de contratación del reporte */}
+      {hireCandidate && (
+        <HireModal
+          candidate={hireCandidate}
+          language={language}
+          onClose={() => setHireCandidate(null)}
         />
       )}
     </div>

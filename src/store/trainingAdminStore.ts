@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import type {
   TrainingProgram,
-  TrainingProgramStatus,
   TrainingDocument,
   TrainingDocumentStatus,
   TrainingModule,
@@ -11,6 +10,7 @@ import type {
   TrainingModuleSection,
   TrainingQuestionAdmin,
 } from '@/types';
+import { mapTrainingProgram } from '@/lib/training/mappers';
 import { createClient } from '@/utils/supabase/client';
 
 // ─── Tipos de estado del store ───
@@ -47,22 +47,7 @@ interface TrainingAdminState {
 }
 
 function programFromSupabase(row: Record<string, unknown>): TrainingProgram {
-  return {
-    id: row.id as string,
-    orgId: row.org_id as string,
-    roleId: (row.role_id as string) || undefined,
-    title: row.title as string,
-    description: (row.description as string) || undefined,
-    isDefault: (row.is_default as boolean) ?? false,
-    welcomeMessage: (row.welcome_message as string) || undefined,
-    aiPersonality: (row.ai_personality as string) || 'friendly_mentor',
-    status: (row.status as TrainingProgramStatus) || 'draft',
-    version: (row.version as number) ?? 1,
-    passingScore: (row.passing_score as number) ?? 70,
-    publishedAt: (row.published_at as string) || undefined,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
+  return mapTrainingProgram(row);
 }
 
 function documentFromSupabase(row: Record<string, unknown>): TrainingDocument {

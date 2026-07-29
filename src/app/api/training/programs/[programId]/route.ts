@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { updateTrainingProgramSchema } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { mapTrainingProgram } from '@/lib/training/mappers';
 
 export const runtime = 'nodejs';
 
@@ -152,22 +153,7 @@ export async function GET(
 
     return NextResponse.json({
       success: true,
-      program: {
-        id: program.id,
-        orgId: program.org_id,
-        roleId: program.role_id ?? undefined,
-        title: program.title,
-        description: program.description ?? undefined,
-        isDefault: program.is_default ?? false,
-        welcomeMessage: program.welcome_message ?? undefined,
-        aiPersonality: program.ai_personality ?? 'friendly_mentor',
-        status: program.status ?? 'draft',
-        version: program.version ?? 1,
-        passingScore: program.passing_score ?? 70,
-        publishedAt: program.published_at ?? undefined,
-        createdAt: program.created_at,
-        updatedAt: program.updated_at,
-      },
+      program: mapTrainingProgram(program),
       role,
       documents,
       modules,
@@ -207,6 +193,10 @@ export async function PATCH(
     if (body.description !== undefined) updates.description = body.description;
     if (body.welcomeMessage !== undefined) updates.welcome_message = body.welcomeMessage;
     if (body.aiPersonality !== undefined) updates.ai_personality = body.aiPersonality;
+    // El valor ya viene acotado a `TRAINING_CONTENT_LANGUAGES` por el esquema, que
+    // es el mismo dominio que el `CHECK` de la columna: nada fuera de la unión
+    // llega al `UPDATE`.
+    if (body.contentLanguage !== undefined) updates.content_language = body.contentLanguage;
     if (body.passingScore !== undefined) updates.passing_score = body.passingScore;
 
     const { data: updated, error } = await admin
@@ -231,22 +221,7 @@ export async function PATCH(
 
     return NextResponse.json({
       success: true,
-      program: {
-        id: updated.id,
-        orgId: updated.org_id,
-        roleId: updated.role_id ?? undefined,
-        title: updated.title,
-        description: updated.description ?? undefined,
-        isDefault: updated.is_default ?? false,
-        welcomeMessage: updated.welcome_message ?? undefined,
-        aiPersonality: updated.ai_personality ?? 'friendly_mentor',
-        status: updated.status ?? 'draft',
-        version: updated.version ?? 1,
-        passingScore: updated.passing_score ?? 70,
-        publishedAt: updated.published_at ?? undefined,
-        createdAt: updated.created_at,
-        updatedAt: updated.updated_at,
-      },
+      program: mapTrainingProgram(updated),
     });
   } catch (err: unknown) {
     return trainingApiErrorResponse(err, '[API PATCH Program] Unexpected error');

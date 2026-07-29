@@ -29,6 +29,11 @@ import { useAppStore } from '@/store/appStore';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
 import { createClient } from '@/utils/supabase/client';
 import type { TrainingModule, TrainingDocument, TrainingProgram, TrainingProgramStatus } from '@/types';
+import {
+  DEFAULT_TRAINING_CONTENT_LANGUAGE,
+  resolveTrainingContentLanguage,
+  type TrainingContentLanguage,
+} from '@/lib/training/content-language';
 
 /**
  * Bucket privado de documentos de capacitación.
@@ -145,6 +150,12 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const [description, setDescription] = useState('');
   const [welcomeMessage, setWelcomeMessage] = useState('');
   const [aiPersonality, setAiPersonality] = useState('friendly_mentor');
+  // Idioma del contenido del programa. No es la preferencia de idioma del
+  // administrador (`language`): es el idioma en el que la IA genera los módulos y
+  // en el que ve la capacitación el empleado.
+  const [contentLanguage, setContentLanguage] = useState<TrainingContentLanguage>(
+    DEFAULT_TRAINING_CONTENT_LANGUAGE
+  );
   const [passingScore, setPassingScore] = useState(70);
   const [status, setStatus] = useState<TrainingProgramStatus>('draft');
 
@@ -195,6 +206,9 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         setDescription(data.program.description || '');
         setWelcomeMessage(data.program.welcomeMessage || '');
         setAiPersonality(data.program.aiPersonality || 'friendly_mentor');
+        setContentLanguage(
+          resolveTrainingContentLanguage(data.program.contentLanguage)
+        );
         setPassingScore(data.program.passingScore ?? 70);
         setStatus(data.program.status || 'draft');
       }
@@ -677,6 +691,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         description,
         welcomeMessage,
         aiPersonality,
+        contentLanguage,
         passingScore,
       });
 
@@ -880,6 +895,28 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               <option value="strict_teacher">{language === 'es' ? 'Profesor Estricto' : 'Strict Teacher'}</option>
               <option value="casual_colleague">{language === 'es' ? 'Colega Casual' : 'Casual Colleague'}</option>
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              {language === 'es' ? 'Idioma del Contenido' : 'Content Language'}
+            </label>
+            <select
+              value={contentLanguage}
+              disabled={isReadOnly}
+              onChange={(e) =>
+                setContentLanguage(resolveTrainingContentLanguage(e.target.value))
+              }
+              className="w-full px-4 py-2.5 rounded-xl border border-border/50 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all text-sm disabled:opacity-60"
+            >
+              <option value="es">{language === 'es' ? 'Español' : 'Spanish'}</option>
+              <option value="en">{language === 'es' ? 'Inglés' : 'English'}</option>
+            </select>
+            <p className="mt-1.5 text-xs text-muted">
+              {language === 'es'
+                ? 'Cambiarlo no retraduce los módulos ya generados: hay que regenerarlos.'
+                : 'Changing it does not retranslate existing modules: regenerate them.'}
+            </p>
           </div>
         </div>
 

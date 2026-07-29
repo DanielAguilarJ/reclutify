@@ -182,6 +182,23 @@ const ENV_KEYS = [
   'OPENROUTER_API_KEY',
 ] as const;
 
+/**
+ * Valores FICTICIOS y evidentemente falsos para las claves. Ninguna clave real
+ * puede entrar aquí: quedaría en el historial de git para siempre.
+ *
+ * El fixture tiene que tener FORMA VÁLIDA de clave de servicio. Antes era
+ * `'service-role-key'`, que la validación de forma clasifica como inválida: los
+ * casos que decían «la variable crítica está bien» habrían dejado de probar eso.
+ */
+const FAKE_SERVICE_ROLE_KEY = 'sb_secret_EJEMPLO-FICTICIO-NO-ES-UNA-CLAVE-REAL';
+
+/** JWT de tres segmentos con `role: "anon"`; la firma es relleno inútil. */
+const FAKE_ANON_JWT = [
+  Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' }), 'utf8').toString('base64url'),
+  Buffer.from(JSON.stringify({ iss: 'supabase', role: 'anon' }), 'utf8').toString('base64url'),
+  'ZmlybWEtZmljdGljaWEtbm8tdmVyaWZpY2E',
+].join('.');
+
 let originalEnv: Record<string, string | undefined> = {};
 
 describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
@@ -201,7 +218,7 @@ describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
 
     process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'anon-key';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = FAKE_SERVICE_ROLE_KEY;
     process.env.OPENROUTER_API_KEY = 'openrouter-key';
 
     // Camino preferente: la RPC de reporte existe y el entorno está sano.
@@ -469,6 +486,22 @@ describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
     // Las variables críticas siguen presentes y ninguna clave se filtra.
     expect(findCheck(body, 'env.SUPABASE_SERVICE_ROLE_KEY').status).toBe('ok');
     expect(JSON.stringify(body)).not.toContain('service-role-key');
+    expect(JSON.stringify(body)).not.toContain(FAKE_SERVICE_ROLE_KEY);
+  });
+
+  // ============================================================
+  // Los tres estados de SUPABASE_SERVICE_ROLE_KEY
+  // ============================================================
+
+  it('reports a well-shaped service role key as ok', async () => {
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.SUPABASE_SERVICE_ROLE_KEY');
+    expect(check.status).toBe('ok');
+    expect(check.detail).toBeUndefined();
+    expect(body.env.SUPABASE_SERVICE_ROLE_KEY).toBe(true);
+    expect(body.ok).toBe(true);
   });
 
   it('reports a missing critical env variable as a failure', async () => {
@@ -480,7 +513,56 @@ describe('Training Diagnostics Endpoint (/api/training/diagnostics)', () => {
     const check = findCheck(body, 'env.SUPABASE_SERVICE_ROLE_KEY');
     expect(check.severity).toBe('critical');
     expect(check.status).toBe('missing');
+    // El caso «ausente» pide definir la variable, sin hablar de formas.
+    expect(check.remediation).toBe(
+      'Definir SUPABASE_SERVICE_ROLE_KEY en el entorno del despliegue',
+    );
+    expect(check.detail).toBeUndefined();
+    expect(body.env.SUPABASE_SERVICE_ROLE_KEY).toBe(false);
     expect(body.summary.failed).toBe(1);
     expect(body.ok).toBe(false);
+  });
+
+  it('fails the check when the variable is set to a value that is not a service role key', async () => {
+    // El fallo que originó la validación: el NOMBRE de la fila del panel pegado
+    // como si fuera su VALOR. Antes reportaba `ok`.
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role';
+
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.SUPABASE_SERVICE_ROLE_KEY');
+    expect(check.severity).toBe('critical');
+    expect(check.status).toBe('missing');
+    // Distinguible del caso «ausente»: la variable está definida y la
+    // remediación dice exactamente qué copiar.
+    expect(check.detail).toContain('definida');
+    expect(check.remediation).toContain('VALOR de la fila service_role');
+    expect(check.remediation).not.toBe(
+      'Definir SUPABASE_SERVICE_ROLE_KEY en el entorno del despliegue',
+    );
+
+    expect(body.env.SUPABASE_SERVICE_ROLE_KEY).toBe(false);
+    expect(body.summary.failed).toBe(1);
+    expect(body.ok).toBe(false);
+  });
+
+  it('says so explicitly when the anon key was pasted into the service role variable', async () => {
+    process.env.SUPABASE_SERVICE_ROLE_KEY = FAKE_ANON_JWT;
+
+    const res = await GET(request(`?orgId=${ORG_ID}`));
+    const body = (await res.json()) as DiagnosticsBody;
+
+    const check = findCheck(body, 'env.SUPABASE_SERVICE_ROLE_KEY');
+    expect(check.status).toBe('missing');
+    expect(check.remediation).toMatch(/anon/i);
+    expect(check.remediation).toMatch(/RLS/);
+    expect(check.remediation).toContain('VALOR de la fila service_role');
+    expect(body.ok).toBe(false);
+
+    // Ni el valor ni fragmentos suyos aparecen en la respuesta.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(FAKE_ANON_JWT);
+    expect(serialized).not.toContain(FAKE_ANON_JWT.slice(0, 12));
   });
 });

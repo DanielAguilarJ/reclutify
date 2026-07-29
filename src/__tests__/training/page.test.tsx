@@ -130,6 +130,37 @@ describe('TrainingModulePage Component Integrity', () => {
     expect(screen.getByText('Lista de Lectura')).toBeInTheDocument();
   });
 
+  it('marks the open module with aria-current in the program outline', async () => {
+    render(<TrainingModulePage params={Promise.resolve({ moduleId: 'mod-1' })} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const outlineEntry = screen.getByRole('button', { name: /Intro Module/ });
+
+    expect(outlineEntry).toHaveAttribute('aria-current', 'page');
+    expect(
+      screen.getByRole('navigation', { name: 'Módulos del programa' })
+    ).toBeInTheDocument();
+  });
+
+  it('renders the module sections as a readable document linked from the reading list', async () => {
+    render(<TrainingModulePage params={Promise.resolve({ moduleId: 'mod-1' })} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // El material del módulo se lee en la pantalla, no solo se enumera en la
+    // lateral: antes del rediseño solo existía el chat con el tutor.
+    expect(screen.getByRole('heading', { name: 'Sec 1' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sec 1' })).toHaveAttribute(
+      'href',
+      '#training-section-0'
+    );
+  });
+
   it('redirects to /training/center if module progress status is locked', async () => {
     const mockStore = {
       ...mockStoreDefault,

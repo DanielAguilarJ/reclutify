@@ -96,6 +96,20 @@
   --color-surface: var(--app-surface);
   --color-surface-hover: var(--app-surface-hover);
 
+  /*
+   * Acento único de las pantallas del empleado (Centro de Capacitación).
+   *
+   * Existe para que ningún componente vuelva a escribir el hex de marca
+   * (#00D3D8) a mano: ese valor no llega a 3:1 sobre fondo claro, así que la
+   * variante clara es un teal más profundo y la oscura sí es la de marca.
+   * `accent-contrast` es el color del texto que va ENCIMA del relleno de
+   * acento, y `accent-soft` el fondo teñido para estados sutiles.
+   */
+  --color-accent: var(--app-accent);
+  --color-accent-hover: var(--app-accent-hover);
+  --color-accent-contrast: var(--app-accent-contrast);
+  --color-accent-soft: var(--app-accent-soft);
+
   /* Global Animations */
   --animate-orbPulse: orbPulse 3s ease-in-out infinite;
   --animate-orbSpeaking: orbSpeaking 1.5s ease-in-out infinite;
@@ -121,6 +135,10 @@
   --app-border: #e2e8f0;
   --app-surface: #f3f4fa;
   --app-surface-hover: #e8e9f5;
+  --app-accent: #00767a;
+  --app-accent-hover: #005f63;
+  --app-accent-contrast: #ffffff;
+  --app-accent-soft: #e3f7f7;
 }
 
 /* ─── Dark Theme ─── */
@@ -134,6 +152,10 @@
   --app-border: #2d3148;
   --app-surface: #161925;
   --app-surface-hover: #1e2133;
+  --app-accent: #00d3d8;
+  --app-accent-hover: #7af3ff;
+  --app-accent-contrast: #052326;
+  --app-accent-soft: #102c30;
 }
 
 @layer base {

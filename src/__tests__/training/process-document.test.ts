@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/training/documents/process/route';
 import {
   buildTrainingDocumentStoragePath,
   MAX_TRAINING_FILE_SIZE,
 } from '@/lib/training/documents';
+import { MAX_TRAINING_OCR_TEXT_CHARS } from '@/lib/training/contracts';
 import { TrainingAuthError } from '@/lib/training/auth';
 
 vi.mock('server-only', () => ({}));
@@ -450,5 +451,237 @@ describe('Process endpoint document status (/api/training/documents/process)', (
     expect(body.document.status).toBe('ready');
     expect(mockInsertChunks).toHaveBeenCalled();
     expect(mockStorageRemove).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Texto de OCR aportado por el cliente
+// ============================================================
+
+/**
+ * `ocrText` es el único dato del cuerpo que puede acabar en el contenido
+ * indexado, así que lo que se protege aquí es su **regla de uso**: se acepta solo
+ * donde no había alternativa (PDF sin capa de texto) y nunca por delante de la
+ * extracción del servidor, que sí se deriva de los bytes del bucket.
+ */
+describe('Process endpoint client OCR text (/api/training/documents/process)', () => {
+  const OCR_TEXT =
+    'Texto reconocido por el OCR del navegador, suficientemente largo para superar el umbral.';
+
+  /** `extracted_text` tal y como se persistió en el insert. */
+  const insertedText = (): string => {
+    const payload = mockInsertDoc.mock.calls[0]?.[0] as
+      | { extracted_text?: string }
+      | undefined;
+
+    return payload?.extracted_text ?? '';
+  };
+
+  it('usa el texto de OCR cuando el PDF no trae capa de texto y deja el documento ready', async () => {
+    // Este es el caso que antes moría en `needs_ocr`: sin fragmentos, fuera del
+    // tutor y fuera de la generación de módulos.
+    pdfParseState.text = 'Portada';
+    const fileName = 'escaneado.pdf';
+    respondWithBytes(['%PDF-1.7\n%binary-ish content\n']);
+
+    const res = await POST(
+      buildRequest(processBody({ fileName, ocrText: OCR_TEXT })),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.document.status).toBe('ready');
+    expect(insertedText()).toBe(OCR_TEXT);
+
+    // Y sigue el camino normal desde ahí: se fragmenta y se asocia.
+    expect(mockInsertChunks).toHaveBeenCalled();
+    expect(mockInsertAssoc).toHaveBeenCalled();
+
+    // Queda constancia de la procedencia en el campo informativo que ya existe,
+    // sin columnas nuevas.
+    expect(body.document.processingError).toContain('OCR');
+    expect(body.document.processingError).toContain('navegador');
+  });
+
+  it('ignora el texto del cliente cuando el PDF sí trae capa de texto', async () => {
+    // Manda el servidor: su texto proviene de los bytes que están en el bucket.
+    // Aceptar el del cliente por delante permitiría sustituir el contenido de un
+    // documento legible.
+    pdfParseState.text = LONG_TEXT;
+    const fileName = 'manual-completo.pdf';
+    respondWithBytes(['%PDF-1.7\n%binary-ish content\n']);
+
+    const res = await POST(
+      buildRequest(processBody({ fileName, ocrText: OCR_TEXT })),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.document.status).toBe('ready');
+    expect(insertedText()).toBe(LONG_TEXT);
+    expect(insertedText()).not.toContain('navegador');
+    // Sin sustitución no hay nada que declarar.
+    expect(body.document.processingError).toBeUndefined();
+  });
+
+  it('ignora el texto del cliente cuando el archivo no es PDF', async () => {
+    // Un TXT o un DOCX sin texto es un documento vacío, no un escaneo: no hay
+    // nada que un OCR pudiera haber leído de él.
+    respondWithBytes(['corto']);
+
+    const res = await POST(
+      buildRequest(processBody({ fileName: 'vacio.txt', ocrText: OCR_TEXT })),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.document.status).toBe('failed');
+    expect(insertedText()).not.toContain('navegador');
+    expect(mockInsertChunks).not.toHaveBeenCalled();
+  });
+
+  it('deja el PDF en needs_ocr cuando el texto del cliente tampoco alcanza el umbral', async () => {
+    pdfParseState.text = 'Portada';
+    respondWithBytes(['%PDF-1.7\n%binary-ish content\n']);
+
+    const res = await POST(
+      buildRequest(processBody({ fileName: 'ilegible.pdf', ocrText: 'ilegible' })),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.document.status).toBe('needs_ocr');
+    expect(body.document.processingError).toContain('OCR');
+    expect(mockInsertChunks).not.toHaveBeenCalled();
+  });
+
+  it('rechaza un ocrText que excede el tope sin descargar nada', async () => {
+    const res = await POST(
+      buildRequest(
+        processBody({
+          fileName: 'escaneado.pdf',
+          ocrText: 'a'.repeat(MAX_TRAINING_OCR_TEXT_CHARS + 1),
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockStorageDownload).not.toHaveBeenCalled();
+    expect(mockInsertDoc).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Parcialidad del análisis con IA: visible y no bloqueante
+// ============================================================
+
+describe('Process endpoint partial AI analysis (/api/training/documents/process)', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    delete process.env.TRAINING_ANALYSIS_CHAR_BUDGET;
+    process.env.OPENROUTER_API_KEY = '';
+  });
+
+  it('saves the document and states that the analysis only covers part of it', async () => {
+    // Un texto que no cabe en una pasada. El presupuesto por pasada se baja por
+    // entorno para no tener que fabricar 90.000 caracteres en la prueba.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+    process.env.TRAINING_ANALYSIS_CHAR_BUDGET = '2000';
+
+    const paragraph =
+      'La revisión del equipo de protección personal se hace antes de cada turno. ' +
+      'El supervisor registra la lectura de presión en la bitácora de la planta.\n\n';
+    const longText = paragraph.repeat(50); // ~7.500 caracteres, varios bloques.
+
+    respondWithBytes([longText]);
+
+    // Uno de los bloques falla en la red: el análisis cubre el resto y el
+    // resultado tiene que decirlo, en vez de pasar por completo.
+    const mockFetch = vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { messages: Array<{ content: string }> };
+      const content = body.messages[1].content;
+
+      if (content.includes('This is part 2 of')) {
+        throw new Error('network down');
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Resumen del contenido analizado.',
+                  topics: [
+                    { title: 'Seguridad', description: 'Normas del turno', keyPoints: ['Casco'] },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+      };
+    });
+
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await POST(buildRequest(processBody({ fileName: 'manual-largo.txt' })));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    // El documento se guarda igual: la parcialidad del análisis no bloquea.
+    expect(body.document.status).toBe('ready');
+    expect(mockInsertDoc).toHaveBeenCalled();
+    expect(mockInsertChunks).toHaveBeenCalled();
+    expect(mockInsertAssoc).toHaveBeenCalled();
+    expect(mockStorageRemove).not.toHaveBeenCalled();
+
+    // Y la parcialidad consta en los dos campos que el administrador lee.
+    expect(body.document.aiSummary).toContain('ANÁLISIS PARCIAL');
+    expect(body.document.aiSummary).toContain('Resumen del contenido analizado.');
+    expect(body.document.processingError).toContain('Análisis de IA parcial');
+    expect(body.document.processingError).toMatch(/\d+ de \d+ bloques/);
+  });
+
+  it('does not touch ai_summary when the whole text fits in one pass', async () => {
+    process.env.OPENROUTER_API_KEY = 'mock-key';
+
+    const mockFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: 'Resumen completo del documento.',
+                topics: [],
+              }),
+            },
+          },
+        ],
+      }),
+    }));
+
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await POST(buildRequest(processBody({ fileName: 'manual.txt' })));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Una sola llamada y ningún aviso: el caso normal no cambia.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(body.document.aiSummary).toBe('Resumen completo del documento.');
+    expect(body.document.processingError).toBeUndefined();
   });
 });

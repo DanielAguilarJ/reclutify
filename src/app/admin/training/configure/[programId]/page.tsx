@@ -23,9 +23,10 @@ import {
   Globe,
   Briefcase,
   FileWarning,
+  Info,
   X
 } from 'lucide-react';
-import { useAppStore } from '@/store/appStore';
+import { useAppStore, type Language } from '@/store/appStore';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
 import { createClient } from '@/utils/supabase/client';
 import type { TrainingModule, TrainingDocument, TrainingProgram, TrainingProgramStatus } from '@/types';
@@ -34,6 +35,22 @@ import {
   resolveTrainingContentLanguage,
   type TrainingContentLanguage,
 } from '@/lib/training/content-language';
+// De `client-ocr` aquí solo entran tipos y un número. Lo que pesa de ese módulo
+// no es su código (unos pocos KB) sino `pdfjs-dist` y `tesseract.js`, megabytes
+// entre JavaScript, WASM y datos de idioma, y esos dos viven detrás de un
+// `import()` dinámico *dentro* de sus funciones: quedan en chunks aparte y solo
+// se descargan cuando un lote trae un PDF. La función de OCR se importa también
+// de forma dinámica, más abajo, para no cablear el módulo en el arranque de la
+// pantalla.
+import type {
+  ClientOcrPhase,
+  ClientPdfTextResult,
+} from '@/lib/training/client-ocr';
+import { DEFAULT_OCR_PAGE_LIMIT } from '@/lib/training/client-ocr';
+// Anillo de foco compartido del rediseño. Es una cadena de clases, no un
+// componente: no arrastra nada al bundle y evita que este botón nuevo sea el
+// único de la aplicación sin foco visible.
+import { focusRing } from '@/components/training/ui';
 
 /**
  * Bucket privado de documentos de capacitación.
@@ -61,8 +78,59 @@ const MAX_TRAINING_FILE_SIZE_MB = 15;
  */
 const MAX_UPLOAD_BATCH = 10;
 
-/** Estado de un archivo dentro del flujo de tres pasos. */
-type UploadStepStatus = 'pending' | 'uploading' | 'processing' | 'done' | 'failed';
+/**
+ * Estado de un archivo dentro del flujo de subida.
+ *
+ * `ocr` es un paso intermedio que solo aparece con PDF escaneados: entre la
+ * subida al bucket y el procesamiento en el servidor, el navegador reconoce el
+ * texto del PDF (ver `@/lib/training/client-ocr`). Es el paso más largo con
+ * diferencia —minutos, no segundos—, así que tiene su propio estado, su propio
+ * detalle de progreso y su propio botón de cancelar.
+ */
+type UploadStepStatus =
+  | 'pending'
+  | 'uploading'
+  | 'ocr'
+  | 'processing'
+  | 'done'
+  | 'failed';
+
+/**
+ * Detalle del OCR de navegador de un archivo.
+ *
+ * Es una unión discriminada y no un objeto con banderas porque los cuatro
+ * desenlaces del OCR no comparten datos: mientras corre importan la fase y la
+ * página; cuando acaba bien importan las páginas reconocidas y si el resultado
+ * quedó incompleto; y cuando se cancela o falla no queda ninguna cifra que
+ * valga la pena mostrar, solo la consecuencia (el documento se queda pendiente
+ * de OCR). Con banderas sueltas habría estados imposibles representables, como
+ * «cancelado en la página 7 de 0».
+ */
+type UploadOcrState =
+  | {
+      stage: 'running';
+      phase: ClientOcrPhase;
+      /** Página en curso, 1-based. `0` cuando la fase no es de página. */
+      page: number;
+      totalPages: number;
+      /** Avance dentro de la página, 0..1. */
+      pageProgress: number;
+    }
+  | {
+      stage: 'done';
+      pagesProcessed: number;
+      totalPages: number;
+      /** El texto no cubre el documento entero (tope de páginas o de caracteres). */
+      partial: boolean;
+    }
+  /** El administrador lo canceló: el documento se procesa sin texto de OCR. */
+  | { stage: 'cancelled' }
+  /**
+   * El OCR no dio texto utilizable. `empty` es un escaneo ilegible o en blanco;
+   * `error` es cualquier otro fallo (PDF cifrado, motor que no carga, memoria).
+   * En los dos casos el documento se procesa igual y queda en `needs_ocr`.
+   */
+  | { stage: 'failed'; cause: 'empty' | 'error' };
 
 interface UploadItemState {
   key: string;
@@ -70,7 +138,175 @@ interface UploadItemState {
   status: UploadStepStatus;
   /** Motivo del fallo, ya traducido y listo para mostrar. */
   reason?: string;
+  /** Detalle del OCR; ausente si el archivo no lo necesitó (no era PDF o traía texto). */
+  ocr?: UploadOcrState;
 }
+
+/**
+ * Tope de páginas del OCR de navegador para esta pantalla.
+ *
+ * El módulo de OCR ya trae un defecto; se fija aquí de forma explícita para que
+ * el texto que ve el administrador («hasta N páginas») y el comportamiento real
+ * no puedan divergir.
+ */
+const OCR_PAGE_LIMIT = DEFAULT_OCR_PAGE_LIMIT;
+
+/**
+ * Redondea el avance de página a pasos del 5 %.
+ *
+ * El motor de OCR informa del progreso decenas de veces por página. Sin
+ * redondeo, cada aviso sería un `setState` y un renderizado de la pantalla
+ * completa mientras el hilo ya está saturado reconociendo texto. A pasos del
+ * 5 % el estado solo cambia veinte veces por página, que es más de lo que una
+ * barra de progreso necesita para no parecer congelada.
+ */
+const quantizePageProgress = (value: number) => {
+  if (!Number.isFinite(value)) return 0;
+
+  return Math.min(1, Math.max(0, Math.round(value * 20) / 20));
+};
+
+/** Igualdad del detalle del OCR: un aviso que no cambia nada no debe renderizar. */
+const shallowEqualOcr = (a: UploadOcrState, b: UploadOcrState) => {
+  if (a.stage !== b.stage) return false;
+
+  if (a.stage === 'running' && b.stage === 'running') {
+    return (
+      a.phase === b.phase &&
+      a.page === b.page &&
+      a.totalPages === b.totalPages &&
+      a.pageProgress === b.pageProgress
+    );
+  }
+
+  if (a.stage === 'done' && b.stage === 'done') {
+    return (
+      a.pagesProcessed === b.pagesProcessed &&
+      a.totalPages === b.totalPages &&
+      a.partial === b.partial
+    );
+  }
+
+  if (a.stage === 'failed' && b.stage === 'failed') {
+    return a.cause === b.cause;
+  }
+
+  // `cancelled` no lleva datos: mismo estado, misma vista.
+  return true;
+};
+
+/** Porcentaje del avance del documento, para la barra de progreso. */
+const ocrPercent = (ocr: UploadOcrState) => {
+  if (ocr.stage !== 'running' || ocr.totalPages <= 0) return 0;
+
+  const completedPages = Math.max(0, ocr.page - 1);
+  const withinPage = ocr.phase === 'recognizing' ? ocr.pageProgress : 0;
+  const ratio = (completedPages + withinPage) / ocr.totalPages;
+
+  return Math.min(100, Math.max(0, Math.round(ratio * 100)));
+};
+
+/**
+ * Texto del OCR para el administrador.
+ *
+ * Cada fase dice lo que está pasando **y** cuánto queda, porque el OCR tarda
+ * minutos y un rótulo genérico («procesando») no distingue «va por la página 3
+ * de 40» de «se colgó». `loading-engine` es el caso crítico: la primera vez
+ * descarga el motor WASM y los datos del idioma, tarda y no tiene páginas que
+ * contar, así que si no se dice explícitamente parece congelado.
+ */
+const describeOcrState = (ocr: UploadOcrState, language: Language): string => {
+  const es = language === 'es';
+
+  if (ocr.stage === 'running') {
+    if (ocr.phase === 'text-layer') {
+      return es
+        ? `Comprobando si el PDF ya trae texto (página ${ocr.page} de ${ocr.totalPages})`
+        : `Checking whether the PDF already has text (page ${ocr.page} of ${ocr.totalPages})`;
+    }
+
+    if (ocr.phase === 'loading-engine') {
+      return es
+        ? 'Descargando el motor de OCR y los datos del idioma. La primera vez tarda varios minutos: no está detenido.'
+        : 'Downloading the OCR engine and the language data. The first time takes several minutes: it is not stuck.';
+    }
+
+    if (ocr.phase === 'rendering') {
+      return es
+        ? `Preparando la página ${ocr.page} de ${ocr.totalPages} para el OCR`
+        : `Preparing page ${ocr.page} of ${ocr.totalPages} for OCR`;
+    }
+
+    return es
+      ? `Reconociendo texto: página ${ocr.page} de ${ocr.totalPages}`
+      : `Recognizing text: page ${ocr.page} of ${ocr.totalPages}`;
+  }
+
+  if (ocr.stage === 'done') {
+    if (ocr.partial) {
+      return es
+        ? `OCR parcial: se procesaron ${ocr.pagesProcessed} de ${ocr.totalPages} páginas. El resto del documento no llegó al servidor.`
+        : `Partial OCR: ${ocr.pagesProcessed} of ${ocr.totalPages} pages were processed. The rest of the document never reached the server.`;
+    }
+
+    return es
+      ? `Texto reconocido con OCR (${ocr.pagesProcessed} de ${ocr.totalPages} páginas).`
+      : `Text recognized with OCR (${ocr.pagesProcessed} of ${ocr.totalPages} pages).`;
+  }
+
+  if (ocr.stage === 'cancelled') {
+    return es
+      ? 'OCR cancelado. El documento se guarda igual y queda pendiente de OCR.'
+      : 'OCR cancelled. The document is still saved and stays pending OCR.';
+  }
+
+  if (ocr.cause === 'empty') {
+    return es
+      ? 'El escaneo no produjo texto legible. El documento se guarda igual y queda pendiente de OCR.'
+      : 'The scan produced no readable text. The document is still saved and stays pending OCR.';
+  }
+
+  return es
+    ? 'No se pudo ejecutar el OCR en este navegador. El documento se guarda igual y queda pendiente de OCR.'
+    : 'OCR could not run in this browser. The document is still saved and stays pending OCR.';
+};
+
+/** El desenlace del OCR merece color de aviso; el avance normal, no. */
+const isOcrStateNoteworthy = (ocr: UploadOcrState) =>
+  ocr.stage === 'cancelled' ||
+  ocr.stage === 'failed' ||
+  (ocr.stage === 'done' && ocr.partial);
+
+/**
+ * Frase única del paso en curso, para la región en vivo del panel.
+ *
+ * Un lector de pantalla no puede seguir una barra de progreso ni varias filas
+ * cambiando a la vez: necesita una frase que diga qué archivo y en qué paso va.
+ * El lote es secuencial, así que hay como mucho un archivo en vuelo y una frase
+ * que describirlo.
+ */
+const describeUploadStep = (
+  item: UploadItemState | undefined,
+  language: Language
+): string => {
+  if (!item) return '';
+
+  const es = language === 'es';
+
+  if (item.status === 'ocr' && item.ocr) {
+    return `${item.fileName}: ${describeOcrState(item.ocr, language)}`;
+  }
+
+  if (item.status === 'uploading') {
+    return `${item.fileName}: ${es ? 'subiendo el archivo' : 'uploading the file'}`;
+  }
+
+  if (item.status === 'processing') {
+    return `${item.fileName}: ${es ? 'procesando en el servidor' : 'processing on the server'}`;
+  }
+
+  return '';
+};
 
 /**
  * Identidad estable de un archivo seleccionado.
@@ -121,6 +357,69 @@ const GENERATE_MODULES_ERROR_MESSAGES: Record<string, { es: string; en: string }
   },
 };
 
+/**
+ * Aviso de material que no llegó al modelo.
+ *
+ * Lo añade `POST /api/training/generate-modules` a su respuesta de éxito solo
+ * cuando hubo truncamiento o documentos fuera del tope. Es información, no
+ * error: los módulos se generaron y se guardaron. Se muestra porque el
+ * administrador es el único que puede decidir qué hacer al respecto (dividir el
+ * programa, quitar documentos o subir el presupuesto de contexto), y porque
+ * recortar en silencio es justo lo que hacía que la IA rellenara los huecos.
+ *
+ * La forma se declara aquí, y no se importa del servidor, por lo mismo que el
+ * catálogo de errores: el módulo del servidor es `server-only`.
+ */
+interface GenerationContextNotice {
+  budgetChars: number;
+  documentLimit: number;
+  documentsOmittedByLimit: number;
+  omittedChars: number;
+  truncatedDocuments: Array<{
+    fileName: string;
+    includedChars: number;
+    omittedChars: number;
+  }>;
+}
+
+/** Validación defensiva de la forma del aviso antes de renderizarlo. */
+const parseContextNotice = (value: unknown): GenerationContextNotice | null => {
+  if (typeof value !== 'object' || value === null) return null;
+
+  const raw = value as Record<string, unknown>;
+  const truncated = Array.isArray(raw.truncatedDocuments)
+    ? raw.truncatedDocuments.flatMap((entry) => {
+        if (typeof entry !== 'object' || entry === null) return [];
+        const doc = entry as Record<string, unknown>;
+        if (typeof doc.fileName !== 'string') return [];
+        return [
+          {
+            fileName: doc.fileName,
+            includedChars: typeof doc.includedChars === 'number' ? doc.includedChars : 0,
+            omittedChars: typeof doc.omittedChars === 'number' ? doc.omittedChars : 0,
+          },
+        ];
+      })
+    : [];
+
+  const documentsOmittedByLimit =
+    typeof raw.documentsOmittedByLimit === 'number' ? raw.documentsOmittedByLimit : 0;
+
+  if (truncated.length === 0 && documentsOmittedByLimit === 0) return null;
+
+  return {
+    budgetChars: typeof raw.budgetChars === 'number' ? raw.budgetChars : 0,
+    documentLimit: typeof raw.documentLimit === 'number' ? raw.documentLimit : 0,
+    documentsOmittedByLimit,
+    omittedChars: typeof raw.omittedChars === 'number' ? raw.omittedChars : 0,
+    truncatedDocuments: truncated,
+  };
+};
+
+/** Miles con separador local, para que las cifras del aviso se lean. */
+const formatChars = (value: number, language: Language) =>
+  value.toLocaleString(language === 'es' ? 'es-ES' : 'en-US');
+
 export default function ConfigureProgramPage(props: { params: Promise<{ programId: string }> }) {
   const { programId } = use(props.params);
   const { language } = useAppStore();
@@ -168,10 +467,18 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   // procesados se retiran de la lista de pendientes pero su fila sigue visible.
   const [uploadStates, setUploadStates] = useState<UploadItemState[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Controlador del OCR en curso. Vive en una referencia y no en el estado
+  // porque cancelar no debe volver a renderizar por sí mismo: el cambio visible
+  // llega por el estado del archivo, cuando el OCR se detiene de verdad.
+  const ocrAbortRef = useRef<AbortController | null>(null);
 
   // Module states
   const [generatingModules, setGeneratingModules] = useState(false);
   const [expandedModuleId, setExpandedModuleId] = useState<string | null>(null);
+  // Aviso de la última generación. Persiste en pantalla (el toast se
+  // autodescarta a los 4 s y aquí hay detalle por documento que el
+  // administrador necesita poder leer con calma).
+  const [contextNotice, setContextNotice] = useState<GenerationContextNotice | null>(null);
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -188,6 +495,14 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   // La generación con IA solo usa documentos ya procesados (status 'ready');
   // el backend rechaza la llamada si ninguno lo está.
   const readyDocumentsCount = documents.filter((doc) => doc.status === 'ready').length;
+
+  // Archivo en vuelo del lote (el recorrido es secuencial, así que hay uno o
+  // ninguno). Alimenta la región en vivo del panel de progreso.
+  const activeUploadItem = uploadStates.find(
+    (item) =>
+      item.status === 'uploading' || item.status === 'ocr' || item.status === 'processing'
+  );
+  const uploadAnnouncement = describeUploadStep(activeUploadItem, language);
 
   // Load program details
   const loadProgramDetails = async () => {
@@ -246,6 +561,12 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  // Al salir de la pantalla no queda nadie para ver el progreso, pero el OCR
+  // seguiría quemando el hilo página a página. La señal lo corta en el siguiente
+  // corte cooperativo; el flujo de subida ya trata la cancelación como «sigue
+  // sin texto de OCR».
+  useEffect(() => () => ocrAbortRef.current?.abort(), []);
 
   const showToast = (type: 'success' | 'warning' | 'error', message: string) => {
     setToast({ type, message });
@@ -363,6 +684,128 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     );
   };
 
+  const isPdfFile = (file: File) =>
+    file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+  /**
+   * Escribe el detalle del OCR sin renderizar de más.
+   *
+   * Devuelve el mismo array cuando el detalle ya era idéntico, de modo que React
+   * no vuelve a renderizar: el motor de OCR informa del avance muchas veces por
+   * página y buena parte de esos avisos no cambian nada visible.
+   */
+  const patchOcrState = (key: string, ocr: UploadOcrState) => {
+    setUploadStates((prev) => {
+      let changed = false;
+
+      const next = prev.map((item) => {
+        if (item.key !== key) return item;
+        if (item.ocr && shallowEqualOcr(item.ocr, ocr)) return item;
+
+        changed = true;
+        return { ...item, ocr };
+      });
+
+      return changed ? next : prev;
+    });
+  };
+
+  /**
+   * Reconoce el texto de un PDF escaneado en el navegador.
+   *
+   * Devuelve el texto solo cuando de verdad hizo falta OCR. Si el PDF trae capa
+   * de texto no se ejecuta nada: el servidor extrae su propio texto de los bytes
+   * del bucket, que es la fuente preferible siempre que exista.
+   *
+   * Nunca lanza. Un fallo o una cancelación del OCR no invalidan la subida: el
+   * documento se procesa igual y queda en `needs_ocr`, exactamente como antes de
+   * que existiera este paso. Perder el OCR es peor que perder el documento.
+   */
+  const runClientOcr = async (file: File, key: string): Promise<string | undefined> => {
+    const controller = new AbortController();
+    ocrAbortRef.current = controller;
+
+    patchUploadState(key, {
+      status: 'ocr',
+      reason: undefined,
+      ocr: { stage: 'running', phase: 'text-layer', page: 0, totalPages: 0, pageProgress: 0 },
+    });
+
+    try {
+      // Carga diferida: `pdfjs-dist` y `tesseract.js` solo se descargan aquí, la
+      // primera vez que un lote contiene un PDF.
+      const { extractTrainingTextFromPdf } = await import('@/lib/training/client-ocr');
+
+      const result: ClientPdfTextResult = await extractTrainingTextFromPdf(file, {
+        contentLanguage,
+        maxPages: OCR_PAGE_LIMIT,
+        signal: controller.signal,
+        onProgress: (progress) => {
+          patchOcrState(key, {
+            stage: 'running',
+            phase: progress.phase,
+            page: progress.page,
+            totalPages: progress.totalPages,
+            pageProgress: quantizePageProgress(progress.pageProgress),
+          });
+        },
+      });
+
+      if (result.source === 'text-layer') {
+        // El PDF tenía capa de texto: no se ejecutó OCR y no hay nada que
+        // enviar. Se borra el detalle para que la fila no muestre un paso que
+        // en la práctica no ocurrió.
+        patchUploadState(key, { ocr: undefined });
+        return undefined;
+      }
+
+      patchUploadState(key, {
+        ocr: {
+          stage: 'done',
+          pagesProcessed: result.pagesProcessed,
+          totalPages: result.totalPages,
+          partial: result.partial,
+        },
+      });
+
+      return result.text;
+    } catch (err: unknown) {
+      // Los errores del módulo se distinguen por `name` y no con `instanceof`:
+      // la clase llega por un `import()` dinámico y comparar por identidad ataría
+      // este manejo a que el empaquetador entregue exactamente la misma
+      // instancia del módulo. El `name` es parte del contrato del módulo.
+      const name = err instanceof Error ? err.name : '';
+
+      if (name === 'ClientOcrAbortedError') {
+        patchUploadState(key, { ocr: { stage: 'cancelled' } });
+        return undefined;
+      }
+
+      if (name === 'ClientOcrEmptyResultError') {
+        patchUploadState(key, { ocr: { stage: 'failed', cause: 'empty' } });
+        return undefined;
+      }
+
+      // Cualquier otro fallo (PDF cifrado, motor que no carga, memoria) se
+      // registra y se sigue: el documento acabará en `needs_ocr`.
+      console.error('[training/configure] Client OCR failed', err);
+      patchUploadState(key, { ocr: { stage: 'failed', cause: 'error' } });
+      return undefined;
+    } finally {
+      ocrAbortRef.current = null;
+    }
+  };
+
+  /**
+   * Detiene el OCR del documento en curso.
+   *
+   * Solo cancela el OCR, no el lote: el archivo ya está en el bucket, se
+   * procesa sin texto reconocido y los archivos siguientes continúan.
+   */
+  const cancelClientOcr = () => {
+    ocrAbortRef.current?.abort();
+  };
+
   /**
    * Sube y procesa **un** archivo con el flujo de tres pasos.
    *
@@ -447,6 +890,13 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         return false;
       }
 
+      // ── Paso 2.b: OCR en el navegador, solo para PDF ──
+      // Se hace después de la subida y antes del procesamiento: si el OCR falla
+      // o se cancela, el archivo ya está en el bucket y el servidor lo procesa
+      // igual. Solo se intenta con PDF porque es el único tipo cuyo fallo de
+      // extracción significa «escaneado».
+      const ocrText = isPdfFile(file) ? await runClientOcr(file, key) : undefined;
+
       // ── Paso 3: procesamiento en el servidor ──
       patchUploadState(key, { status: 'processing' });
 
@@ -459,6 +909,10 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
           documentId,
           storagePath,
           fileName: file.name,
+          // El servidor lo ignora si su propia extracción alcanza el umbral: no
+          // es una sustitución del texto del PDF, es el único texto disponible
+          // cuando el PDF no tiene capa de texto.
+          ...(ocrText ? { ocrText } : {}),
         }),
       });
 
@@ -594,6 +1048,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const handleGenerateModules = async () => {
     if (isReadOnly || readyDocumentsCount === 0) return;
     setGeneratingModules(true);
+    setContextNotice(null);
     try {
       const res = await fetch('/api/training/generate-modules', {
         method: 'POST',
@@ -621,7 +1076,24 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       const data = await res.json();
       if (data.modules && Array.isArray(data.modules)) {
         setModules(data.modules);
-        showToast('success', language === 'es' ? 'Módulos generados con éxito' : 'Modules generated successfully');
+
+        // Campo añadido por el servidor: ausente cuando todo el material cupo.
+        const notice = parseContextNotice(data.contextNotice);
+        setContextNotice(notice);
+
+        if (notice) {
+          // Se reutiliza el toast 'warning', el mismo que el lote de subida usa
+          // para "salió bien, pero no del todo". El detalle va en el panel: el
+          // toast solo dirige la atención hacia él.
+          showToast(
+            'warning',
+            language === 'es'
+              ? 'Módulos generados. Parte del material no entró en el contexto: revisa el aviso.'
+              : 'Modules generated. Some material did not fit the context: see the notice.'
+          );
+        } else {
+          showToast('success', language === 'es' ? 'Módulos generados con éxito' : 'Modules generated successfully');
+        }
       }
     } catch (err: any) {
       showToast('error', err.message || (language === 'es' ? 'Error al generar módulos' : 'Error generating modules'));
@@ -1045,11 +1517,27 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                   ? `PDF, DOCX, TXT, MD (Máx ${MAX_TRAINING_FILE_SIZE_MB} MB · hasta ${MAX_UPLOAD_BATCH} archivos por lote)`
                   : `PDF, DOCX, TXT, MD (Max ${MAX_TRAINING_FILE_SIZE_MB} MB · up to ${MAX_UPLOAD_BATCH} files per batch)`}
               </p>
+              <p className="text-xs text-muted mt-1 text-center">
+                {language === 'es'
+                  ? `Los PDF escaneados se leen con OCR en este navegador (hasta ${OCR_PAGE_LIMIT} páginas). Deja la pestaña abierta mientras avanza.`
+                  : `Scanned PDFs are read with OCR in this browser (up to ${OCR_PAGE_LIMIT} pages). Keep the tab open while it runs.`}
+              </p>
             </div>
 
             {/* Panel de progreso por archivo: sustituye al spinner opaco anterior */}
             {uploadStates.length > 0 && (
               <div className="rounded-xl border border-border/50 bg-background p-3 space-y-2">
+                {/*
+                  Región en vivo del lote. Se monta con el panel, antes de que
+                  haya avances que anunciar, porque un `role="status"` que
+                  aparece ya con texto no siempre se lee. El detalle visible de
+                  cada fila queda fuera de la región: repetir cada 5 % de una
+                  barra convertiría el anuncio en ruido.
+                */}
+                <p role="status" className="sr-only">
+                  {uploadAnnouncement}
+                </p>
+
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold text-muted uppercase tracking-wider">
                     {language === 'es' ? 'Progreso de la subida' : 'Upload progress'}
@@ -1073,7 +1561,9 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                     <div key={item.key} className="flex items-start gap-2 text-xs">
                       <span className="mt-0.5 flex-shrink-0">
                         {item.status === 'pending' && <Clock className="h-3.5 w-3.5 text-muted" />}
-                        {(item.status === 'uploading' || item.status === 'processing') && (
+                        {(item.status === 'uploading' ||
+                          item.status === 'ocr' ||
+                          item.status === 'processing') && (
                           <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
                         )}
                         {item.status === 'done' && <CheckCircle className="h-3.5 w-3.5 text-success" />}
@@ -1093,6 +1583,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                           >
                             {item.status === 'pending' && (language === 'es' ? 'En espera' : 'Queued')}
                             {item.status === 'uploading' && (language === 'es' ? 'Subiendo' : 'Uploading')}
+                            {item.status === 'ocr' && (language === 'es' ? 'Leyendo texto' : 'Reading text')}
                             {item.status === 'processing' && (language === 'es' ? 'Procesando' : 'Processing')}
                             {item.status === 'done' && (language === 'es' ? 'Procesado' : 'Processed')}
                             {item.status === 'failed' && (language === 'es' ? 'Fallido' : 'Failed')}
@@ -1100,6 +1591,48 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                         </div>
                         {item.status === 'failed' && item.reason && (
                           <p className="text-[11px] text-red-500 mt-0.5">{item.reason}</p>
+                        )}
+                        {item.ocr && (
+                          <div className="mt-1 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p
+                                className={`text-[11px] ${
+                                  isOcrStateNoteworthy(item.ocr) ? 'text-warning' : 'text-muted'
+                                }`}
+                              >
+                                {describeOcrState(item.ocr, language)}
+                              </p>
+                              {item.status === 'ocr' && item.ocr.stage === 'running' && (
+                                <button
+                                  type="button"
+                                  onClick={cancelClientOcr}
+                                  aria-label={
+                                    language === 'es'
+                                      ? `Cancelar el reconocimiento de texto de ${item.fileName}`
+                                      : `Cancel text recognition for ${item.fileName}`
+                                  }
+                                  className={`inline-flex items-center gap-1 rounded-lg border border-border/60 bg-card px-2 py-0.5 text-[10px] font-semibold text-muted transition-colors hover:text-foreground hover:bg-card-hover ${focusRing}`}
+                                >
+                                  <X className="h-3 w-3" aria-hidden="true" />
+                                  {language === 'es' ? 'Cancelar' : 'Cancel'}
+                                </button>
+                              )}
+                            </div>
+                            {item.ocr.stage === 'running' && item.ocr.totalPages > 0 && (
+                              // Duplica en forma gráfica lo que la frase de
+                              // arriba ya dice, así que se oculta al lector de
+                              // pantalla en lugar de anunciarlo dos veces.
+                              <div
+                                aria-hidden="true"
+                                className="h-1 w-full max-w-[240px] rounded-full bg-border/60 overflow-hidden"
+                              >
+                                <div
+                                  className="h-full rounded-full bg-primary transition-all"
+                                  style={{ width: `${ocrPercent(item.ocr)}%` }}
+                                />
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1273,6 +1806,83 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
             </div>
           )}
         </div>
+
+        {/*
+          Aviso de contexto de la última generación.
+
+          Mismo lenguaje visual que el aviso de «solo lectura» de arriba, porque
+          es lo mismo: información que condiciona la siguiente decisión del
+          administrador, no un fallo. Los módulos existen y están guardados; lo
+          que hay que saber es que se escribieron sin ver todo el material, y qué
+          hacer al respecto.
+        */}
+        {contextNotice && (
+          <div className="p-4 rounded-xl bg-warning/15 border border-warning/30 flex items-start gap-3">
+            <Info className="h-5 w-5 flex-shrink-0 text-warning mt-0.5" aria-hidden="true" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="text-sm font-semibold text-foreground">
+                {language === 'es'
+                  ? 'La IA no vio todo el material'
+                  : 'The AI did not see all the material'}
+              </p>
+              <p className="text-xs text-muted">
+                {language === 'es'
+                  ? 'Los módulos se generaron y se guardaron, pero el material asociado no cabe entero en el contexto del modelo. Lo que quedó fuera no está representado en los módulos: divide el programa en varios más pequeños, o quita documentos de este, y vuelve a generar.'
+                  : 'The modules were generated and saved, but the associated material does not fit the model context in full. Whatever was left out is not represented in the modules: split the program into smaller ones, or detach documents from this one, and generate again.'}
+              </p>
+
+              {contextNotice.truncatedDocuments.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    {language === 'es' ? 'Documentos recortados' : 'Truncated documents'}
+                  </p>
+                  <ul className="space-y-0.5">
+                    {contextNotice.truncatedDocuments.map((doc, idx) => (
+                      <li key={`${doc.fileName}-${idx}`} className="text-xs text-foreground">
+                        <span className="font-medium break-words">{doc.fileName}</span>
+                        <span className="text-muted">
+                          {language === 'es'
+                            ? ` — se usaron ${formatChars(doc.includedChars, language)} de ${formatChars(
+                                doc.includedChars + doc.omittedChars,
+                                language
+                              )} caracteres (quedaron fuera ${formatChars(doc.omittedChars, language)})`
+                            : ` — ${formatChars(doc.includedChars, language)} of ${formatChars(
+                                doc.includedChars + doc.omittedChars,
+                                language
+                              )} characters were used (${formatChars(doc.omittedChars, language)} left out)`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {contextNotice.documentsOmittedByLimit > 0 && (
+                <p className="text-xs text-foreground">
+                  {language === 'es'
+                    ? `${contextNotice.documentsOmittedByLimit} documento(s) asociados no entraron en la generación: solo se envían los ${contextNotice.documentLimit} más recientes.`
+                    : `${contextNotice.documentsOmittedByLimit} associated document(s) were left out of the generation: only the ${contextNotice.documentLimit} most recent ones are sent.`}
+                </p>
+              )}
+
+              {contextNotice.budgetChars > 0 && (
+                <p className="text-[11px] text-muted">
+                  {language === 'es'
+                    ? `Presupuesto de contexto: ${formatChars(contextNotice.budgetChars, language)} caracteres.`
+                    : `Context budget: ${formatChars(contextNotice.budgetChars, language)} characters.`}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setContextNotice(null)}
+              aria-label={language === 'es' ? 'Ocultar el aviso de contexto' : 'Hide the context notice'}
+              className={`p-1 rounded-lg text-muted transition-colors hover:text-foreground hover:bg-card ${focusRing}`}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
 
         {/* Modules List */}
         {modules.length > 0 ? (

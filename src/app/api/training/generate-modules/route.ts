@@ -9,6 +9,13 @@ import {
   generateModulesRequestSchema,
   generatedTrainingModulesSchema,
 } from '@/lib/training/contracts';
+import {
+  buildDocumentContext,
+  buildTrainingContextNotice,
+  limitProgramDocuments,
+  resolveContextCharBudget,
+  MAX_PROGRAM_DOCUMENTS,
+} from '@/lib/training/document-context';
 import { trainingApiErrorResponse } from '@/lib/training/http';
 import {
   buildModuleRepairInstruction,
@@ -122,6 +129,11 @@ RULES:
 - Include practical evaluation questions that test real understanding.
 - Write every user-facing string in the language demanded by the CONTENT LANGUAGE section below, even when the source documents are written in another language.
 - Each section body should be comprehensive (at least 3-4 paragraphs of teaching content).
+
+GROUNDING RULES (these override the length guidance above):
+- Every statement you write MUST come from the provided document content. Never add facts, policies, figures, names, procedures or examples that are not in the material.
+- A document may end with a "[[DOCUMENT TRUNCATED ...]]" marker. That means the document was cut off and the rest of it is NOT available to you. Do not infer, guess or reconstruct the missing part, and do not write as if you had seen it.
+- If the available material only supports shorter sections, or fewer sections, or fewer modules, produce fewer and shorter ones. A shorter program that is faithful to the documents is correct; padding it with invented content is a failure.
 - evaluationEnabled must be a boolean.
 - evaluationQuestions is REQUIRED on every module (never omit the key, never use null):
   - If evaluationEnabled is true, evaluationQuestions MUST contain at least one question.
@@ -197,14 +209,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load program documents' }, { status: 500 });
     }
 
-    // 4. Limitar a un máximo de 20 documentos y filtrar los que estén ready
+    // 4. Filtrar los documentos ready y acotar al tope de la generación.
+    //    El tope sigue existiendo, pero ya no descarta en silencio: lo que queda
+    //    fuera se cuenta, se registra en el log y viaja en el aviso de la
+    //    respuesta.
     const filteredAssocs = (associations ?? [])
       .map((assoc: unknown) => (assoc as Record<string, unknown>).training_documents as ProgramDocRow)
       .filter((d): d is ProgramDocRow =>
         Boolean(d) && d.status === 'ready' && Boolean(d.extracted_text)
       );
 
-    const programDocs = filteredAssocs.slice(0, 20);
+    const { documents: programDocs, omittedCount: documentsOmittedByLimit } =
+      limitProgramDocuments(filteredAssocs);
+
+    if (documentsOmittedByLimit > 0) {
+      console.warn(
+        '[Generate Modules API] Documents left out of the generation by the document limit:',
+        {
+          programId,
+          limit: MAX_PROGRAM_DOCUMENTS,
+          readyDocuments: filteredAssocs.length,
+          omitted: documentsOmittedByLimit,
+        },
+      );
+    }
 
     // Precondición de estado, no petición malformada: el contrato de la ruta
     // (diseño, sección 7) fija `409` para "sin documentos ready", igual que el
@@ -230,17 +258,41 @@ export async function POST(req: NextRequest) {
 
     const companyName = orgData.name ?? 'Reclutify Client';
 
-    // 6. Construir contexto repartiendo equitativamente los 60k caracteres
-    const docCount = programDocs.length;
-    const charsPerDoc = Math.floor(60_000 / docCount);
+    // 6. Construir el contexto documental.
+    //
+    //    Todo el reparto vive en `src/lib/training/document-context.ts`: es
+    //    lógica pura y probada. Aquí solo se resuelve el presupuesto del entorno
+    //    y se traduce el resultado a log y a aviso para el administrador.
+    const contextResult = buildDocumentContext(
+      programDocs.map((doc) => ({
+        id: doc.id,
+        fileName: doc.file_name,
+        text: doc.extracted_text,
+      })),
+      { budgetChars: resolveContextCharBudget() },
+    );
 
-    const documentContext = programDocs
-      .map((doc) => {
-        const text = doc.extracted_text ?? '';
-        const excerpt = text.slice(0, charsPerDoc);
-        return `--- DOCUMENT: ${doc.file_name} (ID: ${doc.id}) ---\n${excerpt}`;
-      })
-      .join('\n\n');
+    const documentContext = contextResult.context;
+
+    const contextNotice = buildTrainingContextNotice(
+      contextResult,
+      documentsOmittedByLimit,
+    );
+
+    if (contextNotice) {
+      // El truncamiento silencioso era la causa del contenido inventado: si el
+      // material no cupo entero, tiene que quedar constancia en el log además
+      // de en la respuesta.
+      console.warn('[Generate Modules API] Document context did not fit whole:', {
+        programId,
+        budgetChars: contextResult.budgetChars,
+        totalChars: contextResult.totalChars,
+        includedChars: contextResult.includedChars,
+        omittedChars: contextResult.omittedChars,
+        documentsOmittedByLimit,
+        truncatedDocuments: contextNotice.truncatedDocuments,
+      });
+    }
 
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
     const TRAINING_AI_MODEL = process.env.TRAINING_AI_MODEL ?? 'google/gemini-2.5-flash';
@@ -587,9 +639,13 @@ Create the training modules using only the informational content inside the deli
       );
     }
 
+    // El aviso es **aditivo**: `{ success, modules }` se mantiene idéntico y la
+    // clave `contextNotice` solo aparece cuando hay algo que avisar, así que
+    // ningún consumidor existente cambia de comportamiento.
     return NextResponse.json({
       success: true,
       modules: persistedModules,
+      ...(contextNotice ? { contextNotice } : {}),
     });
   } catch (error: unknown) {
     return trainingApiErrorResponse(error, '[Generate Modules API] Unexpected error');

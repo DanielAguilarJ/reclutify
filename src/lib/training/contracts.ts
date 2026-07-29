@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TRAINING_CONTENT_LANGUAGES } from './content-language';
+import { MAX_TRAINING_OCR_TEXT_CHARS } from './document-text';
 
 // ─── Schemas existentes ───
 
@@ -386,12 +387,30 @@ export const trainingDocumentUploadUrlSchema = z
   })
   .strict();
 
+/**
+ * Tope del texto de OCR que se acepta del cliente.
+ *
+ * Se define en `document-text` —el módulo del criterio compartido, sin Zod y sin
+ * `server-only`— porque el OCR del navegador también lo necesita: recorta ahí
+ * mismo para no gastar minutos reconociendo texto que este esquema rechazaría
+ * con un 400. Se reexporta desde aquí porque forma parte del contrato de la
+ * ruta.
+ */
+export { MAX_TRAINING_OCR_TEXT_CHARS };
+
 // Cuerpo de `POST /api/training/documents/process`. Todos estos campos vienen
 // del cliente, incluido `storagePath`, así que ninguno es de fiar por sí solo:
 // el esquema solo garantiza la *forma*. La ruta reconstruye la ruta esperada a
 // partir del programa (`org_id`, `role_id`) y compara, de modo que un
 // `storagePath` que apunte a otra organización se rechaza antes de descargar
 // nada. El tamaño y el tipo reales se validan sobre los bytes descargados.
+//
+// `ocrText` es el texto que el navegador reconoció de un PDF escaneado (ver
+// `@/lib/training/client-ocr`). Es opcional porque solo existe en ese caso, y su
+// uso está restringido en `processTrainingDocument`: se ignora salvo que la
+// extracción del servidor no alcance el umbral **y** el archivo sea PDF. La
+// consideración de confianza que justifica aceptar texto del cliente está
+// documentada en ese módulo, junto al punto donde se usa.
 export const trainingDocumentProcessSchema = z
   .object({
     programId: z.string().uuid(),
@@ -399,6 +418,12 @@ export const trainingDocumentProcessSchema = z
     documentId: z.string().uuid(),
     storagePath: z.string().trim().min(1).max(1_000),
     fileName: z.string().trim().min(1).max(500),
+    ocrText: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_TRAINING_OCR_TEXT_CHARS)
+      .optional(),
   })
   .strict();
 

@@ -51,9 +51,26 @@ import {
  *    es que un objeto rechazado **no se queda en el bucket**, porque nadie más
  *    va a limpiarlo: la fila nunca existió y el navegador ya terminó su parte.
  *
- * Un archivo por petición: la duración es predecible (`maxDuration = 60`, con
- * el análisis de IA acotado a 45 s dentro de `processTrainingDocument`) y el
- * fallo de un archivo no arrastra a los demás del lote.
+ * 3. **El texto de OCR del cliente entra por una puerta estrecha.**
+ *    `ocrText` es el único dato del cuerpo que puede acabar en el contenido
+ *    indexado del documento. El esquema limita su longitud y
+ *    `processTrainingDocument` limita su uso: solo si la extracción del servidor
+ *    no alcanza el umbral y el archivo es PDF. La consideración de confianza que
+ *    justifica aceptarlo está escrita junto a esa decisión.
+ *
+ * Un archivo por petición: la duración es predecible y el fallo de un archivo
+ * no arrastra a los demás del lote.
+ *
+ * PRESUPUESTO DE TIEMPO — `maxDuration` no basta
+ * ----------------------------------------------
+ * `maxDuration = 60` es una *petición* a la plataforma: hay planes que no la
+ * conceden y cortan la función a su techo **fuera** del handler, sin log de esta
+ * ruta y sin respuesta útil. Por eso el análisis con IA no se limita a un
+ * `AbortController` por llamada: `analyzeTrainingDocumentText` administra un
+ * presupuesto de tiempo total (`TRAINING_ANALYSIS_TIME_BUDGET_MS`, 35 s) que
+ * deja margen para la descarga, la extracción de texto y las inserciones, y
+ * degrada a análisis parcial marcado si se agota. Ver
+ * `@/lib/training/document-analysis`.
  */
 
 export const runtime = 'nodejs';
@@ -102,7 +119,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { programId, scope, documentId, storagePath, fileName } = parsed.data;
+    const { programId, scope, documentId, storagePath, fileName, ocrText } =
+      parsed.data;
 
     // 1. Autorizar: 401 sin sesión, 403 sin rol owner/admin en la organización
     // del programa, 404 si el programa no existe.
@@ -191,6 +209,10 @@ export async function POST(req: NextRequest) {
         storagePath,
         fileName,
         fileBuffer,
+        // Texto del OCR de navegador, cuando el PDF venía escaneado. La ruta lo
+        // pasa tal cual: la decisión de usarlo o ignorarlo, y la consideración
+        // de confianza que la sostiene, viven en `processTrainingDocument`.
+        ocrText,
       });
     } catch (processingError: unknown) {
       // 7. Ningún objeto rechazado se queda en el bucket.

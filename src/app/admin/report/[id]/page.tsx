@@ -61,6 +61,8 @@ export default function ReportPage({
   }
 
   const { evaluation } = candidate;
+  const isRecommended =
+    evaluation.recommendation === 'Strong Hire' || evaluation.recommendation === 'Hire';
 
   const getRecommendationStyle = (rec: string) => {
     switch (rec) {
@@ -182,15 +184,32 @@ export default function ReportPage({
         </div>
 
         <div className="ml-auto flex items-center gap-3">
-          {(evaluation.recommendation === 'Strong Hire' || evaluation.recommendation === 'Hire') && (
-            <button
-              onClick={() => setShowHireModal(true)}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all bg-success/10 text-success hover:bg-success/20 border border-success/20 cursor-pointer"
-            >
+          {/* La decisión de contratar es humana: el botón siempre está disponible.
+              Si la IA no recomendó al candidato, se muestra con estilo de advertencia. */}
+          <button
+            onClick={() => setShowHireModal(true)}
+            title={
+              isRecommended
+                ? language === 'es'
+                  ? 'Contratar e iniciar capacitación'
+                  : 'Hire and start training'
+                : language === 'es'
+                  ? 'La IA no recomendó a este candidato. Puedes contratarlo bajo tu criterio.'
+                  : 'AI did not recommend this candidate. You can still hire them at your discretion.'
+            }
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
+              isRecommended
+                ? 'bg-success/10 text-success hover:bg-success/20 border-success/20'
+                : 'bg-warning/10 text-warning hover:bg-warning/20 border-warning/20'
+            }`}
+          >
+            {isRecommended ? (
               <UserCheck className="h-3.5 w-3.5" />
-              {language === 'es' ? 'Contratar' : 'Hire'}
-            </button>
-          )}
+            ) : (
+              <AlertTriangle className="h-3.5 w-3.5" />
+            )}
+            {language === 'es' ? 'Contratar' : 'Hire'}
+          </button>
           <PDFExportButton candidate={candidate} language={language} />
           <button
             onClick={handleExportTranscript}

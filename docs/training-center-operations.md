@@ -124,6 +124,7 @@ Ver [`.env.example`](../.env.example) para la lista completa del proyecto. Lo qu
 | `SUPABASE_SERVICE_ROLE_KEY` | Sí | Igual que la anterior. Es la clave que usan las rutas de servidor para storage y RPCs. |
 | `OPENROUTER_API_KEY` | No (con matiz) | La subida y el procesamiento de documentos siguen funcionando, solo **sin resumen ni temas** (el documento queda `ready` igual). En cambio, las rutas que dependen de la IA responden `503`: generación de módulos, tutor IA del chat y **calificación de preguntas abiertas** en las evaluaciones. Módulos con preguntas solo cerradas sí se evalúan. El diagnóstico la reporta como `warning`, no como fallo crítico. |
 | `TRAINING_AI_MODEL` | No | Usa el valor por defecto (`google/gemini-2.5-flash`). |
+| `TRAINING_CONTEXT_CHAR_BUDGET` | No | Usa el valor por defecto (300.000 caracteres de documentos por generación). Solo acepta un entero positivo; cualquier otro valor —vacío, `0`, negativo, decimal, texto— cae al defecto sin degradar la generación. Súbelo únicamente si el modelo configurado en `TRAINING_AI_MODEL` tiene ventana de contexto para más; la justificación del número está en `src/lib/training/document-context.ts`. Si el material de un programa no cabe, la respuesta de la generación incluye `contextNotice` con los documentos truncados y lo mismo queda en el log del servidor. |
 
 ---
 

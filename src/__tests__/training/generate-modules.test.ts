@@ -237,6 +237,130 @@ describe('Generate Modules Endpoint (/api/training/generate-modules)', () => {
     expect(userMessage).not.toContain('00000000-0000-4000-8000-000000000020'); // 21st doc (omitted)
   });
 
+  /**
+   * El aviso de contexto es **aditivo**: `{ success, modules }` no cambia, y
+   * `contextNotice` solo aparece cuando parte del material no llegó al modelo.
+   * Recortar en silencio era justo lo que hacía que la IA rellenara los huecos.
+   */
+  describe('context notice in the success response', () => {
+    const successfulAiResponse = (documentId: string) => ({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              modules: [
+                {
+                  title: 'AI Module',
+                  description: 'Content description',
+                  sections: [{ title: 'Sec 1', body: 'Body 1', keyPoints: ['Pt 1'] }],
+                  evaluationEnabled: false,
+                  evaluationQuestions: [],
+                  sourceDocumentIds: [documentId],
+                },
+              ],
+            }),
+          },
+        },
+      ],
+    });
+
+    const postGenerate = () =>
+      POST(
+        new NextRequest('http://localhost/api/training/generate-modules', {
+          method: 'POST',
+          body: JSON.stringify({ programId: '00000000-0000-4000-8000-000000000001' }),
+        })
+      );
+
+    it('omits contextNotice when the whole material fits', async () => {
+      mockAssociationsResult = [
+        {
+          training_documents: {
+            id: '00000000-0000-4000-8000-000000000001',
+            file_name: 'handbook.pdf',
+            status: 'ready',
+            extracted_text: 'Short but complete document content.',
+          },
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => successfulAiResponse('00000000-0000-4000-8000-000000000001'),
+      });
+      mockRpc.mockResolvedValueOnce({ data: [{ id: 'mod-1' }], error: null });
+
+      const res = await postGenerate();
+      const data = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.modules).toEqual([{ id: 'mod-1' }]);
+      expect('contextNotice' in data).toBe(false);
+    });
+
+    it('reports truncated documents and documents left out by the limit', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      process.env.TRAINING_CONTEXT_CHAR_BUDGET = '3000';
+
+      try {
+        mockAssociationsResult = Array.from({ length: 21 }, (_, i) => ({
+          training_documents: {
+            id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+            file_name: `manual-${i}.pdf`,
+            status: 'ready',
+            extracted_text: 'Contenido extenso del manual. '.repeat(400),
+          },
+        }));
+
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => successfulAiResponse('00000000-0000-4000-8000-000000000000'),
+        });
+        mockRpc.mockResolvedValueOnce({ data: [{ id: 'mod-1' }], error: null });
+
+        const res = await postGenerate();
+        const data = (await res.json()) as Record<string, unknown>;
+
+        expect(res.status).toBe(200);
+        // Contrato existente intacto.
+        expect(data.success).toBe(true);
+        expect(data.modules).toEqual([{ id: 'mod-1' }]);
+
+        const notice = data.contextNotice as {
+          budgetChars: number;
+          documentLimit: number;
+          documentsOmittedByLimit: number;
+          omittedChars: number;
+          truncatedDocuments: Array<{ fileName: string; omittedChars: number }>;
+        };
+
+        expect(notice.budgetChars).toBe(3_000);
+        expect(notice.documentLimit).toBe(20);
+        expect(notice.documentsOmittedByLimit).toBe(1);
+        expect(notice.truncatedDocuments).toHaveLength(20);
+        expect(notice.truncatedDocuments[0].fileName).toBe('manual-0.pdf');
+        expect(notice.truncatedDocuments[0].omittedChars).toBeGreaterThan(0);
+        expect(notice.omittedChars).toBeGreaterThan(0);
+
+        // Lo mismo queda en el log del servidor.
+        const loggedMessages = warnSpy.mock.calls.map((call) => String(call[0]));
+        expect(
+          loggedMessages.some((message) => message.includes('document limit'))
+        ).toBe(true);
+        expect(
+          loggedMessages.some((message) => message.includes('did not fit whole'))
+        ).toBe(true);
+
+        // El material que sí viajó lleva la marca de truncamiento.
+        const bodyObj = JSON.parse(mockFetch.mock.calls[0][1].body);
+        expect(bodyObj.messages[1].content).toContain('[[DOCUMENT TRUNCATED');
+      } finally {
+        delete process.env.TRAINING_CONTEXT_CHAR_BUDGET;
+      }
+    });
+  });
+
   it('returns 500 when organization query fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
 

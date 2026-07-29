@@ -6,6 +6,7 @@ import { createOpaqueToken, hashOpaqueToken } from '@/lib/training/tokens';
 import { hireTrainingCandidateSchema, trainingPersonalizationSchema } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
 import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
+import { resolveAppBaseUrl } from '@/lib/app-url';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -21,17 +22,26 @@ function escapeHtml(value: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    // 1. Validar variables de entorno de red
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    // 1. Autenticar administrador
+    const user = await requireAuthenticatedUser();
+
+    // 2. Resolver la URL base pública.
+    //
+    // Se resuelve antes de la RPC a propósito: el enlace de capacitación es el
+    // entregable de esta operación, así que fallar aquí evita crear el empleado
+    // y descubrir después que no podemos entregarle su enlace. Va después de la
+    // autenticación para no filtrar el estado de configuración del despliegue a
+    // quien no está autenticado.
+    const appUrl = resolveAppBaseUrl();
     if (!appUrl) {
       return NextResponse.json(
-        { error: 'NEXT_PUBLIC_APP_URL is not configured' },
+        {
+          error:
+            'Public application URL is not configured. Set NEXT_PUBLIC_APP_URL to an absolute URL (for example https://app.reclutify.com) in the deployment environment variables.',
+        },
         { status: 500 }
       );
     }
-
-    // 2. Autenticar administrador
-    const user = await requireAuthenticatedUser();
 
     // 3. Validar cuerpo de la petición con Zod
     const bodyParsed = hireTrainingCandidateSchema.safeParse(await req.json());
@@ -199,8 +209,8 @@ Return only the required JSON object described in the system prompt.
       }
     }
 
-    // 8. Construir URL de entrenamiento
-    const trainingUrl = `${appUrl.replace(/\/$/, '')}/training/${invitationToken}`;
+    // 8. Construir URL de entrenamiento (`appUrl` ya viene sin barra final)
+    const trainingUrl = `${appUrl}/training/${invitationToken}`;
 
     // 9. Enviar correo de bienvenida vía Brevo (opcional/no-bloqueante)
     let emailSent = false;

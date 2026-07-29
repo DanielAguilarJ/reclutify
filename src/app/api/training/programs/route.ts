@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/training/auth';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { createTrainingProgramSchema } from '@/lib/training/contracts';
 
@@ -38,16 +39,14 @@ export async function POST(req: NextRequest) {
     if (rpcError) {
       console.error('[Programs API] RPC create_training_program failed:', rpcError);
 
-      if (rpcError.message?.includes('role_not_found')) {
-        return NextResponse.json({ error: 'Role vacancy not found' }, { status: 404 });
-      }
-      if (rpcError.message?.includes('forbidden')) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-      }
-      if (rpcError.message?.includes('draft_version_already_exists')) {
+      // `role_not_found`, `forbidden` y `draft_version_already_exists` están
+      // catalogados con el mismo status que devolvía esta ruta.
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
+
+      if (resolved) {
         return NextResponse.json(
-          { error: 'A draft version of the training program already exists for this role vacancy' },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

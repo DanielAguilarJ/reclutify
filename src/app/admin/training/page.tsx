@@ -2,15 +2,29 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Users, TrendingUp, Award, BookOpen, Settings, Eye, Activity, Briefcase, Plus, FileEdit, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { Users, TrendingUp, Award, BookOpen, Settings, Eye, Activity, Briefcase, Plus, FileEdit, Check, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
 import { useAdminStore } from '@/store/adminStore';
+import TrainingDiagnosticsBanner from '@/components/admin/TrainingDiagnosticsBanner';
 
 export default function TrainingDashboardPage() {
   const { language } = useAppStore();
-  const { employees, modules, programs, loading: trainingLoading, fetchTrainingData, createProgram } = useTrainingAdminStore();
-  const { roles, loading: adminLoading, fetchFromSupabase: fetchAdminData } = useAdminStore();
+  const {
+    employees,
+    modules,
+    programs,
+    loading: trainingLoading,
+    error: trainingError,
+    fetchTrainingData,
+    createProgram,
+  } = useTrainingAdminStore();
+  const {
+    roles,
+    loading: adminLoading,
+    error: adminError,
+    fetchFromSupabase: fetchAdminData,
+  } = useAdminStore();
   const [creatingForRole, setCreatingForRole] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,6 +57,43 @@ export default function TrainingDashboardPage() {
   };
 
   const loading = trainingLoading || adminLoading;
+
+  /*
+    Requisito 11.3 — fallo de carga visible.
+
+    `trainingAdminStore` y `adminStore` guardan el motivo del fallo en `error` y
+    dejan sus colecciones vacías. Sin pintar ese motivo, un fallo de red, un
+    `403` de RLS o una organización sin resolver se ven exactamente igual que
+    "esta organización aún no tiene programas ni empleados". Se listan los dos
+    errores por separado porque las dos cargas son independientes: puede fallar
+    una y funcionar la otra.
+
+    Este aviso es distinto del banner de diagnóstico: aquel explica que falta
+    infraestructura (tablas, bucket, RPCs) y este que la consulta de datos no
+    llegó a completarse. Pueden aparecer a la vez y describen cosas distintas.
+  */
+  const loadErrors: Array<{ id: string; source: string; message: string }> = [];
+
+  if (trainingError) {
+    loadErrors.push({
+      id: 'training',
+      source: language === 'es' ? 'Datos de capacitación' : 'Training data',
+      message: trainingError,
+    });
+  }
+
+  if (adminError) {
+    loadErrors.push({
+      id: 'admin',
+      source: language === 'es' ? 'Puestos y candidatos' : 'Roles and candidates',
+      message: adminError,
+    });
+  }
+
+  const handleRetryLoad = () => {
+    if (trainingError) fetchTrainingData();
+    if (adminError) fetchAdminData();
+  };
 
   // KPI calculations
   const totalEmployees = employees.length;
@@ -132,6 +183,57 @@ export default function TrainingDashboardPage() {
 
   return (
     <div className="animate-in fade-in duration-500 p-6 space-y-6">
+      {/*
+        Diagnóstico del entorno. Se consulta por su cuenta y no participa de
+        `loading`: si la petición falla, el panel se muestra igual y el banner
+        no aparece (Requisitos 1.6 y 11.3).
+      */}
+      <TrainingDiagnosticsBanner />
+
+      {/* Fallo de carga de datos (Requisito 11.3) */}
+      {loadErrors.length > 0 && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="h-4 w-4 text-danger shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                {language === 'es'
+                  ? 'No se pudieron cargar los datos del centro de capacitación.'
+                  : 'The training center data could not be loaded.'}
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {loadErrors.map((entry) => (
+                  <li key={entry.id} className="text-xs text-muted">
+                    <span className="font-medium text-foreground">{entry.source}:</span> {entry.message}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted mt-1">
+                {language === 'es'
+                  ? 'Las listas de abajo pueden verse vacías o incompletas por este fallo, no porque falten datos.'
+                  : 'The lists below may look empty or incomplete because of this failure, not because there is no data.'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleRetryLoad}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-danger/20 px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger/30 disabled:opacity-50 shrink-0"
+          >
+            {loading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            {language === 'es' ? 'Reintentar' : 'Retry'}
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>

@@ -5,6 +5,7 @@ import { createAdminClient } from '@/utils/supabase/admin';
 import { createOpaqueToken, hashOpaqueToken } from '@/lib/training/tokens';
 import { hireTrainingCandidateSchema, trainingPersonalizationSchema } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -61,41 +62,17 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) {
       console.error('[Hire API] SQL RPC Transaction failed:', rpcError);
-      
-      if (rpcError.message?.includes('candidate_result_not_found')) {
-        return NextResponse.json({ error: 'Candidate result not found' }, { status: 404 });
-      }
-      if (rpcError.message?.includes('training_program_not_found')) {
-        return NextResponse.json({ error: 'Training program not found' }, { status: 404 });
-      }
-      if (rpcError.message?.includes('forbidden')) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-      }
-      if (rpcError.message?.includes('training_program_not_published')) {
+
+      // El catálogo distingue `candidate_org_mismatch` de
+      // `candidate_role_mismatch`, que esta ruta colapsaba en un solo mensaje
+      // ambiguo ("organization or role"). Requisitos 7.2 y 7.3 piden un motivo
+      // específico por precondición.
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
+
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Training program must be published before hiring' },
-          { status: 409 }
-        );
-      }
-      if (rpcError.message?.includes('training_program_has_no_role')) {
-        return NextResponse.json(
-          { error: 'Training program has no role assigned' },
-          { status: 409 }
-        );
-      }
-      if (rpcError.message?.includes('training_program_has_no_modules')) {
-        return NextResponse.json(
-          { error: 'Training program has no modules' },
-          { status: 409 }
-        );
-      }
-      if (
-        rpcError.message?.includes('candidate_org_mismatch') ||
-        rpcError.message?.includes('candidate_role_mismatch')
-      ) {
-        return NextResponse.json(
-          { error: 'Candidate does not match the training program organization or role' },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

@@ -109,11 +109,19 @@ export default function MyJobsPage() {
     } catch {
       // Table might not exist, try alternate table
       try {
-        const { data: invites } = await supabase
-          .from('candidate_invites')
-          .select('id, role_id, status, created_at')
-          .eq('candidate_id', user.id)
-          .order('created_at', { ascending: false });
+        // `candidate_invites` no tiene ninguna columna que referencie a
+        // `auth.users`: la única forma de identificar al candidato es su
+        // email. El filtro anterior era `.eq('candidate_id', user.id)` sobre
+        // una columna inexistente, así que este fallback nunca devolvió nada.
+        // La política RLS de la tabla filtra por el email del token, de modo
+        // que sin email no hay nada que consultar.
+        const { data: invites } = user.email
+          ? await supabase
+              .from('candidate_invites')
+              .select('id, role_id, status, created_at')
+              .eq('candidate_email', user.email)
+              .order('created_at', { ascending: false })
+          : { data: null };
 
         if (invites) {
           const mapped: Application[] = invites.map((inv) => ({

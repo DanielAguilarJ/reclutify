@@ -6,6 +6,7 @@ import {
   startTrainingModuleRpcResultSchema,
 } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -40,28 +41,17 @@ export async function POST(req: NextRequest) {
     if (rpcError) {
       console.error('[Start Module API] Start RPC failed:', rpcError);
 
-      if (rpcError.message?.includes('module_locked')) {
-        return NextResponse.json(
-          { error: 'Module is locked' },
-          { status: 403 }
-        );
-      }
+      // El catálogo mantiene 403 para `module_locked`, 404 para los tres
+      // identificadores de "no encontrado / no asignado" y 409 para
+      // `module_not_available`, y además distingue el texto de cada uno en
+      // lugar de responder siempre "Training progress not found"
+      // (Requisitos 9.3, 10.4).
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
 
-      if (
-        rpcError.message?.includes('training_progress_not_found') ||
-        rpcError.message?.includes('training_module_not_found') ||
-        rpcError.message?.includes('module_not_assigned')
-      ) {
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Training progress not found' },
-          { status: 404 }
-        );
-      }
-
-      if (rpcError.message?.includes('module_not_available')) {
-        return NextResponse.json(
-          { error: 'Module is not available' },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

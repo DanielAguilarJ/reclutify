@@ -3,6 +3,7 @@ import { getTrainingEmployeeFromSession } from '@/lib/training/session';
 import { createAdminClient } from '@/utils/supabase/admin';
 import { updateTrainingTimeSchema } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -40,17 +41,14 @@ export async function POST(req: NextRequest) {
         rpcError
       );
 
-      if (
-        rpcError.message?.includes(
-          'training_progress_not_available'
-        )
-      ) {
+      // `training_progress_not_available` e `invalid_time_delta` están
+      // catalogados con el status que esta ruta ya usaba (Requisito 9.3).
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
+
+      if (resolved) {
         return NextResponse.json(
-          {
-            error:
-              'Training progress is not available for time updates',
-          },
-          { status: 409 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

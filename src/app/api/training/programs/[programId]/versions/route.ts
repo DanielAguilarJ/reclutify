@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireProgramAdmin } from '@/lib/training/auth';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 
@@ -24,24 +25,15 @@ export async function POST(
     if (error) {
       console.error('[API Program Versions] RPC failed:', error);
 
-      if (error.message?.includes('only_published_or_archived_programs_can_be_versioned')) {
-        return NextResponse.json(
-          { error: 'Only published or archived programs can be versioned' },
-          { status: 409 }
-        );
-      }
+      // `only_published_or_archived_programs_can_be_versioned`,
+      // `draft_version_already_exists` y `forbidden` viven en el catálogo con
+      // el mismo status y texto que esta ruta devolvía (Requisito 6.4).
+      const resolved = resolveTrainingRpcError(error, 'en');
 
-      if (error.message?.includes('draft_version_already_exists')) {
+      if (resolved) {
         return NextResponse.json(
-          { error: 'A draft version already exists for this role vacancy' },
-          { status: 409 }
-        );
-      }
-
-      if (error.message?.includes('forbidden')) {
-        return NextResponse.json(
-          { error: 'Forbidden' },
-          { status: 403 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

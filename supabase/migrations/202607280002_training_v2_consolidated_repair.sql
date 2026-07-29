@@ -1,28 +1,99 @@
 -- ============================================================
--- REPARACIÓN TRAINING CENTER V2 — script consolidado e idempotente
--- Generado a partir de las migraciones:
+-- Training Center V2 — Reparación consolidada del esquema
+--
+-- Esta migración es la versión APLICABLE POR CLI del script
+-- manual `supabase/repair_training_v2.sql`. Ambos contienen el
+-- mismo contenido; el script manual se conserva para cuando no
+-- haya acceso al CLI y haya que pegarlo en el SQL Editor del
+-- Dashboard.
+--
+-- Reaplica el contenido de:
 --   202607180002_training_v2_transactions.sql
 --   202607180003_training_document_detach_guard.sql
 --   202607180004_training_start_module.sql
 --   202607180005_training_v2_access_fixes.sql
--- más: bucket de storage, backfill de org_members y reload de schema.
+-- más el bucket privado de storage, el backfill de org_members
+-- y la recarga del schema cache de PostgREST.
 --
--- CÓMO APLICAR: pegar TODO este archivo en el SQL Editor de Supabase
--- (Dashboard → SQL Editor → New query → Run).
--- Es seguro ejecutarlo más de una vez.
+-- IDEMPOTENCIA: es segura de reaplicar sobre una base ya
+-- migrada. Todas las funciones son CREATE OR REPLACE, las
+-- políticas van precedidas de DROP POLICY IF EXISTS, los
+-- INSERT llevan ON CONFLICT y los UPDATE de rescate están
+-- acotados por NOT EXISTS. No crea tablas, columnas, índices
+-- ni triggers, así que no hay CREATE TABLE / ADD COLUMN /
+-- CREATE INDEX / CREATE TRIGGER que proteger.
+--
+-- PRECONDICIÓN: requiere que 202607180001_training_v2_foundation
+-- esté aplicada, porque concede permisos y crea políticas sobre
+-- tablas que esa migración provee. La sección 0 lo comprueba y
+-- aborta con un mensaje accionable en lugar de un
+-- "relation does not exist" opaco.
+--
+-- RIESGO: aplicar primero en un entorno de pruebas y con
+-- respaldo. No aplicar directamente en producción sin
+-- confirmación explícita.
 -- ============================================================
 
 BEGIN;
 
--- ─────────────────────────────────────────────────────────
+-- ============================================================
+-- 0. PRECONDICIÓN — cimientos de Training V2
+-- Guarda deliberada: esta migración no crea las tablas de
+-- 202607180001, solo funciones, permisos y datos que dependen
+-- de ellas. Si faltan, se aborta indicando qué aplicar.
+-- ============================================================
+
+DO $$
+DECLARE
+  v_missing TEXT[] := ARRAY[]::TEXT[];
+  v_name TEXT;
+BEGIN
+  FOREACH v_name IN ARRAY ARRAY[
+    'public.training_programs',
+    'public.training_documents',
+    'public.training_modules',
+    'public.training_employees',
+    'public.training_progress',
+    'public.training_evaluations',
+    'public.training_sessions',
+    'public.training_program_documents',
+    'public.training_module_documents',
+    'public.training_access_sessions'
+  ] LOOP
+    IF to_regclass(v_name) IS NULL THEN
+      v_missing := v_missing || v_name;
+    END IF;
+  END LOOP;
+
+  IF array_length(v_missing, 1) IS NOT NULL THEN
+    RAISE EXCEPTION
+      'training_v2_foundation_missing: faltan % — aplica 20260530_training_center.sql y 202607180001_training_v2_foundation.sql antes de esta migración',
+      array_to_string(v_missing, ', ');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n
+      ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = 'is_training_admin'
+  ) THEN
+    RAISE EXCEPTION
+      'training_v2_foundation_missing: falta public.is_training_admin — aplica 202607180001_training_v2_foundation.sql antes de esta migración';
+  END IF;
+END;
+$$;
+
+
+-- ============================================================
+-- 1. FUNCIONES TRANSACCIONALES
 -- Origen: 202607180002_training_v2_transactions.sql
--- ─────────────────────────────────────────────────────────
--- ============================================================
--- RPCs y funciones transaccionales para el Training Center V2
 -- ============================================================
 
-
--- 1. CONTRATACIÓN TRANSACCIONAL E IDEMPOTENTE
+-- ------------------------------------------------------------
+-- 1.1 Contratación transaccional e idempotente
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.hire_training_candidate(
   p_actor_user_id UUID,
   p_candidate_result_id TEXT,
@@ -187,7 +258,9 @@ REVOKE EXECUTE ON FUNCTION public.hire_training_candidate(UUID, TEXT, UUID, TEXT
 GRANT EXECUTE ON FUNCTION public.hire_training_candidate(UUID, TEXT, UUID, TEXT, TIMESTAMPTZ) TO service_role;
 
 
--- 2. PUBLICACIÓN TRANSACCIONAL DE PROGRAMAS
+-- ------------------------------------------------------------
+-- 1.2 Publicación transaccional de programas
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.publish_training_program(
   p_actor_user_id UUID,
   p_program_id UUID
@@ -284,7 +357,9 @@ REVOKE EXECUTE ON FUNCTION public.publish_training_program(UUID, UUID) FROM anon
 GRANT EXECUTE ON FUNCTION public.publish_training_program(UUID, UUID) TO service_role;
 
 
--- 3. CREACIÓN DE NUEVA VERSIÓN DE PROGRAMA
+-- ------------------------------------------------------------
+-- 1.3 Creación de nueva versión de programa
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.create_training_program_version(
   p_actor_user_id UUID,
   p_source_program_id UUID
@@ -399,7 +474,9 @@ REVOKE EXECUTE ON FUNCTION public.create_training_program_version(UUID, UUID) FR
 GRANT EXECUTE ON FUNCTION public.create_training_program_version(UUID, UUID) TO service_role;
 
 
--- 4. REEMPLAZO TRANSACCIONAL DE MÓDULOS GENERADOS
+-- ------------------------------------------------------------
+-- 1.4 Reemplazo transaccional de módulos generados
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.replace_training_modules(
   p_actor_user_id UUID,
   p_program_id UUID,
@@ -611,7 +688,9 @@ REVOKE EXECUTE ON FUNCTION public.replace_training_modules(UUID, UUID, JSONB) FR
 GRANT EXECUTE ON FUNCTION public.replace_training_modules(UUID, UUID, JSONB) TO service_role;
 
 
--- 5. CÁLCULO DE PROGRESO GLOBAL DEL EMPLEADO (FUNCIÓN AUXILIAR)
+-- ------------------------------------------------------------
+-- 1.5 Cálculo de progreso global del empleado (auxiliar)
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.calculate_training_progress(
   p_employee_id UUID
 )
@@ -646,7 +725,9 @@ REVOKE EXECUTE ON FUNCTION public.calculate_training_progress(UUID) FROM anon, a
 GRANT EXECUTE ON FUNCTION public.calculate_training_progress(UUID) TO service_role;
 
 
--- 6. FINALIZACIÓN TRANSACCIONAL DE EVALUACIONES
+-- ------------------------------------------------------------
+-- 1.6 Finalización transaccional de evaluaciones
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.finalize_training_evaluation(
   p_employee_id UUID,
   p_module_id UUID,
@@ -835,7 +916,9 @@ REVOKE EXECUTE ON FUNCTION public.finalize_training_evaluation(UUID, UUID, JSONB
 GRANT EXECUTE ON FUNCTION public.finalize_training_evaluation(UUID, UUID, JSONB, JSONB, NUMERIC, TEXT) TO service_role;
 
 
--- 7. COMPLETAR MÓDULO SIN EVALUACIÓN
+-- ------------------------------------------------------------
+-- 1.7 Completar módulo sin evaluación
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.complete_training_module_without_evaluation(
   p_employee_id UUID,
   p_module_id UUID
@@ -936,7 +1019,9 @@ REVOKE EXECUTE ON FUNCTION public.complete_training_module_without_evaluation(UU
 GRANT EXECUTE ON FUNCTION public.complete_training_module_without_evaluation(UUID, UUID) TO service_role;
 
 
--- 8. INCREMENTO ATÓMICO DEL TIEMPO DE PROGRESO
+-- ------------------------------------------------------------
+-- 1.8 Incremento atómico del tiempo de progreso
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.increment_training_time(
   p_employee_id UUID,
   p_module_id UUID,
@@ -973,7 +1058,10 @@ REVOKE ALL ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) FROM 
 REVOKE EXECUTE ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_training_time(UUID, UUID, INTEGER) TO service_role;
 
--- 9. PERSISTENCIA ATÓMICA DE MENSAJES DE CHAT
+
+-- ------------------------------------------------------------
+-- 1.9 Persistencia atómica de mensajes de chat
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.append_training_session_messages(
   p_employee_id UUID,
   p_session_id UUID,
@@ -1037,7 +1125,9 @@ ON FUNCTION public.append_training_session_messages(UUID, UUID, JSONB)
 TO service_role;
 
 
--- 10. CREACIÓN TRANSACCIONAL DE PROGRAMAS DE ENTRENAMIENTO
+-- ------------------------------------------------------------
+-- 1.10 Creación transaccional de programas de entrenamiento
+-- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.create_training_program(
   p_actor_user_id UUID,
   p_role_id TEXT,
@@ -1141,12 +1231,10 @@ ON FUNCTION public.create_training_program(UUID, TEXT, TEXT, TEXT, TEXT, TEXT)
 TO service_role;
 
 
--- ─────────────────────────────────────────────────────────
+-- ============================================================
+-- 2. GUARDA DE DESASOCIACIÓN DE DOCUMENTOS
 -- Origen: 202607180003_training_document_detach_guard.sql
--- ─────────────────────────────────────────────────────────
--- Nueva migración SQL para proteger la desasociación de documentos
--- supabase/migrations/202607180003_training_document_detach_guard.sql
-
+-- ============================================================
 
 CREATE OR REPLACE FUNCTION public.detach_training_program_document(
   p_actor_user_id UUID,
@@ -1222,9 +1310,10 @@ ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
 TO service_role;
 
 
--- ─────────────────────────────────────────────────────────
+-- ============================================================
+-- 3. INICIO DE MÓDULO
 -- Origen: 202607180004_training_start_module.sql
--- ─────────────────────────────────────────────────────────
+-- ============================================================
 
 CREATE OR REPLACE FUNCTION public.start_training_module(
   p_employee_id UUID,
@@ -1324,11 +1413,9 @@ ON FUNCTION public.start_training_module(UUID, UUID)
 TO service_role;
 
 
--- ─────────────────────────────────────────────────────────
--- Origen: 202607180005_training_v2_access_fixes.sql
--- ─────────────────────────────────────────────────────────
 -- ============================================================
--- Training Center V2 — correcciones de acceso detectadas en QA
+-- 4. CORRECCIONES DE ACCESO
+-- Origen: 202607180005_training_v2_access_fixes.sql
 --
 -- 1. El dashboard admin (navegador, rol authenticated) embebe
 --    training_module_documents al cargar módulos, pero la migración
@@ -1353,8 +1440,7 @@ TO service_role;
 --    owner/admin.
 -- ============================================================
 
-
--- 1. Lectura de vínculos módulo-documento para admins
+-- 4.1 Lectura de vínculos módulo-documento para admins
 GRANT SELECT ON TABLE public.training_module_documents TO authenticated;
 
 DROP POLICY IF EXISTS "Training admins can read module documents"
@@ -1375,7 +1461,7 @@ USING (
   )
 );
 
--- 2. Lectura de la propia fila de empleado
+-- 4.2 Lectura de la propia fila de empleado
 DROP POLICY IF EXISTS "Employees can read own training record"
   ON public.training_employees;
 
@@ -1385,7 +1471,7 @@ FOR SELECT
 TO authenticated
 USING (user_id = auth.uid());
 
--- 3. Rescate de dueños de organizaciones sin owner/admin
+-- 4.3 Rescate de dueños de organizaciones sin owner/admin
 UPDATE public.org_members membership
 SET role = 'owner'
 FROM public.user_profiles profile
@@ -1401,11 +1487,16 @@ WHERE membership.user_id = profile.user_id
   );
 
 
--- ─────────────────────────────────────────────────────────
--- Bucket privado de storage para documentos de training
--- (idempotente; si falla por permisos, crear el bucket
--- "training-documents" (privado, 15MB) desde Dashboard → Storage)
--- ─────────────────────────────────────────────────────────
+-- ============================================================
+-- 5. BUCKET PRIVADO DE STORAGE PARA DOCUMENTOS DE TRAINING
+-- Idempotente vía ON CONFLICT DO UPDATE: converge el bucket
+-- existente al estado deseado (privado, 15 MB, MIME permitidos).
+-- Si no hay permisos sobre storage.buckets (o el esquema de
+-- storage no existe, p. ej. en un Postgres sin la extensión),
+-- se emite un aviso y la migración continúa: el bucket puede
+-- crearse a mano desde Dashboard → Storage.
+-- ============================================================
+
 DO $$
 BEGIN
   INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -1426,15 +1517,20 @@ BEGIN
     public = false,
     file_size_limit = EXCLUDED.file_size_limit,
     allowed_mime_types = EXCLUDED.allowed_mime_types;
-EXCEPTION WHEN insufficient_privilege THEN
-  RAISE NOTICE 'Sin permisos para storage.buckets: crea el bucket training-documents manualmente en el Dashboard.';
+EXCEPTION
+  WHEN insufficient_privilege OR undefined_table OR undefined_column THEN
+    RAISE NOTICE 'Sin acceso a storage.buckets: crea el bucket training-documents (privado, 15MB) manualmente en el Dashboard.';
 END;
 $$;
 
--- ─────────────────────────────────────────────────────────
--- Backfill: empleadores con org en user_profiles pero sin fila
--- en org_members (las APIs de training exigen org_members).
--- ─────────────────────────────────────────────────────────
+
+-- ============================================================
+-- 6. BACKFILL DE MEMBRESÍA
+-- Empleadores con org en user_profiles pero sin fila en
+-- org_members. Las APIs de training exigen org_members, así que
+-- su ausencia produce 403 en todo el módulo.
+-- ============================================================
+
 INSERT INTO public.org_members (user_id, org_id, role)
 SELECT up.user_id, up.org_id, 'owner'
 FROM public.user_profiles up
@@ -1448,6 +1544,10 @@ ON CONFLICT (user_id, org_id) DO NOTHING;
 
 COMMIT;
 
--- Recargar el schema cache de PostgREST para que las funciones
--- nuevas sean visibles de inmediato vía la API.
+-- ============================================================
+-- 7. RECARGA DEL SCHEMA CACHE DE POSTGREST
+-- Fuera de la transacción: hace visibles de inmediato las
+-- funciones nuevas vía la API REST. Inocuo si se repite.
+-- ============================================================
+
 NOTIFY pgrst, 'reload schema';

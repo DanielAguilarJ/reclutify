@@ -68,6 +68,10 @@ REVOKE ALL
 ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
 FROM PUBLIC;
 
+REVOKE EXECUTE
+ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
+FROM anon, authenticated;
+
 GRANT EXECUTE
 ON FUNCTION public.detach_training_program_document(UUID, UUID, UUID)
 TO service_role;

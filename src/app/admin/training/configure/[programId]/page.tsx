@@ -22,11 +22,60 @@ import {
   AlertCircle,
   Globe,
   Briefcase,
-  FileWarning
+  FileWarning,
+  X
 } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
+import { createClient } from '@/utils/supabase/client';
 import type { TrainingModule, TrainingDocument, TrainingProgram, TrainingProgramStatus } from '@/types';
+
+/**
+ * Bucket privado de documentos de capacitación.
+ *
+ * Se repite aquí como literal porque `src/lib/training/documents.ts` es
+ * `server-only` y este archivo es un componente de cliente. El nombre tiene que
+ * coincidir con el del servidor, pero la subida usa una URL firmada emitida por
+ * `upload-url`, así que un desajuste se manifestaría de inmediato como error de
+ * subida y no como un fallo silencioso.
+ */
+const TRAINING_DOCUMENTS_BUCKET = 'training-documents';
+
+/** Solo informativo: el límite real lo aplica el servidor sobre los bytes. */
+const MAX_TRAINING_FILE_SIZE_MB = 15;
+
+/**
+ * Tope de archivos por lote en la interfaz.
+ *
+ * El camino heredado (`POST /api/training/documents`) limitaba a 5 archivos
+ * porque todos viajaban en el mismo `multipart/form-data`. Con el transporte
+ * nuevo cada archivo tiene su propia petición, así que ese límite dejó de
+ * aplicar. Se conserva un tope, más alto, por dos razones de interfaz: el lote
+ * es secuencial, y 10 archivos ya suponen una espera larga con la pestaña
+ * abierta; y el panel de progreso deja de ser legible si crece sin medida.
+ */
+const MAX_UPLOAD_BATCH = 10;
+
+/** Estado de un archivo dentro del flujo de tres pasos. */
+type UploadStepStatus = 'pending' | 'uploading' | 'processing' | 'done' | 'failed';
+
+interface UploadItemState {
+  key: string;
+  fileName: string;
+  status: UploadStepStatus;
+  /** Motivo del fallo, ya traducido y listo para mostrar. */
+  reason?: string;
+}
+
+/**
+ * Identidad estable de un archivo seleccionado.
+ *
+ * `File` no tiene identificador, y el índice del array no sirve porque la lista
+ * cambia cuando se retiran los archivos procesados. Nombre, tamaño y fecha de
+ * modificación son suficientes para emparejar la fila del panel con el archivo
+ * mientras dura el lote.
+ */
+const buildFileKey = (file: File) => `${file.name}::${file.size}::${file.lastModified}`;
 
 export default function ConfigureProgramPage(props: { params: Promise<{ programId: string }> }) {
   const { programId } = use(props.params);
@@ -65,6 +114,9 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const [docScope, setDocScope] = useState<'role' | 'organization'>('role');
   const [isDragging, setIsDragging] = useState(false);
   const [parsingDocs, setParsingDocs] = useState(false);
+  // Estado por archivo del último lote. Sobrevive a `uploadFiles`: los archivos
+  // procesados se retiran de la lista de pendientes pero su fila sigue visible.
+  const [uploadStates, setUploadStates] = useState<UploadItemState[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Module states
@@ -75,7 +127,10 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [versioning, setVersioning] = useState(false);
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  // `warning` existe para el resultado parcial del lote: hubo documentos
+  // cargados y documentos fallidos, y ninguno de los dos colores anteriores
+  // describe eso sin mentir (Requisito 2.4).
+  const [toast, setToast] = useState<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null);
 
   // Determinar si el programa es de solo lectura (todo excepto borrador es read-only)
   const isReadOnly = program ? program.status !== 'draft' : false;
@@ -139,7 +194,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     }
   }, [toast]);
 
-  const showToast = (type: 'success' | 'error', message: string) => {
+  const showToast = (type: 'success' | 'warning' | 'error', message: string) => {
     setToast({ type, message });
   };
 
@@ -167,18 +222,72 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         f.type === 'text/plain' ||
         f.name.endsWith('.md')
     );
-    setUploadFiles((prev) => [...prev, ...files]);
+    addSelectedFiles(files);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isReadOnly) return;
     if (e.target.files) {
-      const files = Array.from(e.target.files);
-      setUploadFiles((prev) => [...prev, ...files]);
+      addSelectedFiles(Array.from(e.target.files));
+    }
+    // Permite volver a elegir el mismo archivo después de retirarlo de la lista:
+    // sin esto el input no dispara `change` con la misma selección.
+    e.target.value = '';
+  };
+
+  /**
+   * Añade archivos a la cola descartando duplicados y respetando el tope del
+   * lote. El duplicado se descarta porque el flujo por archivo lo emparejaría
+   * con la misma fila del panel y el servidor lo deduplicaría por checksum de
+   * todos modos: subirlo dos veces solo produce ruido.
+   */
+  const addSelectedFiles = (files: File[]) => {
+    if (isReadOnly || parsingDocs || files.length === 0) return;
+
+    const existingKeys = new Set(uploadFiles.map(buildFileKey));
+    const accepted: File[] = [];
+    let duplicates = 0;
+
+    for (const file of files) {
+      const key = buildFileKey(file);
+      if (existingKeys.has(key)) {
+        duplicates += 1;
+        continue;
+      }
+      existingKeys.add(key);
+      accepted.push(file);
+    }
+
+    const room = Math.max(0, MAX_UPLOAD_BATCH - uploadFiles.length);
+    const admitted = accepted.slice(0, room);
+    const rejected = accepted.length - admitted.length;
+
+    if (admitted.length > 0) {
+      setUploadFiles((prev) => [...prev, ...admitted]);
+    }
+
+    if (rejected > 0) {
+      showToast(
+        'error',
+        language === 'es'
+          ? `Solo puedes subir ${MAX_UPLOAD_BATCH} archivos por lote. Se omitieron ${rejected}.`
+          : `You can only upload ${MAX_UPLOAD_BATCH} files per batch. ${rejected} were skipped.`
+      );
+      return;
+    }
+
+    if (duplicates > 0) {
+      showToast(
+        'error',
+        language === 'es'
+          ? `Se omitieron ${duplicates} archivos ya presentes en la lista.`
+          : `${duplicates} files already in the list were skipped.`
+      );
     }
   };
 
   const removeUploadFile = (index: number) => {
+    if (parsingDocs) return;
     setUploadFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -195,35 +304,202 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     return 'bg-gray-100 text-gray-700';
   };
 
-  // Parse and upload documents
-  const handleParseDocuments = async () => {
-    if (isReadOnly || uploadFiles.length === 0) return;
-    setParsingDocs(true);
+  const patchUploadState = (key: string, patch: Partial<UploadItemState>) => {
+    setUploadStates((prev) =>
+      prev.map((item) => (item.key === key ? { ...item, ...patch } : item))
+    );
+  };
+
+  /**
+   * Sube y procesa **un** archivo con el flujo de tres pasos.
+   *
+   * 1. `POST /api/training/documents/upload-url` — JSON pequeño, así que el
+   *    límite de tamaño de cuerpo de la plataforma no interviene.
+   * 2. `uploadToSignedUrl` — el archivo va del navegador directamente al bucket.
+   *    El bucket es privado, pero el token firmado del paso 1 autoriza la
+   *    escritura sin necesidad de permisos de sesión sobre el bucket.
+   * 3. `POST /api/training/documents/process` — el servidor descarga el objeto y
+   *    valida los bytes reales, extrae el texto, indexa y asocia al programa.
+   *
+   * Devuelve `true` solo si el paso 3 confirmó el documento. Nunca lanza: cada
+   * fallo se traduce a un motivo visible en la fila del archivo, porque un lote
+   * no debe interrumpirse por un archivo malo.
+   */
+  const uploadSingleDocument = async (file: File, key: string): Promise<boolean> => {
+    const genericUploadError =
+      language === 'es'
+        ? 'No se pudo preparar la subida del archivo.'
+        : 'The file upload could not be prepared.';
+    const genericProcessError =
+      language === 'es'
+        ? 'No se pudo procesar el documento.'
+        : 'The document could not be processed.';
+
     try {
-      const formData = new FormData();
-      formData.append('programId', programId);
-      formData.append('scope', docScope);
-      uploadFiles.forEach((file) => {
-        formData.append('files', file);
-      });
+      // ── Paso 1: URL firmada ──
+      patchUploadState(key, { status: 'uploading', reason: undefined });
 
-      const res = await fetch('/api/training/documents', {
+      const urlRes = await fetch('/api/training/documents/upload-url', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          programId,
+          scope: docScope,
+          fileName: file.name,
+          fileSize: file.size,
+        }),
       });
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to upload documents');
+      const urlBody = await urlRes.json().catch(() => ({} as Record<string, unknown>));
+
+      if (!urlRes.ok) {
+        // `upload-url` ya devuelve texto accionable en `error` (tamaño,
+        // extensión, programa publicado), así que se muestra tal cual.
+        patchUploadState(key, {
+          status: 'failed',
+          reason: typeof urlBody?.error === 'string' ? urlBody.error : genericUploadError,
+        });
+        return false;
       }
 
-      await loadLibraryDocuments();
-      setUploadFiles([]);
-      showToast('success', language === 'es' ? 'Documentos cargados y procesados' : 'Documents uploaded and processed');
+      const { documentId, storagePath, token } = urlBody as {
+        documentId?: string;
+        storagePath?: string;
+        token?: string;
+      };
+
+      if (!documentId || !storagePath || !token) {
+        patchUploadState(key, { status: 'failed', reason: genericUploadError });
+        return false;
+      }
+
+      // ── Paso 2: subida directa del navegador al bucket ──
+      const supabase = createClient();
+      const { error: uploadError } = await supabase.storage
+        .from(TRAINING_DOCUMENTS_BUCKET)
+        .uploadToSignedUrl(storagePath, token, file);
+
+      if (uploadError) {
+        // Aquí no hay mensaje del servidor que traducir: el error viene de
+        // storage. El caso más probable es que el archivo exceda el
+        // `file_size_limit` del bucket o que la red se cortara a medias.
+        console.error('[training/configure] Signed upload failed', uploadError);
+        patchUploadState(key, {
+          status: 'failed',
+          reason:
+            language === 'es'
+              ? `No se pudo subir el archivo al almacenamiento. Comprueba tu conexión y que no exceda ${MAX_TRAINING_FILE_SIZE_MB} MB.`
+              : `The file could not be uploaded to storage. Check your connection and that it does not exceed ${MAX_TRAINING_FILE_SIZE_MB} MB.`,
+        });
+        return false;
+      }
+
+      // ── Paso 3: procesamiento en el servidor ──
+      patchUploadState(key, { status: 'processing' });
+
+      const processRes = await fetch('/api/training/documents/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          programId,
+          scope: docScope,
+          documentId,
+          storagePath,
+          fileName: file.name,
+        }),
+      });
+
+      const processBody = await processRes
+        .json()
+        .catch(() => ({} as Record<string, any>));
+
+      if (!processRes.ok || processBody?.success !== true) {
+        // `failure.message` ya viene traducido y sin causa técnica; el `error`
+        // plano cubre autorización y validación de forma del cuerpo.
+        const reason =
+          (typeof processBody?.failure?.message === 'string' && processBody.failure.message) ||
+          (typeof processBody?.error === 'string' && processBody.error) ||
+          genericProcessError;
+
+        patchUploadState(key, { status: 'failed', reason });
+        return false;
+      }
+
+      patchUploadState(key, { status: 'done', reason: undefined });
+      return true;
     } catch (err: any) {
-      showToast('error', err.message || (language === 'es' ? 'Error al procesar documentos' : 'Error processing documents'));
+      // Fallo de red o de parseo: el archivo queda pendiente para reintentar.
+      console.error('[training/configure] Upload flow failed', err);
+      patchUploadState(key, {
+        status: 'failed',
+        reason:
+          language === 'es'
+            ? 'Error de red durante la subida. Vuelve a intentarlo.'
+            : 'Network error during upload. Try again.',
+      });
+      return false;
+    }
+  };
+
+  /**
+   * Recorre el lote **en secuencia**, un archivo por vez.
+   *
+   * En paralelo el progreso sería ilegible (varias filas cambiando a la vez) y
+   * cada `process` mantiene abierta una petición de hasta 60 s con extracción de
+   * texto y análisis de IA: lanzarlas todas juntas solo adelanta el momento en
+   * que alguna expira.
+   */
+  const handleUploadDocuments = async () => {
+    if (isReadOnly || parsingDocs || uploadFiles.length === 0) return;
+
+    const batch = uploadFiles.map((file) => ({ file, key: buildFileKey(file) }));
+
+    setUploadStates(
+      batch.map(({ file, key }) => ({ key, fileName: file.name, status: 'pending' as const }))
+    );
+    setParsingDocs(true);
+
+    const processedKeys = new Set<string>();
+
+    try {
+      for (const { file, key } of batch) {
+        const processed = await uploadSingleDocument(file, key);
+        if (processed) processedKeys.add(key);
+      }
     } finally {
       setParsingDocs(false);
+    }
+
+    // Solo se retiran los archivos que el servidor confirmó. Los fallidos se
+    // conservan para poder reintentar sin volver a seleccionarlos.
+    setUploadFiles((prev) => prev.filter((file) => !processedKeys.has(buildFileKey(file))));
+
+    await loadLibraryDocuments();
+
+    const processedCount = processedKeys.size;
+    const failedCount = batch.length - processedCount;
+
+    if (failedCount === 0) {
+      showToast(
+        'success',
+        language === 'es'
+          ? `${processedCount} documento(s) cargado(s) y procesado(s)`
+          : `${processedCount} document(s) uploaded and processed`
+      );
+    } else if (processedCount > 0) {
+      showToast(
+        'warning',
+        language === 'es'
+          ? `${processedCount} documento(s) cargado(s), ${failedCount} con errores`
+          : `${processedCount} document(s) uploaded, ${failedCount} failed`
+      );
+    } else {
+      showToast(
+        'error',
+        language === 'es'
+          ? `Ningún documento se pudo procesar (${failedCount} con errores)`
+          : `No documents could be processed (${failedCount} failed)`
+      );
     }
   };
 
@@ -439,8 +715,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     <div className="animate-in fade-in duration-500 p-6 space-y-6 max-w-4xl">
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg transition-all animate-in fade-in slide-in-from-top-2 duration-300 ${
-          toast.type === 'success' ? 'bg-success text-white font-medium' : 'bg-red-500 text-white font-medium'
+        <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg transition-all animate-in fade-in slide-in-from-top-2 duration-300 text-white font-medium ${
+          toast.type === 'success' ? 'bg-success' : toast.type === 'warning' ? 'bg-warning' : 'bg-red-500'
         }`}>
           {toast.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
           <span className="text-sm">{toast.message}</span>
@@ -652,8 +928,13 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className={`relative flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed cursor-pointer transition-all ${
+              onClick={() => {
+                if (parsingDocs) return;
+                fileInputRef.current?.click();
+              }}
+              className={`relative flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed transition-all ${
+                parsingDocs ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+              } ${
                 isDragging
                   ? 'border-primary bg-primary/5'
                   : 'border-border/50 hover:border-primary/50 hover:bg-background'
@@ -671,8 +952,73 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
               <p className="text-sm font-medium text-foreground">
                 {language === 'es' ? 'Arrastra archivos aquí o haz clic para seleccionar' : 'Drag files here or click to select'}
               </p>
-              <p className="text-xs text-muted mt-1">PDF, DOCX, TXT, MD (Max 15MB)</p>
+              <p className="text-xs text-muted mt-1">
+                {language === 'es'
+                  ? `PDF, DOCX, TXT, MD (Máx ${MAX_TRAINING_FILE_SIZE_MB} MB · hasta ${MAX_UPLOAD_BATCH} archivos por lote)`
+                  : `PDF, DOCX, TXT, MD (Max ${MAX_TRAINING_FILE_SIZE_MB} MB · up to ${MAX_UPLOAD_BATCH} files per batch)`}
+              </p>
             </div>
+
+            {/* Panel de progreso por archivo: sustituye al spinner opaco anterior */}
+            {uploadStates.length > 0 && (
+              <div className="rounded-xl border border-border/50 bg-background p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-muted uppercase tracking-wider">
+                    {language === 'es' ? 'Progreso de la subida' : 'Upload progress'}
+                    {' '}
+                    ({uploadStates.filter((item) => item.status === 'done').length}/{uploadStates.length})
+                  </p>
+                  {!parsingDocs && (
+                    <button
+                      type="button"
+                      onClick={() => setUploadStates([])}
+                      className="p-1 rounded-lg text-muted hover:text-foreground hover:bg-card transition-colors"
+                      title={language === 'es' ? 'Ocultar detalle' : 'Hide details'}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  {uploadStates.map((item) => (
+                    <div key={item.key} className="flex items-start gap-2 text-xs">
+                      <span className="mt-0.5 flex-shrink-0">
+                        {item.status === 'pending' && <Clock className="h-3.5 w-3.5 text-muted" />}
+                        {(item.status === 'uploading' || item.status === 'processing') && (
+                          <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
+                        )}
+                        {item.status === 'done' && <CheckCircle className="h-3.5 w-3.5 text-success" />}
+                        {item.status === 'failed' && <AlertCircle className="h-3.5 w-3.5 text-red-500" />}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-foreground truncate max-w-[260px]">{item.fileName}</span>
+                          <span
+                            className={`text-[10px] font-semibold uppercase tracking-wide ${
+                              item.status === 'done'
+                                ? 'text-success'
+                                : item.status === 'failed'
+                                  ? 'text-red-500'
+                                  : 'text-muted'
+                            }`}
+                          >
+                            {item.status === 'pending' && (language === 'es' ? 'En espera' : 'Queued')}
+                            {item.status === 'uploading' && (language === 'es' ? 'Subiendo' : 'Uploading')}
+                            {item.status === 'processing' && (language === 'es' ? 'Procesando' : 'Processing')}
+                            {item.status === 'done' && (language === 'es' ? 'Procesado' : 'Processed')}
+                            {item.status === 'failed' && (language === 'es' ? 'Fallido' : 'Failed')}
+                          </span>
+                        </div>
+                        {item.status === 'failed' && item.reason && (
+                          <p className="text-[11px] text-red-500 mt-0.5">{item.reason}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -693,7 +1039,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                 </div>
                 <button
                   onClick={() => removeUploadFile(idx)}
-                  className="p-1 rounded-lg hover:bg-red-50 text-muted hover:text-red-500 transition-colors"
+                  disabled={parsingDocs}
+                  className="p-1 rounded-lg hover:bg-red-50 text-muted hover:text-red-500 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -701,7 +1048,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
             ))}
 
             <button
-              onClick={handleParseDocuments}
+              onClick={handleUploadDocuments}
               disabled={parsingDocs}
               className="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-medium py-2 px-4 rounded-xl text-sm transition-all disabled:opacity-50"
             >

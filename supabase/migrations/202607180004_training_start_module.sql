@@ -89,6 +89,10 @@ REVOKE ALL
 ON FUNCTION public.start_training_module(UUID, UUID)
 FROM PUBLIC;
 
+REVOKE EXECUTE
+ON FUNCTION public.start_training_module(UUID, UUID)
+FROM anon, authenticated;
+
 GRANT EXECUTE
 ON FUNCTION public.start_training_module(UUID, UUID)
 TO service_role;

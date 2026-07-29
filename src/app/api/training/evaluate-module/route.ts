@@ -9,6 +9,7 @@ import {
   trainingEvaluationRpcResultSchema,
 } from '@/lib/training/contracts';
 import { trainingApiErrorResponse } from '@/lib/training/http';
+import { resolveTrainingRpcError } from '@/lib/training/rpc-errors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -360,31 +361,17 @@ Return exactly:
     if (rpcError) {
       console.error('[Evaluate API] SQL RPC finalize evaluation failed:', rpcError);
 
-      if (
-        rpcError.message?.includes('module_not_found') ||
-        rpcError.message?.includes('training_progress_not_found') ||
-        rpcError.message?.includes('module_not_assigned_to_employee')
-      ) {
-        return NextResponse.json(
-          { error: 'Training module not found' },
-          { status: 404 }
-        );
-      }
+      // El catálogo conserva los status de esta ruta (404 para los "no
+      // encontrado", 409 para las precondiciones del módulo, 400 para
+      // `invalid_score`) y además separa `module_does_not_require_evaluation`
+      // de `module_not_available_for_evaluation`, que aquí compartían texto
+      // (Requisitos 10.4, 10.5, 10.6).
+      const resolved = resolveTrainingRpcError(rpcError, 'en');
 
-      if (
-        rpcError.message?.includes('module_not_available_for_evaluation') ||
-        rpcError.message?.includes('module_does_not_require_evaluation')
-      ) {
+      if (resolved) {
         return NextResponse.json(
-          { error: 'Module is not available for evaluation' },
-          { status: 409 }
-        );
-      }
-
-      if (rpcError.message?.includes('invalid_score')) {
-        return NextResponse.json(
-          { error: 'Invalid evaluation score' },
-          { status: 400 }
+          { error: resolved.message },
+          { status: resolved.status }
         );
       }
 

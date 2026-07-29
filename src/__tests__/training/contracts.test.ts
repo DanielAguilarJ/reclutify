@@ -14,6 +14,8 @@ import {
   trainingTutorResponseSchema,
   trainingQuestionAdminSchema,
   manualTrainingModuleSchema,
+  trainingDocumentProcessSchema,
+  MAX_TRAINING_OCR_TEXT_CHARS,
 } from '../../lib/training/contracts';
 import { TRAINING_CONTENT_LANGUAGES } from '../../lib/training/content-language';
 
@@ -207,6 +209,76 @@ describe('Training Center V2 Contract Integrity', () => {
       documentId: '00000000-0000-4000-8000-000000000001',
     });
     expect(result.success).toBe(true);
+  });
+
+  // ─── trainingDocumentProcessSchema: texto de OCR del cliente ───
+  //
+  // `ocrText` es el único campo del cuerpo que puede acabar en el contenido
+  // indexado del documento (el resto solo identifica el archivo), así que su
+  // forma es la primera de las dos puertas que lo estrechan; la segunda es la
+  // regla de uso de `processTrainingDocument`.
+  const processBody = (overrides: Record<string, unknown> = {}) => ({
+    programId: '00000000-0000-4000-8000-000000000001',
+    scope: 'role',
+    documentId: '00000000-0000-4000-8000-0000000000aa',
+    storagePath: 'org-1/role-1/00000000-0000-4000-8000-0000000000aa/manual.pdf',
+    fileName: 'manual.pdf',
+    ...overrides,
+  });
+
+  it('accepts a process body without ocrText', () => {
+    // Ausente es el caso normal: un PDF con capa de texto, un DOCX, un TXT.
+    const result = trainingDocumentProcessSchema.safeParse(processBody());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ocrText).toBeUndefined();
+    }
+  });
+
+  it('accepts and trims a valid ocrText', () => {
+    const result = trainingDocumentProcessSchema.safeParse(
+      processBody({ ocrText: '  Texto reconocido por OCR  ' }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ocrText).toBe('Texto reconocido por OCR');
+    }
+  });
+
+  it('rejects an empty or whitespace-only ocrText', () => {
+    // Mandar la clave vacía significaría "hubo OCR y no dio nada", que no es un
+    // estado que el servidor deba interpretar: en ese caso el campo no se envía.
+    expect(
+      trainingDocumentProcessSchema.safeParse(processBody({ ocrText: '' }))
+        .success,
+    ).toBe(false);
+    expect(
+      trainingDocumentProcessSchema.safeParse(processBody({ ocrText: '   ' }))
+        .success,
+    ).toBe(false);
+  });
+
+  it('rejects an ocrText longer than the accepted maximum', () => {
+    // El tope acota el cuerpo de la petición: sin él, el texto del cliente es
+    // una entrada de tamaño arbitrario que va a parar a una columna.
+    const result = trainingDocumentProcessSchema.safeParse(
+      processBody({ ocrText: 'a'.repeat(MAX_TRAINING_OCR_TEXT_CHARS + 1) }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts an ocrText exactly at the maximum', () => {
+    const result = trainingDocumentProcessSchema.safeParse(
+      processBody({ ocrText: 'a'.repeat(MAX_TRAINING_OCR_TEXT_CHARS) }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-string ocrText', () => {
+    const result = trainingDocumentProcessSchema.safeParse(
+      processBody({ ocrText: 12345 }),
+    );
+    expect(result.success).toBe(false);
   });
 
   // ─── trainingQuestionAdminSchema Invariants ───

@@ -51,6 +51,13 @@ import {
  *    es que un objeto rechazado **no se queda en el bucket**, porque nadie más
  *    va a limpiarlo: la fila nunca existió y el navegador ya terminó su parte.
  *
+ * 3. **El texto de OCR del cliente entra por una puerta estrecha.**
+ *    `ocrText` es el único dato del cuerpo que puede acabar en el contenido
+ *    indexado del documento. El esquema limita su longitud y
+ *    `processTrainingDocument` limita su uso: solo si la extracción del servidor
+ *    no alcanza el umbral y el archivo es PDF. La consideración de confianza que
+ *    justifica aceptarlo está escrita junto a esa decisión.
+ *
  * Un archivo por petición: la duración es predecible y el fallo de un archivo
  * no arrastra a los demás del lote.
  *
@@ -112,7 +119,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { programId, scope, documentId, storagePath, fileName } = parsed.data;
+    const { programId, scope, documentId, storagePath, fileName, ocrText } =
+      parsed.data;
 
     // 1. Autorizar: 401 sin sesión, 403 sin rol owner/admin en la organización
     // del programa, 404 si el programa no existe.
@@ -201,6 +209,10 @@ export async function POST(req: NextRequest) {
         storagePath,
         fileName,
         fileBuffer,
+        // Texto del OCR de navegador, cuando el PDF venía escaneado. La ruta lo
+        // pasa tal cual: la decisión de usarlo o ignorarlo, y la consideración
+        // de confianza que la sostiene, viven en `processTrainingDocument`.
+        ocrText,
       });
     } catch (processingError: unknown) {
       // 7. Ningún objeto rechazado se queda en el bucket.

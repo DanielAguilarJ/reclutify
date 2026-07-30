@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  isCandidateResultOwnedBy,
+  validateCandidateResultUpdates,
+  PUBLIC_FLOW_AUTH_LOG_PREFIX,
+} from '@/lib/candidate-results/authorization';
 
 /**
  * API: Crear/actualizar (upsert) o parchear filas de `candidate_results`
@@ -20,10 +25,43 @@ import { createClient } from '@supabase/supabase-js';
  * la escritura del resultado de la entrevista SIEMPRE funciona sin importar
  * el estado de las políticas RLS de `anon`.
  *
- * Seguridad: no requiere sesión porque los candidatos son anónimos por
- * naturaleza, pero SIEMPRE resolvemos `org_id` server-side a partir del
- * `roleId` (nunca confiamos en un `orgId` arbitrario del cliente), igual
- * que ya hace `/api/public-interview`.
+ * ─── Estado de la autorización ──────────────────────────────────────────────
+ *
+ * Como la service role ignora RLS, esta ruta es el único lugar donde se puede
+ * comprobar qué se permite escribir. Hoy hace tres cosas:
+ *
+ *  1. `org_id` se resuelve SIEMPRE en el servidor a partir del `roleId`, y se
+ *     ignora cualquier `orgId` del cuerpo (Requisito 3 criterio 9). Sin esto la
+ *     comprobación de pertenencia del `POST` sería trivial de satisfacer:
+ *     bastaría enviar el `orgId` del atacante.
+ *  2. `POST` comprueba la pertenencia de la fila antes del `upsert`: si el `id`
+ *     ya existe y no es del mismo `role_id` + `org_id`, responde 403 y no
+ *     escribe (Requisito 3 criterio 5).
+ *  3. `PATCH` valida `updates` contra una lista blanca de columnas y rechaza la
+ *     petición completa si aparece cualquier otra clave (Requisito 3 criterios
+ *     7 y 8). La lista y su derivación están en
+ *     `src/lib/candidate-results/authorization.ts`.
+ *
+ * PENDIENTE — TRAMO SIGUIENTE, NO IMPLEMENTADO AQUÍ: PRUEBA DE ACCESO.
+ *
+ * Esta ruta TODAVÍA NO exige ninguna credencial que demuestre que quien llama
+ * participa en la entrevista que modifica. La prueba de acceso — el `token` del
+ * ticket o el `public_token` de la vacante — es el tramo siguiente
+ * (Requisito 3 criterios 1, 2, 3 y 6 de
+ * `.kiro/specs/public-flow-authorization-hardening/requirements.md`).
+ * Hasta que exista, siguen abiertos:
+ *
+ *  - `PATCH` sobre el `id` de cualquier candidato de cualquier organización,
+ *    acotado a las cinco columnas de la lista blanca.
+ *  - `POST` con un `id` nuevo cualquiera contra cualquier `roleId` conocido.
+ *  - La ventana entre la consulta de pertenencia y el `upsert` del `POST`: la
+ *    comprobación no es atómica. La prueba de acceso reduce el problema a quien
+ *    ya participa en la entrevista; cerrarla del todo pide una restricción en
+ *    la base, fuera del alcance de este tramo.
+ *
+ * Es decir: este tramo cierra la escalada entre organizaciones, no el acceso
+ * anónimo a la ruta.
+ * ────────────────────────────────────────────────────────────────────────────
  */
 
 function getServiceClient() {
@@ -31,6 +69,21 @@ function getServiceClient() {
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !supabaseServiceKey) return null;
   return createClient(supabaseUrl, supabaseServiceKey);
+}
+
+/**
+ * Registra un rechazo de autorización con un prefijo estable y sin datos
+ * sensibles: nunca el nombre ni el correo del candidato, nunca transcripciones.
+ */
+function logRejection(
+  method: 'POST' | 'PATCH',
+  reason: string,
+  details: Record<string, unknown>,
+) {
+  console.warn(
+    `${PUBLIC_FLOW_AUTH_LOG_PREFIX} candidate-results ${method} rejected: ${reason}`,
+    details,
+  );
 }
 
 // POST: crear o reemplazar (upsert) un resultado de candidato completo.
@@ -55,26 +108,61 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
   }
 
-  // Siempre resolvemos org_id desde el rol en el servidor — nunca confiamos
-  // ciegamente en un valor enviado por el cliente.
-  let orgId = (body.orgId as string | null | undefined) || null;
-  if (!orgId) {
-    const { data: roleData, error: roleError } = await supabase
-      .from('roles')
-      .select('org_id')
-      .eq('id', roleId)
-      .single();
-    if (roleError) {
-      console.warn('[api/candidate-results][POST] role lookup failed:', roleError.message);
-    }
-    orgId = roleData?.org_id || null;
+  // `org_id` se resuelve SIEMPRE desde el rol en el servidor. Antes se aceptaba
+  // el `orgId` del cuerpo cuando venía presente; eso permitía declarar una
+  // organización arbitraria y, con ella, saltarse la comprobación de
+  // pertenencia de más abajo.
+  const { data: roleData, error: roleError } = await supabase
+    .from('roles')
+    .select('org_id')
+    .eq('id', roleId)
+    .maybeSingle();
+
+  if (roleError) {
+    console.warn('[api/candidate-results][POST] role lookup failed:', roleError.message);
   }
+
+  const orgId = (roleData?.org_id as string | null | undefined) || null;
 
   if (!orgId) {
     return NextResponse.json(
       { error: `Unable to resolve org_id for roleId ${roleId}` },
       { status: 422 }
     );
+  }
+
+  // Pertenencia: el `id` lo elige el cliente, así que un `upsert` a secas sirve
+  // para pisar la fila de otra entrevista. Si el `id` ya existe, solo se acepta
+  // cuando la fila es del mismo rol y de la misma organización.
+  const { data: existing, error: existingError } = await supabase
+    .from('candidate_results')
+    .select('role_id, org_id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (existingError) {
+    console.error('[api/candidate-results][POST] ownership lookup failed:', existingError);
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  }
+
+  if (
+    existing &&
+    !isCandidateResultOwnedBy(
+      {
+        role_id: (existing.role_id as string | null) ?? null,
+        org_id: (existing.org_id as string | null) ?? null,
+      },
+      { roleId, orgId },
+    )
+  ) {
+    logRejection('POST', 'existing row belongs to another interview', {
+      resultId: id,
+      requestedRoleId: roleId,
+      ip: req.headers.get('x-forwarded-for') || null,
+      userAgent: req.headers.get('user-agent') || null,
+    });
+    // Mensaje genérico: no se filtra a qué rol ni a qué organización pertenece.
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   const row = {
@@ -115,10 +203,25 @@ export async function PATCH(req: NextRequest) {
   }
 
   const id = body.id as string | undefined;
-  const updates = body.updates as Record<string, unknown> | undefined;
 
-  if (!id || !updates || typeof updates !== 'object' || Array.isArray(updates)) {
+  if (!id || body.updates === undefined || body.updates === null) {
     return NextResponse.json({ error: 'id and updates are required' }, { status: 400 });
+  }
+
+  // La lista blanca se valida ANTES de construir el cliente y antes de
+  // cualquier consulta: un rechazo garantiza cero escrituras.
+  const validation = validateCandidateResultUpdates(body.updates);
+  if (!validation.ok) {
+    logRejection('PATCH', validation.reason, {
+      resultId: id,
+      rejectedKeys: validation.rejectedKeys,
+      ip: req.headers.get('x-forwarded-for') || null,
+      userAgent: req.headers.get('user-agent') || null,
+    });
+    return NextResponse.json(
+      { error: validation.message, rejectedKeys: validation.rejectedKeys },
+      { status: 400 },
+    );
   }
 
   const supabase = getServiceClient();
@@ -127,7 +230,10 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
   }
 
-  const { error } = await supabase.from('candidate_results').update(updates).eq('id', id);
+  const { error } = await supabase
+    .from('candidate_results')
+    .update(validation.updates)
+    .eq('id', id);
 
   if (error) {
     console.error('[api/candidate-results][PATCH] update failed:', error);

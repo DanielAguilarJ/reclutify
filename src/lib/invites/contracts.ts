@@ -17,11 +17,13 @@ import { z } from 'zod';
  * POR QUÉ ESTE ESQUEMA NO ES `.strict()`
  * --------------------------------------
  * El resto de esquemas del proyecto (`src/lib/training/contracts.ts`) usan
- * `.strict()` porque su cliente es la propia aplicación. Aquí el llamante es
- * una integración externa (el escenario de Make) cuyo payload no controlamos:
- * las claves que sobran hoy se ignoran, y rechazar la petición por una clave
- * adicional rompería un consumidor que funciona sin ganar nada de seguridad.
- * Zod descarta esas claves, así que nunca llegan a la base de datos.
+ * `.strict()` porque validan un cuerpo que la propia interfaz construye campo a
+ * campo. Aquí el cuerpo es un lote de invitaciones que puede venir de una
+ * exportación o de una hoja de cálculo con columnas de sobra, así que las claves
+ * adicionales se descartan en lugar de tumbar la petición completa. No es una
+ * concesión de seguridad: Zod las elimina del objeto validado, de modo que
+ * nunca llegan a la base de datos, y lo que decide si la petición se acepta es
+ * la autorización de la ruta, no la forma del payload.
  */
 
 /**

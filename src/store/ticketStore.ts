@@ -1,16 +1,7 @@
 import { create } from 'zustand';
 import type { InterviewTicket } from '@/types';
+import { generateInviteToken } from '@/lib/invites/token';
 import { createClient } from '@/utils/supabase/client';
-
-// Generar token único de 8 caracteres alfanuméricos
-function generateToken(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let token = '';
-  for (let i = 0; i < 8; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
-}
 
 interface TicketState {
   tickets: InterviewTicket[];
@@ -120,7 +111,10 @@ export const useTicketStore = create<TicketState>()(
       const now = Date.now();
       const ticket: InterviewTicket = {
         id: `ticket-${now}`,
-        token: generateToken(),
+        // Mismo generador que usa la ruta de invitaciones: el token es la
+        // credencial de acceso a la entrevista, así que sale del CSPRNG de la
+        // plataforma y no de `Math.random()`.
+        token: generateInviteToken(),
         candidateName,
         roleId,
         language,

@@ -1,7 +1,103 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveSupabaseServerKey } from '@/lib/supabase-server-key';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+import { classifySupabaseKeyShape } from '@/lib/supabase-key';
+
+/**
+ * Construcción ÚNICA del cliente con el que esta ruta escribe
+ * `interview_telemetry`. Las dos escrituras de este archivo —el registro por
+ * turno y el registro de la excepción— pasan por aquí.
+ *
+ * POR QUÉ EXIGE LA CLAVE DE SERVICIO Y NO ADMITE RESPALDO
+ * ------------------------------------------------------
+ * Antes el cliente se construía como
+ * `SUPABASE_SERVICE_ROLE_KEY || NEXT_PUBLIC_SUPABASE_ANON_KEY`. Ese respaldo
+ * parecía inocuo —"si no hay clave de servicio, al menos registramos algo"—
+ * pero tenía un coste en la base: la clave anon VIAJA AL NAVEGADOR, así que
+ * para que el respaldo funcionara `interview_telemetry` necesitaba una política
+ * de inserción abierta (`Enable insert for all users`, `WITH CHECK (true)`).
+ * Es decir: cualquier visitante podía inyectar filas de telemetría con el
+ * contenido que quisiera. Se quita el respaldo para poder retirar esa política
+ * (`supabase/migrations/202608010006_drop_permissive_insert_policies.sql`).
+ *
+ * `src/lib/supabase-server-key.ts` NO sirve aquí: su política es exactamente la
+ * contraria —caer a la clave anon para que la ruta degrade en vez de fallar—,
+ * que es el comportamiento que este cambio elimina.
+ *
+ * LA TELEMETRÍA NUNCA TUMBA UNA ENTREVISTA
+ * ----------------------------------------
+ * Si la variable falta o no tiene forma de clave de servicio, se devuelve `null`
+ * y el llamante omite el registro. No se lanza, no se propaga y la conversación
+ * del candidato sigue igual: la telemetría es material de depuración, no parte
+ * del producto.
+ *
+ * La forma inválida se trata como la ausencia a propósito. Con el nombre de la
+ * fila `service_role` en vez de su valor, o con la clave anon pegada en la
+ * variable del servicio, el cliente se construía sin protestar y cada inserción
+ * moría con `401 Invalid API key`, una fila de log por turno de entrevista.
+ * Mejor un aviso claro y ningún intento.
+ */
+let telemetryDisabledWarningIssued = false;
+
+/**
+ * Advierte UNA SOLA VEZ por proceso. El motivo es de configuración del entorno,
+ * no de la petición: repetirlo en cada turno de cada entrevista solo llenaría el
+ * log y escondería lo demás.
+ *
+ * El mensaje nombra la variable, jamás su valor. La aparición literal de
+ * `service_role` se refiere a la fila del panel de Supabase, no al secreto.
+ */
+function warnTelemetryDisabledOnce(reason: string): void {
+  if (telemetryDisabledWarningIssued) return;
+  telemetryDisabledWarningIssued = true;
+  console.warn(
+    `[Telemetry] Registro de interview_telemetry desactivado: ${reason} La entrevista continúa con normalidad.`,
+  );
+}
+
+/**
+ * Devuelve el cliente de telemetría, o `null` si no hay configuración utilizable.
+ *
+ * El `import` dinámico de `@supabase/supabase-js` se mantiene para no cargar la
+ * librería en el arranque en frío de la ruta: en el camino feliz la telemetría
+ * es lo último que importa y la respuesta al candidato es lo primero.
+ */
+async function createTelemetryClient(): Promise<SupabaseClient | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? '';
+  // El recorte importa: un salto de línea arrastrado en el copiado convertiría
+  // una clave por lo demás correcta en una cabecera HTTP inválida.
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '';
+
+  if (supabaseUrl.length === 0) {
+    warnTelemetryDisabledOnce('falta NEXT_PUBLIC_SUPABASE_URL.');
+    return null;
+  }
+
+  const keyShape = classifySupabaseKeyShape(serviceRoleKey);
+
+  if (keyShape !== 'service-role') {
+    warnTelemetryDisabledOnce(
+      keyShape === 'missing'
+        ? 'falta SUPABASE_SERVICE_ROLE_KEY y no se usa NEXT_PUBLIC_SUPABASE_ANON_KEY como alternativa.'
+        : keyShape === 'anon'
+          ? 'SUPABASE_SERVICE_ROLE_KEY contiene la clave anon (publicable) del proyecto, que no puede saltarse RLS.'
+          : 'SUPABASE_SERVICE_ROLE_KEY no tiene la forma de una clave de servicio; probablemente sea el nombre de la fila o un marcador de posición.',
+    );
+    return null;
+  }
+
+  const { createClient } = await import('@supabase/supabase-js');
+
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -43,15 +139,11 @@ export async function POST(req: NextRequest) {
     }) => {
       if (!sessionId) return;
       try {
-        const { createClient } = await import('@supabase/supabase-js');
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        // La telemetría es accesoria: si no hay clave utilizable se omite el
-        // registro y la entrevista continúa. Con la clave anon se intenta igual;
-        // un rechazo de RLS cae en el `catch` de abajo, que tampoco propaga.
-        const supabaseKey = resolveSupabaseServerKey('chat/logTelemetry');
-        if (!supabaseUrl || !supabaseKey) return;
+        // La telemetría es accesoria: sin clave de servicio se omite el registro
+        // y la entrevista continúa (ver `createTelemetryClient`).
+        const supabase = await createTelemetryClient();
+        if (!supabase) return;
 
-        const supabase = createClient(supabaseUrl, supabaseKey);
         await supabase.from('interview_telemetry').insert({
           session_id: sessionId,
           candidate_name: candidateName || null,
@@ -819,13 +911,12 @@ Return ONLY valid JSON, no markdown.`
     const err = error instanceof Error ? error : new Error(String(error));
     console.error('Chat API error:', err);
 
-    // Even on catastrophic failure, try to log what happened
+    // Even on catastrophic failure, try to log what happened. Misma regla que en
+    // el camino feliz: sin clave de servicio no se registra nada y el 500 se
+    // devuelve igual.
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = resolveSupabaseServerKey('chat/crashTelemetry');
-      if (supabaseUrl && supabaseKey) {
-        const supabase = createClient(supabaseUrl, supabaseKey);
+      const supabase = await createTelemetryClient();
+      if (supabase) {
         await supabase.from('interview_telemetry').insert({
           session_id: 'CRASH',
           candidate_name: null,

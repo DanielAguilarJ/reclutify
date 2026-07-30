@@ -1,0 +1,235 @@
+-- ============================================================
+-- interview_telemetry + coach_notifications — Retirar las
+-- políticas de inserción abiertas (`WITH CHECK (true)`)
+--
+-- ATENCIÓN — MIGRACIÓN PENDIENTE: NO APLICADA
+--     ESTE ARCHIVO NO SE HA EJECUTADO CONTRA NINGUNA BASE DE
+--     DATOS. Queda versionado a la espera de la decisión del
+--     Requisito 14 del spec
+--     `.kiro/specs/public-flow-authorization-hardening`:
+--     respaldo, entorno de pruebas, guion manual del flujo
+--     público y, solo entonces, producción.
+--
+-- ATENCIÓN — PRECONDICIÓN DE DESPLIEGUE
+--     EL PUNTO 1 REQUIERE QUE YA ESTÉ EN PRODUCCIÓN la versión de
+--     `src/app/api/chat/route.ts` que construye el cliente de
+--     telemetría EXIGIENDO `SUPABASE_SERVICE_ROLE_KEY`
+--     (`createTelemetryClient`).
+--
+--     Hasta ese despliegue, la ruta resuelve la clave como
+--     `SUPABASE_SERVICE_ROLE_KEY || NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+--     Si el entorno no tiene la clave de servicio bien
+--     configurada, escribe la telemetría COMO `anon`, y esa
+--     escritura solo funciona por la política que este archivo
+--     elimina. Aplicar la migración antes del despliegue no
+--     rompe ninguna entrevista —la escritura va en un
+--     `try/catch` que no propaga— pero deja de registrarse la
+--     telemetría en silencio, que es justo el dato que se
+--     necesita para depurar.
+--
+--     Orden correcto: desplegar la aplicación primero, aplicar
+--     esta migración después. El código nuevo funciona con las
+--     políticas viejas y con las nuevas (Requisito 14.5), así que
+--     el intervalo entre ambos pasos es inocuo.
+--
+-- ============================================================
+-- 1. `interview_telemetry` — «Enable insert for all users»
+-- ------------------------------------------------------------
+-- `20260507_interview_telemetry.sql:33-34` la creó como
+-- `FOR INSERT WITH CHECK (true)`, sin cláusula `TO`, es decir
+-- para TODOS los roles, `anon` incluido. Su propio comentario
+-- admite que la escritura es de servidor y que la política estaba
+-- "just in case we ever want to write directly from client".
+--
+-- Ese "por si acaso" es permiso público de escritura: la clave
+-- anon viaja al navegador, así que cualquier visitante podía
+-- insertar filas de telemetría —con el `session_id`, el
+-- `candidate_name` y el texto de prompt y respuesta que
+-- quisiera— y contaminar el panel de `/admin/telemetry`.
+--
+-- Y no la usaba nada más que un respaldo que ya se quitó. La
+-- escritura real está en `src/app/api/chat/route.ts`, en las dos
+-- llamadas a `logTelemetry` (registro por turno) y en el registro
+-- de la excepción del `catch` final. Ambas pasan ahora por
+-- `createTelemetryClient()`, que EXIGE
+-- `SUPABASE_SERVICE_ROLE_KEY` y jamás recurre a
+-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`; `service_role` IGNORA RLS, así
+-- que no necesita ninguna política de `INSERT`.
+--
+-- La LECTURA no se toca: `/admin/telemetry`
+-- (`src/app/admin/telemetry/page.tsx`) consulta con el cliente de
+-- SESIÓN de `@/utils/supabase/server`, es decir como
+-- `authenticated`, y sigue cubierta por la política
+-- `Enable read access for authenticated users` que crea la misma
+-- migración de 2026-05-07.
+--
+-- ============================================================
+-- 2. `coach_notifications` — «service_insert_notifications»
+-- ------------------------------------------------------------
+-- DERIVA REPO↔BASE: esta política NO está declarada en ningún
+-- archivo de `supabase/migrations/` (tampoco la tabla). Existe
+-- solo en la base real, con `WITH CHECK (true)`. El bloque de
+-- ROLLBACK de abajo deja constancia de su definición exacta, que
+-- es el registro que exige el Requisito 9.2 antes de eliminarla.
+--
+-- El nombre sugiere que sirve a `service_role`, y ahí está el
+-- malentendido que la hizo nacer: `service_role` NO NECESITA
+-- políticas, porque ignora RLS por diseño. Lo que la política
+-- concedía de verdad era `INSERT` sin restricción a los demás
+-- roles, `anon` incluido: cualquier visitante podía crear
+-- notificaciones falsas en el panel de cualquier asesor, con el
+-- `org_id` que eligiera.
+--
+-- La única inserción del producto está en
+-- `src/app/api/info-notify/route.ts:38-49`, y esa ruta construye
+-- su cliente con `SUPABASE_SERVICE_ROLE_KEY` a secas
+-- (`:17-23`): si la variable falta responde `500` y no inserta
+-- nada. No hay respaldo con la clave anon, así que retirar la
+-- política no le quita nada.
+--
+-- La LECTURA y el marcado como leídas tampoco se tocan:
+-- `src/store/coachStore.ts` usa el cliente de SESIÓN
+-- (`@/utils/supabase/client`) en `fetchNotifications` (`:351-369`),
+-- `markNotificationRead` (`:371-382`) y
+-- `markAllNotificationsRead` (`:384-402`), todo acotado por
+-- `org_id`, y sigue cubierto por la política de `authenticated`
+-- que ya existe en la base, `org_members_manage_notifications`.
+--
+-- ============================================================
+-- LO QUE ESTA MIGRACIÓN NO HACE, A PROPÓSITO
+-- ------------------------------------------------------------
+-- `organizations."Users can insert organization"`
+-- (`00002_fix_rls_and_insert_policies.sql:80-81`,
+-- `FOR INSERT TO authenticated WITH CHECK (true)`) SE MANTIENE.
+--
+-- No es un descuido: es el onboarding. Cualquier usuario CON
+-- SESIÓN crea su propia organización antes de tener un
+-- `user_profiles.org_id` con el que acotar la comprobación, así
+-- que el `WITH CHECK (true)` es la condición que permite completar
+-- el registro. El linter de Supabase la reporta como política
+-- permisiva, pero ahí es RUIDO: el rol es `authenticated`, no
+-- `anon`, y el privilegio no da acceso a ninguna organización
+-- ajena —`Users can view their own organization` y
+-- `Users can update their own organization` siguen acotadas por
+-- `user_profiles`—.
+--
+-- Riesgo residual aceptado y registrado (Requisito 8.3 del spec):
+-- un usuario con sesión puede crear organizaciones vacías. Es
+-- creación de filas huérfanas, no acceso a datos de terceros.
+--
+-- IDEMPOTENCIA: `DROP POLICY IF EXISTS` es un no-op si la
+-- política ya no está, así que la migración se puede reaplicar
+-- sin efecto.
+-- ============================================================
+
+BEGIN;
+
+-- ============================================================
+-- 1. INSERT ABIERTO EN TELEMETRÍA — lo sustituye
+--    `createTelemetryClient()` en `src/app/api/chat/route.ts`,
+--    que escribe con `service_role` y omite el registro (con un
+--    aviso, una sola vez) si no hay clave de servicio.
+-- ============================================================
+
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.interview_telemetry;
+
+COMMENT ON TABLE public.interview_telemetry IS
+  'Telemetria de los turnos de entrevista. RLS activo y SIN insercion para anon: la escribe /api/chat con service_role, que ignora RLS. La lectura de /admin/telemetry va con sesion autenticada por la politica Enable read access for authenticated users.';
+
+-- ============================================================
+-- 2. INSERT ABIERTO EN NOTIFICACIONES — lo sustituye
+--    `POST /api/info-notify`, que ya inserta con `service_role`
+--    y responde 500 si la clave de servicio falta.
+-- ============================================================
+
+DROP POLICY IF EXISTS "service_insert_notifications" ON public.coach_notifications;
+
+COMMENT ON TABLE public.coach_notifications IS
+  'Avisos al asesor sobre sesiones de informes. RLS activo y SIN insercion para anon: las inserta /api/info-notify con service_role, que ignora RLS. El asesor las lee y las marca como leidas con sesion autenticada por la politica org_members_manage_notifications.';
+
+COMMIT;
+
+-- ============================================================
+-- 3. RECARGA DEL SCHEMA CACHE DE POSTGREST
+-- Fuera de la transacción. Inocuo si se repite.
+-- ============================================================
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================
+-- ROLLBACK
+-- ------------------------------------------------------------
+-- Restaura EXACTAMENTE las dos políticas eliminadas: la primera
+-- tal como la declara `20260507_interview_telemetry.sql:33-34`;
+-- la segunda tal como está HOY en la base real, ya que no existe
+-- archivo que la declare (ver la nota de deriva de arriba).
+--
+-- ADVERTENCIA: ejecutar este bloque vuelve a dar a cualquier
+-- visitante permiso para insertar telemetría de entrevistas y
+-- notificaciones de asesor con el `org_id` que elija. Ningún
+-- flujo del producto lo necesita —las dos escrituras van con
+-- `service_role`—, así que este rollback solo tiene sentido si
+-- aparece un consumidor externo desconocido, y hay que retirarlo
+-- en cuanto ese consumidor se migre a una ruta de servidor.
+--
+--   BEGIN;
+--
+--   CREATE POLICY "Enable insert for all users" ON public.interview_telemetry
+--     FOR INSERT
+--     WITH CHECK (true);
+--
+--   CREATE POLICY "service_insert_notifications" ON public.coach_notifications
+--     FOR INSERT
+--     WITH CHECK (true);
+--
+--   COMMIT;
+--
+--   NOTIFY pgrst, 'reload schema';
+-- ============================================================
+
+-- ============================================================
+-- CÓMO VERIFICAR (tras aplicar)
+-- ============================================================
+-- 1. Políticas que quedan sobre cada tabla:
+--
+--      SELECT tablename, policyname, cmd, roles
+--      FROM pg_policies
+--      WHERE schemaname = 'public'
+--        AND tablename IN ('interview_telemetry', 'coach_notifications');
+--
+--    Resultado esperado: en `interview_telemetry`, solo
+--    `Enable read access for authenticated users`; en
+--    `coach_notifications`, solo
+--    `org_members_manage_notifications`. Ninguna política de
+--    `INSERT` sin `TO`.
+--
+-- 2. El INSERT con la clave anon debe ser rechazado por
+--    violación de política (42501) en las dos tablas:
+--
+--      curl -s -X POST "$SUPABASE_URL/rest/v1/interview_telemetry" \
+--        -H "apikey: $ANON_KEY" \
+--        -H "Content-Type: application/json" \
+--        -d '{"session_id":"sonda","turn_index":0,"model":"sonda"}'
+--
+--      curl -s -X POST "$SUPABASE_URL/rest/v1/coach_notifications" \
+--        -H "apikey: $ANON_KEY" \
+--        -H "Content-Type: application/json" \
+--        -d '{"org_id":"cualquiera","session_id":"sonda","type":"new_lead","title":"sonda","message":"sonda"}'
+--
+-- 3. Flujos reales, que son la condición de aceptación
+--    (Requisito 10 del spec):
+--      a. Completar una entrevista y comprobar en
+--         `/admin/telemetry` que aparecen las filas de esa
+--         sesión, una por turno. Si NO aparecen, el problema no
+--         es esta migración: es que el entorno no tiene
+--         `SUPABASE_SERVICE_ROLE_KEY` bien configurada, y el log
+--         del servidor lo dice una vez con el prefijo
+--         `[Telemetry]`.
+--      b. Completar una sesión de `/informes/{courseId}` pidiendo
+--         hablar con el asesor, y comprobar que la notificación
+--         llega al panel del asesor y que este puede marcarla
+--         como leída.
+--      c. Registrar un usuario nuevo y completar el onboarding:
+--         la creación de la organización sigue funcionando,
+--         porque `Users can insert organization` se mantiene.
+-- ============================================================

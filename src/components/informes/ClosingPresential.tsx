@@ -8,18 +8,21 @@ export default function ClosingPresential() {
     clientName,
     course,
     coachAttended,
-    subscribeToSessionUpdates,
+    watchCoachAttendance,
     updateSessionStatus,
   } = useInfoSessionStore();
 
   const [showSuccess, setShowSuccess] = useState(false);
 
-  // Subscribe to real-time updates for coach attendance
+  // Vigila la asistencia del asesor mientras esta pantalla esta abierta. Antes era
+  // una suscripcion de tiempo real; ahora es un sondeo a la ruta de servidor, que
+  // no exige lectura anon sobre `info_sessions`. La funcion devuelta detiene el
+  // sondeo al desmontar, igual que antes cerraba el canal.
   useEffect(() => {
-    const unsubscribe = subscribeToSessionUpdates();
+    const stopWatching = watchCoachAttendance();
     updateSessionStatus('closed_presential');
-    return unsubscribe;
-  }, [subscribeToSessionUpdates, updateSessionStatus]);
+    return stopWatching;
+  }, [watchCoachAttendance, updateSessionStatus]);
 
   // Animate success when coach attends
   useEffect(() => {

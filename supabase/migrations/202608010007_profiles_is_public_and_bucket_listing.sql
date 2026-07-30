@@ -1,0 +1,297 @@
+-- ============================================================
+-- profiles — `is_public` empieza a tener efecto
+-- storage.objects — se retira el listado del bucket de medios
+-- training_* — se documenta el RLS sin políticas intencionado
+--
+-- ESTADO DE ESTA MIGRACIÓN
+--     LAS SENTENCIAS DE ESTE ARCHIVO YA SE APLICARON A MANO EN
+--     PRODUCCIÓN. El archivo existe para que el cambio quede
+--     versionado y para que un despliegue limpio produzca el
+--     mismo estado de autorización que producción (Requisito 9
+--     de `.kiro/specs/public-flow-authorization-hardening`).
+--     Es idempotente —cada `CREATE POLICY` va precedido de su
+--     `DROP POLICY IF EXISTS`, y los `COMMENT ON` son
+--     sobrescrituras—, así que reaplicarlo es un no-op.
+--
+-- ============================================================
+-- 1. `profiles."profiles_public_select"` — la columna que nadie
+--    miraba
+-- ------------------------------------------------------------
+-- `20260502_profiles_social.sql:86-89` la creó como
+-- `FOR SELECT TO anon, authenticated USING (true)`, con el
+-- comentario "anyone can view profiles (SEO-indexable)".
+--
+-- El problema no es el rol —el perfil público es indexable a
+-- propósito— sino que el predicado no acota por fila. La columna
+-- `is_public` existe desde `20260517_profile_extensions.sql:45-46`
+-- (`BOOLEAN DEFAULT true`), pero NINGUNA POLÍTICA LA MIRABA: un
+-- usuario podía marcar su perfil como privado y la fila seguía
+-- siendo legible con la clave anon, porque el `USING (true)` la
+-- devolvía igual. Era una preferencia de privacidad sin efecto.
+--
+-- POR QUÉ `IS NOT FALSE` Y NO `= true`
+-- ------------------------------------------------------------
+-- La columna admite nulos: se añadió con `ADD COLUMN ... DEFAULT
+-- true`, así que las filas creadas después llegan con `true`,
+-- pero cualquier fila heredada o cualquier `UPDATE` que escriba
+-- `NULL` explícito queda con nulo. Con `is_public = true` una
+-- fila con `NULL` daría `NULL` en el predicado —que RLS trata
+-- como falso— y el perfil desaparecería del portal sin que su
+-- dueño hubiera pedido nada. `is_public IS NOT FALSE` es
+-- exactamente "público salvo que se haya marcado privado", que es
+-- la semántica del `DEFAULT true`.
+--
+-- POR QUÉ EL `OR user_id = auth.uid()`
+-- ------------------------------------------------------------
+-- Para que el dueño vea SIEMPRE su propio perfil, con o sin la
+-- marca de privado. Sin esa rama, marcarse privado dejaría al
+-- propio usuario sin poder leer su fila desde el navegador —y con
+-- ella sin poder abrir `/profile/edit` para volver a hacerse
+-- público—. Las políticas de escritura del dueño
+-- (`profiles_owner_insert`, `profiles_owner_update`,
+-- `profiles_owner_delete`) no se tocan.
+--
+-- EFECTO INMEDIATO: NINGUNO. En la base real hay 1 fila en
+-- `public.profiles` y 0 marcadas como privadas, así que el
+-- conjunto visible antes y después es el mismo. El cambio es
+-- preventivo: hace que la preferencia funcione el día que alguien
+-- la use.
+--
+-- ============================================================
+-- 2. `storage.objects."Public read post media"` — SELECT sobre
+--    todo el bucket, es decir, listado de los archivos
+-- ------------------------------------------------------------
+-- DERIVA REPO↔BASE: esta política NO está declarada en ningún
+-- archivo de `supabase/migrations/` (tampoco el bucket; ver la
+-- nota de `20260517_profile_extensions.sql:19-21`, que deja la
+-- creación de buckets al Dashboard). Existía solo en la base
+-- real, concediendo `SELECT` sobre `storage.objects` para el
+-- bucket de medios de publicaciones.
+--
+-- `SELECT` sobre `storage.objects` no es "poder ver la imagen":
+-- es poder LISTAR las filas del bucket. Con la clave anon se
+-- podía enumerar la ruta de todos los archivos subidos —y las
+-- rutas son `posts/{user_id}/{timestamp}.{ext}`
+-- (`src/app/actions/feed.ts:124`), o sea que el listado revela
+-- qué usuario subió cuánto y cuándo, incluidas las imágenes de
+-- publicaciones borradas o de grupos privados—.
+--
+-- Y no hacía falta para servir las imágenes: el bucket es PÚBLICO
+-- (`storage.buckets.public = true`), y en un bucket público las
+-- descargas por URL las sirve el CDN de Storage SIN pasar por las
+-- políticas de `storage.objects`. Retirar la política quita el
+-- listado y deja intactas las imágenes ya publicadas.
+--
+-- El código lo confirma: la única interacción con el bucket es
+-- `uploadPostMedia` (`src/app/actions/feed.ts:106-138`), que hace
+-- `upload` —con sesión de usuario, cubierto por las políticas de
+-- `authenticated` del bucket— y `getPublicUrl`, que es un
+-- constructor de cadenas en el cliente y no consulta nada. NADIE
+-- llama a `list()` ni a `download()` sobre este bucket en todo el
+-- repositorio.
+--
+-- ============================================================
+-- 3. `training_access_sessions` y `training_program_documents` —
+--    RLS sin políticas, A PROPÓSITO
+-- ------------------------------------------------------------
+-- `202607180001_training_v2_foundation.sql:372-381` activa RLS en
+-- las dos tablas y les hace `REVOKE ALL ... FROM anon,
+-- authenticated` sin crear ninguna política. Eso NO es un
+-- descuido: es el modelo de acceso del Centro de Capacitación.
+-- Las dos tablas se tocan exclusivamente desde rutas de servidor
+-- con `service_role`, que ignora RLS por diseño, así que una
+-- política solo podría añadir acceso donde no se quiere ninguno.
+--
+-- Se documenta con `COMMENT ON TABLE` porque el linter de
+-- Supabase reporta "RLS enabled, no policies" como hallazgo, y
+-- sin esta nota el siguiente que lo lea tiene dos lecturas
+-- posibles —tabla olvidada o tabla cerrada a propósito— y solo
+-- una es correcta. El comentario vive en la base, que es donde se
+-- ejecuta el linter.
+--
+-- Este punto NO cambia ningún permiso: solo escribe metadatos.
+-- ============================================================
+
+BEGIN;
+
+-- ============================================================
+-- 1. LECTURA PÚBLICA DE PERFILES ACOTADA POR `is_public`
+--    Se recrea igual que en `20260502_profiles_social.sql:86-89`
+--    salvo el predicado, que pasa de `true` a la marca de
+--    privacidad más la rama del dueño.
+-- ============================================================
+
+DROP POLICY IF EXISTS "profiles_public_select" ON public.profiles;
+
+CREATE POLICY "profiles_public_select" ON public.profiles
+  FOR SELECT
+  TO anon, authenticated
+  USING (is_public is not false or user_id = auth.uid());
+
+-- ============================================================
+-- 2. LISTADO DEL BUCKET DE MEDIOS — no lo sustituye nada,
+--    porque nada lo usaba: el bucket es público y las imágenes
+--    se sirven por URL sin pasar por RLS.
+-- ============================================================
+
+DROP POLICY IF EXISTS "Public read post media" ON storage.objects;
+
+-- ============================================================
+-- 3. DOCUMENTACIÓN DEL RLS SIN POLÍTICAS DEL CENTRO DE
+--    CAPACITACIÓN. No cambia permisos.
+-- ============================================================
+
+COMMENT ON TABLE public.training_access_sessions IS
+  'Sesiones temporales de acceso del empleado al Centro de Capacitacion. RLS activo y SIN POLITICAS A PROPOSITO, con REVOKE ALL para anon y authenticated (202607180001_training_v2_foundation.sql): el acceso es solo por service_role desde rutas de servidor, que ignora RLS. El hallazgo "RLS enabled, no policies" del linter es el estado deseado, no un olvido.';
+
+COMMENT ON TABLE public.training_program_documents IS
+  'Vinculo entre programas de capacitacion y sus documentos fuente. RLS activo y SIN POLITICAS A PROPOSITO, con REVOKE ALL para anon y authenticated (202607180001_training_v2_foundation.sql): el acceso es solo por service_role desde rutas de servidor, que ignora RLS. El hallazgo "RLS enabled, no policies" del linter es el estado deseado, no un olvido.';
+
+COMMIT;
+
+-- ============================================================
+-- 4. RECARGA DEL SCHEMA CACHE DE POSTGREST
+-- Fuera de la transacción. Inocuo si se repite.
+-- ============================================================
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================
+-- ROLLBACK
+-- ------------------------------------------------------------
+-- Restaura EXACTAMENTE el estado anterior: `profiles_public_select`
+-- tal como la declara `20260502_profiles_social.sql:86-89`, y
+-- `Public read post media` tal como estaba HOY en la base real,
+-- ya que no existe archivo que la declare (ver la nota de deriva
+-- de arriba). Los `COMMENT ON` no se revierten: son metadatos y
+-- restaurar el comentario anterior —inexistente— no aporta nada.
+--
+-- ADVERTENCIA: ejecutar este bloque vuelve a hacer legible con la
+-- clave anon cualquier perfil marcado como privado, y vuelve a
+-- permitir enumerar con esa misma clave las rutas de todos los
+-- archivos del bucket de medios. Ningún flujo del producto lo
+-- necesita —el portal solo lee perfiles públicos y las imágenes
+-- se sirven por URL pública—, así que este rollback solo tiene
+-- sentido si aparece un consumidor externo desconocido que
+-- dependa del listado.
+--
+--   BEGIN;
+--
+--   DROP POLICY IF EXISTS "profiles_public_select" ON public.profiles;
+--
+--   CREATE POLICY "profiles_public_select" ON public.profiles
+--     FOR SELECT
+--     TO anon, authenticated
+--     USING (true);
+--
+--   CREATE POLICY "Public read post media" ON storage.objects
+--     FOR SELECT
+--     USING (bucket_id = 'post-media');
+--
+--   COMMIT;
+--
+--   NOTIFY pgrst, 'reload schema';
+-- ============================================================
+
+-- ============================================================
+-- CÓMO VERIFICAR (tras aplicar)
+-- ============================================================
+-- 1. Predicado de la política de lectura de perfiles:
+--
+--      SELECT policyname, cmd, roles, qual
+--      FROM pg_policies
+--      WHERE schemaname = 'public'
+--        AND tablename = 'profiles';
+--
+--    Resultado esperado: `profiles_public_select` con
+--    `{anon,authenticated}` y un `qual` que menciona `is_public`
+--    y `auth.uid()`. NO un `true` pelado.
+--
+-- 2. La marca de privado surte efecto. Con un perfil de prueba:
+--
+--      UPDATE public.profiles SET is_public = false WHERE id = '<prueba>';
+--
+--      curl -s "$SUPABASE_URL/rest/v1/profiles?select=id,username&id=eq.<prueba>" \
+--        -H "apikey: $ANON_KEY"
+--
+--    Debe devolver lista vacía. Y con `is_public = true` o con
+--    `is_public = NULL`, debe devolver la fila: ese es el caso de
+--    la fila heredada, y es el que `IS NOT FALSE` protege.
+--
+--      UPDATE public.profiles SET is_public = NULL WHERE id = '<prueba>';
+--      -- la misma consulta de arriba vuelve a devolver la fila
+--
+--    Dejar el perfil de prueba como estaba al terminar.
+--
+-- 3. El dueño sigue viendo su propio perfil aunque sea privado:
+--    iniciar sesión con esa cuenta, marcarse privado y abrir
+--    `/profile/edit`. La página debe cargar y debe permitir
+--    volver a hacerse público.
+--
+-- 4. Listado del bucket de medios cerrado, imágenes intactas:
+--
+--      SELECT policyname, cmd, roles
+--      FROM pg_policies
+--      WHERE schemaname = 'storage'
+--        AND tablename = 'objects';
+--
+--    Resultado esperado: ninguna fila llamada
+--    `Public read post media`.
+--
+--      curl -s "$SUPABASE_URL/storage/v1/object/list/post-media" \
+--        -H "apikey: $ANON_KEY" \
+--        -H "Content-Type: application/json" \
+--        -d '{"prefix":"posts","limit":100}'
+--
+--    Debe devolver lista vacía o error de autorización, NUNCA la
+--    lista de archivos.
+--
+--    Y la URL pública de una imagen ya publicada debe seguir
+--    devolviendo `200`, porque el bucket es público y esa ruta no
+--    pasa por RLS:
+--
+--      curl -s -o /dev/null -w '%{http_code}\n' \
+--        "$SUPABASE_URL/storage/v1/object/public/post-media/posts/<user_id>/<archivo>"
+--
+-- 5. Flujo real del feed, que es la condición de aceptación:
+--    crear una publicación con imagen desde `/feed` y comprobar
+--    que la subida termina y que la imagen se ve, tanto para el
+--    autor como para otro usuario y para un visitante sin sesión.
+--
+-- 6. Comentarios de las tablas de capacitación:
+--
+--      SELECT c.relname, obj_description(c.oid, 'pg_class')
+--      FROM pg_class c
+--      JOIN pg_namespace n ON n.oid = c.relnamespace
+--      WHERE n.nspname = 'public'
+--        AND c.relname IN ('training_access_sessions',
+--                          'training_program_documents');
+-- ============================================================
+
+-- ============================================================
+-- HALLAZGO PENDIENTE — NO SE TOCA EN ESTA MIGRACIÓN
+-- ------------------------------------------------------------
+-- El bucket `profile-images` es PRIVADO en la base real
+-- (`storage.buckets.public = false`), a diferencia de
+-- `post-media`. Y `updateProfileImage`
+-- (`src/app/actions/profile.ts:230-244`) sube el avatar o el
+-- banner a ese bucket y resuelve la dirección con
+-- `getPublicUrl`, que devuelve
+-- `/storage/v1/object/public/profile-images/...` sin comprobar
+-- nada: es un constructor de cadenas en el cliente, no una
+-- consulta. Para un bucket privado esa URL NO SIRVE —el CDN
+-- responde error—, y aun así se guarda en
+-- `profiles.avatar_url` / `profiles.banner_url`.
+--
+-- Conviene revisar cuál de las dos cosas es la intención antes de
+-- cambiar nada, porque las dos salidas son válidas y llevan a
+-- migraciones distintas: si las imágenes de perfil deben ser
+-- públicas (lo coherente con un perfil indexable), lo que sobra
+-- es el `public = false` del bucket; si deben ser privadas, lo
+-- que sobra es el `getPublicUrl` y hay que pasar a URL firmada
+-- (`createSignedUrl`), con su caducidad y su renovación.
+--
+-- No se decide aquí: cambiar la visibilidad de un bucket afecta a
+-- todas las imágenes ya subidas, y este archivo solo versiona lo
+-- que YA está aplicado.
+-- ============================================================

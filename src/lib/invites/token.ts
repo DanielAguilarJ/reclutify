@@ -63,6 +63,24 @@ const ALPHABET_INDEX_MASK = INVITE_TOKEN_ALPHABET.length - 1;
 const TICKET_ID_SUFFIX_LENGTH = 6;
 
 /**
+ * Prefijo del `public_token` de una vacante. Se conserva el que ya llevaban las
+ * filas existentes: sirve para reconocer de un vistazo, en la base o en un log,
+ * que la cadena es el enlace general de una vacante y no el token de un ticket.
+ */
+export const PUBLIC_ROLE_TOKEN_PREFIX = 'pub-';
+
+/**
+ * Longitud de la parte aleatoria del `public_token`.
+ * 24 × log2(32) = 120 bits.
+ *
+ * Es más que los 80 bits del token de ticket a propósito: el token de ticket
+ * caduca en 24 horas y vale para un solo candidato, mientras que el
+ * `public_token` no caduca, se comparte en anuncios y su única comprobación es
+ * la igualdad exacta en `/api/public-interview`, que no limita intentos.
+ */
+export const PUBLIC_ROLE_TOKEN_RANDOM_LENGTH = 24;
+
+/**
  * Devuelve `size` bytes del CSPRNG de la plataforma.
  *
  * `crypto.getRandomValues` existe en Node 18+, en los navegadores y en jsdom,
@@ -110,4 +128,44 @@ export function generateInviteToken(): string {
 export function generateTicketId(now: number): string {
   const suffix = encodeWithAlphabet(randomBytes(TICKET_ID_SUFFIX_LENGTH));
   return `ticket-${now}-${suffix.toLowerCase()}`;
+}
+
+/**
+ * Genera el `public_token` de una vacante (`roles.public_token`).
+ *
+ * ES UNA CREDENCIAL: es lo único que abre `/interview/public/[publicToken]`, o
+ * sea el enlace general de entrevista de la vacante. Quien lo adivina entra al
+ * proceso de selección. Antes se construía en el componente de creación de
+ * vacantes como `pub-<epoch_base36>-<6 chars de Math.random()>`: la mitad del
+ * valor era el reloj (público y adivinable) y la otra mitad venía del mismo
+ * generador no criptográfico que ya se sustituyó para los tickets, con unos 30
+ * bits efectivos. Aquí se genera entero con el CSPRNG.
+ *
+ * COMPATIBILIDAD CON LOS TOKENS YA EMITIDOS
+ * -----------------------------------------
+ * Se comprobó qué valida el `public_token` antes de cambiar su forma:
+ *
+ *  - `supabase/migrations/20260601_public_interview_links.sql:10-13`: la columna
+ *    es `TEXT UNIQUE` con un índice; no hay `CHECK` de longitud, de alfabeto ni
+ *    de prefijo. Es la única migración que la toca.
+ *  - `src/app/api/public-interview/route.ts:36` y `:112`: el `GET` y el `POST`
+ *    resuelven la vacante con `.eq('public_token', token)`. Igualdad exacta.
+ *  - `src/app/interview/public/[publicToken]/page.tsx`: pasa el segmento
+ *    dinámico tal cual a esa API; no mide longitud ni valida caracteres.
+ *  - La política `public_role_by_token` solo exige `public_token IS NOT NULL AND
+ *    public_token != ''`.
+ *  - `src/store/adminStore.ts` y `src/hooks/useRoles.ts` solo lo copian entre
+ *    fila y modelo; `create-role/page.tsx` lo interpola en la URL del enlace.
+ *
+ * Nada parsea el token ni valida su forma, así que los tokens antiguos —con
+ * marca de tiempo y en base36— siguen resolviendo igual y no hace falta migrar
+ * ninguna fila. Se mantiene el prefijo `pub-` y se elimina el segmento del
+ * reloj, que no aportaba entropía y no lo lee nadie. El sufijo se pasa a
+ * minúsculas para que el token siga siendo, como los ya emitidos, una cadena de
+ * una sola caja: así una URL que alguien reescriba en minúsculas al copiarla no
+ * deja de resolver.
+ */
+export function generatePublicRoleToken(): string {
+  const random = encodeWithAlphabet(randomBytes(PUBLIC_ROLE_TOKEN_RANDOM_LENGTH));
+  return `${PUBLIC_ROLE_TOKEN_PREFIX}${random.toLowerCase()}`;
 }

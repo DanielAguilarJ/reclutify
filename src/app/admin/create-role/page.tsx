@@ -8,6 +8,7 @@ import { useAppStore } from '@/store/appStore';
 import { useTicketStore } from '@/store/ticketStore';
 import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
+import { generatePublicRoleToken } from '@/lib/invites/token';
 import type { Role, Topic, TopicRubric, InterviewMode } from '@/types';
 import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
@@ -1102,8 +1103,13 @@ export default function CreateRolePage() {
 
     const newRoleId = `role-${Date.now()}`;
     
-    // Generar token público para enlace general
-    const publicToken = `pub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // Generar token público para enlace general.
+    //
+    // Es la credencial del enlace `/interview/public/[publicToken]`: quien la
+    // adivina entra al proceso. Se genera con el CSPRNG en
+    // `@/lib/invites/token`, el mismo módulo del token de ticket, en lugar de
+    // con `Math.random()` aquí suelto.
+    const publicToken = generatePublicRoleToken();
     
     // Esperar a que el role se guarde en Supabase antes de crear tickets
     await addRole({

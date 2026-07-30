@@ -1,6 +1,11 @@
 'use server';
 
 import { createCandidateInvites } from '@/lib/invites/service';
+import {
+  PUBLIC_JOB_COLUMNS,
+  toPublicJobListing,
+  toPublicJobListings,
+} from '@/lib/jobs/public-projection';
 import { createClient } from '@/utils/supabase/server';
 import type { JobListing, JobSearchResult, ApplyToJobResult } from '@/types/jobs';
 
@@ -9,6 +14,10 @@ const JOBS_PER_PAGE = 12;
 /**
  * Fetches published jobs with optional search, filters, and pagination.
  * No auth required — uses anon RLS policy.
+ *
+ * Lo que devuelve viaja al cliente en el payload de `/career-fair`, así que pasa
+ * por la proyección pública compartida (`src/lib/jobs/public-projection.ts`) y no
+ * lleva la rúbrica de los criterios de evaluación.
  */
 export async function getPublishedJobs(params: {
   search?: string;
@@ -24,7 +33,7 @@ export async function getPublishedJobs(params: {
 
   let query = supabase
     .from('roles')
-    .select('id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)', { count: 'exact' })
+    .select(PUBLIC_JOB_COLUMNS, { count: 'exact' })
     .eq('is_published', true)
     .order('published_at', { ascending: false, nullsFirst: false })
     .range(offset, offset + perPage - 1);
@@ -54,7 +63,7 @@ export async function getPublishedJobs(params: {
     return { jobs: [], total: 0, hasMore: false };
   }
 
-  const jobs = (data || []) as unknown as JobListing[];
+  const jobs = toPublicJobListings(data);
   const total = count || 0;
 
   return {
@@ -67,13 +76,16 @@ export async function getPublishedJobs(params: {
 /**
  * Fetches a single published job by ID. Returns null if not found or unpublished.
  * No auth required.
+ *
+ * Alimenta el HTML y el payload de `/career-fair/[roleId]`, que se sirve sin
+ * sesión: misma proyección pública que el listado, sin rúbrica.
  */
 export async function getJobById(roleId: string): Promise<JobListing | null> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
     .from('roles')
-    .select('id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)')
+    .select(PUBLIC_JOB_COLUMNS)
     .eq('id', roleId)
     .eq('is_published', true)
     .single();
@@ -82,7 +94,7 @@ export async function getJobById(roleId: string): Promise<JobListing | null> {
     return null;
   }
 
-  return data as unknown as JobListing;
+  return toPublicJobListing(data);
 }
 
 /**
@@ -259,6 +271,9 @@ export async function toggleRolePublished(
 
 /**
  * Returns distinct location values from published roles for filter dropdowns.
+ *
+ * No usa `PUBLIC_JOB_COLUMNS` a propósito: solo necesita `location` para armar el
+ * desplegable de filtros, así que pide esa columna y nada más.
  */
 export async function getDistinctLocations(): Promise<string[]> {
   const supabase = await createClient();

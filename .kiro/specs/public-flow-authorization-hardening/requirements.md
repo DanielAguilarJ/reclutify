@@ -23,7 +23,6 @@ El objetivo de este spec **no es rediseñar los flujos públicos**, sino reducir
 - **Flujo de ticket**: recorrido del candidato que recibe un enlace individual con token, en `/interview/t/[token]`.
 - **Flujo de enlace público**: recorrido del candidato que llega por el enlace general de la vacante y se registra con nombre y correo, en `/interview/public/[publicToken]`.
 - **Flujo de informes**: recorrido del cliente sin cuenta que toma una sesión informativa de un curso, en `/informes/[courseId]`.
-- **INVITE_API_ENFORCE**: variable de entorno que gobierna la transición de `api/invite-candidates` entre registrar llamadas no autenticadas y rechazarlas.
 
 ## Hallazgos verificados (base del diagnóstico)
 
@@ -65,13 +64,19 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 6. SI el token recibido no existe, está expirado o el ticket ya está marcado como usado ENTONCES la ruta de servidor DEBERÁ responder con un código de estado y un motivo distintos para cada uno de esos tres casos, y DEBERÁ omitir cualquier dato de otros tickets.
 7. CUANDO la entrevista arranque ENTONCES el marcado de `used = true` DEBERÁ ejecutarse en una ruta de servidor que reciba el token completo y actualice exclusivamente la fila cuyo `token` coincida.
 8. SI una petición de marcado de usado envía un identificador de ticket en lugar del token, un token inexistente o un token vacío ENTONCES la ruta de servidor DEBERÁ responder `404` y DEBERÁ modificar cero filas.
-9. CUANDO la ruta de marcado reciba varias peticiones con el mismo token válido ENTONCES el resultado DEBERÁ ser idempotente: la fila queda con `used = true` y la respuesta indica éxito en todas las llamadas.
+9. CUANDO la ruta de marcado reciba varias peticiones con el mismo token válido ENTONCES el sistema DEBERÁ tratar el consumo como una TRANSICIÓN de disponible a usado y no como un «asegúrate de que está usado»: la primera llamada DEBERÁ responder `200 {"status":"consumed"}`, y la segunda y siguientes DEBERÁN responder `409 {"status":"used"}` SIN escribir. La fila queda con `used = true` en los dos casos, así que el estado final sí es estable, pero la respuesta distingue quién quemó el ticket. Se eligió así porque el consumo es lo único que separa «ticket disponible» de «ticket gastado»: si un segundo consumo respondiera éxito, la ruta dejaría de poder detectar el reuso de un enlace ya utilizado, que es exactamente el caso que el ticket individual existe para impedir. La página del candidato no depende del código: llama a la ruta una sola vez, al entrar de verdad a la sala (`phase === 'interview'`).
 10. CUANDO un usuario autenticado gestione tickets desde el panel de administración ENTONCES el sistema DEBERÁ seguir permitiendo listar, crear y actualizar los tickets de su propia organización mediante las políticas `org_tickets_select`, `org_tickets_insert` y `org_tickets_update` existentes.
 11. CUANDO un usuario autenticado consulte `interview_tickets` ENTONCES el sistema DEBERÁ devolver solo las filas cuyo `org_id` coincida con el de su perfil.
 
-### Requisito 2 — Fin de la enumeración de vacantes y de enlaces públicos
+### Requisito 2 — Fin de la enumeración de vacantes y de enlaces públicos — APLICADO EN LA PARTE DE `roles`
 
 **Historia de usuario:** Como responsable de una organización, quiero que nadie pueda listar mis vacantes no publicadas ni obtener el `public_token` de mis enlaces de entrevista, para que el cierre de los tickets no quede anulado por otra vía.
+
+**Estado.** Los criterios 1, 3, 4, 5 y 9 están cumplidos y **aplicados en producción** por `202608010005_roles_public_read_only_published.sql`: se eliminaron `anon_roles_select` (`USING (true)`) y `public_role_by_token` (cuyo predicado nunca comparaba el token con nada, solo exigía que la fila tuviera alguno), y la lectura pública quedó recreada como `public_published_roles_select ... USING (is_published = true)`. Los criterios 6, 7 y 8, que son los de las columnas de facturación de `organizations`, siguen pendientes: `public_company_select` (`20260510_company_pages.sql:12`) continúa siendo `TO anon, authenticated USING (true)`. Lo que sí está cerrado por el lado del código es la fuga por el flujo del ticket: `/api/interview/ticket` devuelve de `organizations` únicamente `plan_tier`.
+
+**Bug funcional que este cambio también corrigió.** Las dos políticas de lectura pública se habían concedido solo al rol `anon`. Un usuario CON SESIÓN no es `anon`, es `authenticated`, y para ese rol la única política aplicable a `roles` era `org_isolation_roles`, acotada a su propia organización. Resultado: quien iniciaba sesión veía CERO vacantes en el portal público, porque todas eran de otras organizaciones. Verificado en la base antes y después: 0 de 2 vacantes publicadas visibles con sesión antes, 2 después. Afectaba a `/api/jobs/search`, `src/app/actions/jobs.ts`, `src/app/sitemap.ts`, `/search`, el buscador global y `/company/[slug]`. Por eso la política se recreó `TO anon, authenticated`: el portal es público y tener sesión no puede quitar acceso.
+
+**Riesgo residual aceptado y registrado.** El criterio 2 NO se cumple: la lectura de una vacante PUBLICADA sigue devolviendo todas sus columnas, `public_token` y `topics` incluidos. Es decir, para las vacantes publicadas el enlace público de entrevista sigue siendo obtenible con la clave anon, y con él los criterios de evaluación. Acotarlo exige dos cosas que no caben en una migración de políticas: privilegios por columna (`REVOKE SELECT (public_token, topics)` más un `GRANT` de las columnas públicas) y mover a una ruta de servidor la lectura del panel, porque hoy `src/store/adminStore.ts` y `src/hooks/useRoles.ts` leen `public_token` con el cliente de SESIÓN, y `roles` está en la publicación de Realtime, que entrega la fila completa. Un `REVOKE` por columna rompería el panel y la suscripción antes de proteger nada.
 
 #### Criterios de aceptación
 
@@ -91,7 +96,7 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 
 #### Criterios de aceptación
 
-1. CUANDO `/api/candidate-results` reciba un `POST` ENTONCES el sistema DEBERÁ exigir una prueba de acceso: el `token` de un ticket vigente o el `public_token` de la vacante indicada.
+1. CUANDO `/api/candidate-results` reciba un `POST` ENTONCES el sistema DEBERÁ exigir una prueba de acceso, y DEBERÁ aceptar exactamente tres: el `token` de un ticket vigente, el `public_token` de la vacante indicada, o la sesión de un `owner`/`admin` de la organización dueña de esa vacante.
 2. SI un `POST` a `/api/candidate-results` llega sin prueba de acceso ENTONCES el sistema DEBERÁ responder `401` y DEBERÁ dejar la tabla `candidate_results` sin cambios.
 3. SI un `POST` a `/api/candidate-results` presenta una prueba de acceso que no corresponde al `roleId` del cuerpo ENTONCES el sistema DEBERÁ responder `403` y DEBERÁ dejar la tabla sin cambios.
 4. CUANDO `/api/candidate-results` reciba un `POST` con prueba de acceso válida ENTONCES el sistema DEBERÁ aceptar la escritura solo si el `id` recibido no existe todavía o si la fila existente pertenece a la misma entrevista que acredita la prueba de acceso.
@@ -103,6 +108,9 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 10. CUANDO `/api/public-interview` reciba un `POST` ENTONCES el sistema DEBERÁ seguir generando el identificador del resultado en el servidor y DEBERÁ rechazar cualquier `id`, `orgId` o `source` enviado por el cliente.
 11. CUANDO `/api/public-interview` reciba un `POST` con un `public_token` que no corresponda a ninguna vacante ENTONCES el sistema DEBERÁ responder `404` y DEBERÁ dejar `candidate_results` sin cambios.
 12. CUANDO una ruta de escritura pública rechace una petición ENTONCES el mensaje devuelto al cliente DEBERÁ omitir nombres de candidato, correos, identificadores de otras organizaciones y detalles internos del error.
+13. CUANDO una petición a `/api/candidate-results` no traiga ningún token en el cuerpo ENTONCES el sistema DEBERÁ tomar como credencial candidata la sesión de Supabase, y DEBERÁ aceptarla solo si el usuario pertenece con rol `owner` o `admin` a la organización dueña del `roleId` acreditado. Es el camino de `/admin/pipeline`, que llama a `updateCandidate` para reintentar manualmente la evaluación y NO tiene token de candidato: sin este tercer método, cerrar la ruta rompería el panel.
+14. CUANDO se compruebe la pertenencia de esa sesión ENTONCES el sistema DEBERÁ aceptarla tanto por `org_members` como por `user_profiles.org_id` —la comprobación compartida con `/api/invite-candidates`, Requisito 6 criterio 9—, y SI ninguna de las dos consultas puede responder ENTONCES DEBERÁ responder `500` en lugar de conceder o denegar el acceso por omisión.
+15. SI un `POST` o un `PATCH` llega sin token y sin sesión ENTONCES el sistema DEBERÁ responder `401` sin distinguir ese caso del de un token inexistente o vencido, para no convertir la ruta en un confirmador de tokens.
 
 ### Requisito 4 — Retirada de la escritura anon sobre `candidate_results`
 
@@ -118,9 +126,16 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 6. CUANDO la migración de endurecimiento se escriba ENTONCES DEBERÁ ser idempotente y DEBERÁ dejar constancia en un comentario de que la escritura del flujo público pasa exclusivamente por rutas de servidor con `service_role`.
 7. CUANDO un candidato complete una entrevista después del endurecimiento ENTONCES el resultado DEBERÁ quedar persistido con su evaluación, transcripción, duración y estado final, verificado por el Requisito 10.
 
-### Requisito 5 — Escritura de sesiones de informes desde el servidor
+### Requisito 5 — Escritura de sesiones de informes desde el servidor — APLICADO
 
 **Historia de usuario:** Como cliente sin cuenta que toma una sesión de informes, quiero que mi sesión se guarde correctamente sin que la clave anon pueda crear ni modificar sesiones de otras personas.
+
+**Estado: los doce criterios están cumplidos.** Las migraciones son `202608010002_info_sessions_declare_anon_policies.sql` (reconstrucción de la deriva, criterio 1), `202608010003_info_sessions_add_access_token_hash.sql` (la columna de la credencial) y `202608010004_info_sessions_server_side_writes.sql` (retirada de las políticas anon). Las rutas son `POST /api/info-sessions` (creación), `POST /api/info-sessions/sync` (transcripción y objeciones), `POST /api/info-sessions/state` (lectura del estado) y el servicio compartido `src/lib/info-sessions/service.ts`.
+
+**Cómo quedaron resueltas las dos decisiones abiertas de este requisito:**
+
+- **La credencial (criterios 4 y 5)** son 32 bytes de `randomBytes` codificados en base64url sin relleno —256 bits, muy por encima de los 128 que pide el criterio 4—, y de la credencial la base solo guarda su SHA-256 en `info_sessions.access_token_hash`. El token en claro se devuelve una única vez, en la respuesta de la creación, y vive solo en la memoria del navegador: ni la base ni los logs pueden reconstruirlo. base64url se eligió para que el token viaje sin escapes por JSON y por la URL. El identificador de la sesión NO sirve como sustituto: toda escritura y toda lectura exigen el par `{ sessionId, accessToken }`.
+- **El aviso de asesor atendido (criterio 10)** se resuelve con SONDEO cada 5 segundos a `POST /api/info-sessions/state`, no con el canal de tiempo real. El canal se descartó porque no puede funcionar sin lectura anon sobre la tabla: el filtro `id=eq.{sessionId}` acota lo que llega al navegador, pero para ENTREGAR el evento Realtime evalúa RLS, y la política que lo permitía era `anon_read_own_session USING (true)` —lectura pública de todas las sesiones, con el nombre, el correo, el teléfono y la transcripción de cada cliente—. `USING` no puede ver la credencial que el cliente guarda en memoria, así que no había forma de acotarlo por sesión. 5 segundos deja margen dentro del tope de 10 del criterio, la ruta devuelve únicamente `status` y `coach_notified`, y el sondeo se detiene en cuanto detecta la atención.
 
 #### Criterios de aceptación
 
@@ -137,27 +152,32 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 11. SI el rol `anon` ejecuta un `SELECT` sobre `info_sessions` sin credencial ENTONCES la base de datos DEBERÁ devolver cero filas.
 12. CUANDO un asesor autenticado use el panel de informes ENTONCES el sistema DEBERÁ seguir devolviendo las sesiones y notificaciones de su organización a través de `coachStore` y `src/app/actions/courses.ts`.
 
-### Requisito 6 — Autenticación con transición en `api/invite-candidates`
+### Requisito 6 — Sesión y pertenencia a la organización en `api/invite-candidates` — APLICADO
 
-**Historia de usuario:** Como operador del sistema, quiero cerrar el endpoint de invitaciones sin cortar las integraciones que ya lo usan, para que nadie cree tickets ni envíe correos en nombre de la plataforma y al mismo tiempo las postulaciones sigan funcionando.
+**Historia de usuario:** Como operador del sistema, quiero que el endpoint de invitaciones solo acepte a quien tiene sesión y manda en la organización dueña de la vacante, para que nadie cree tickets ni envíe correos en nombre de la plataforma y al mismo tiempo las postulaciones públicas sigan funcionando.
+
+**Cambio de modelo respecto a la primera redacción de este requisito.** Los criterios 4 a 11 describían un secreto compartido (`x-api-key` contra `MAKE_WEBHOOK_SECRET`) con una transición gobernada por la variable `INVITE_API_ENFORCE`. **Ese modelo se descartó y no está implementado**: ninguna de las dos variables existe en el código ni en `.env.example`. El motivo está razonado en `src/lib/invites/session-authorization.ts`: el consumidor externo que justificaba el secreto no existe —no hay ninguna integración de Make en uso— y, una vez que `applyToJob` dejó de llamar a la ruta por HTTP, el único llamante posible es una persona con sesión en el panel. Un secreto de proceso a proceso para ese caso añade una variable de entorno cuya ausencia deja el endpoint inservible y no dice **nada** sobre de quién es la organización que se está invitando, que es justo la pregunta que hay que responder. Los criterios de abajo describen el modelo real.
 
 #### Criterios de aceptación
 
 1. CUANDO `applyToJob` necesite invitar a un candidato ENTONCES el sistema DEBERÁ invocar una función compartida del servidor en lugar de hacer una petición HTTP a `/api/invite-candidates`.
 2. CUANDO la lógica de invitación se extraiga a una función compartida ENTONCES la ruta `/api/invite-candidates` y `applyToJob` DEBERÁN producir el mismo resultado observable para una misma entrada: ticket creado, invitación registrada y correo enviado.
 3. CUANDO la función compartida cree un ticket de entrevista ENTONCES DEBERÁ usar un cliente con `service_role`, de modo que la creación no dependa de que exista una sesión autenticada.
-4. MIENTRAS `INVITE_API_ENFORCE` tenga el valor `log`, el sistema DEBERÁ procesar la petición y DEBERÁ registrar un evento por cada llamada cuya cabecera `x-api-key` falte o no coincida con `MAKE_WEBHOOK_SECRET`.
-5. CUANDO el sistema registre una llamada sin cabecera válida ENTONCES el registro DEBERÁ incluir marca de tiempo, presencia o ausencia de la cabecera, `user-agent`, `referer`, dirección IP de origen, número de destinatarios y el identificador de la vacante, y NO DEBERÁ incluir el valor de la cabecera ni el secreto configurado.
-6. MIENTRAS `INVITE_API_ENFORCE` tenga el valor `enforce`, el sistema DEBERÁ responder `401` a toda petición cuya cabecera `x-api-key` falte o no coincida con `MAKE_WEBHOOK_SECRET`, sin crear tickets, sin registrar invitaciones y sin enviar correos.
-7. SI `INVITE_API_ENFORCE` no está definida ENTONCES el sistema DEBERÁ comportarse como en el valor `log`.
-8. SI `INVITE_API_ENFORCE` tiene el valor `enforce` y `MAKE_WEBHOOK_SECRET` no está definida ENTONCES el sistema DEBERÁ responder `500` con un mensaje que indique la falta de configuración, y NO DEBERÁ aceptar peticiones como si estuvieran autenticadas.
-9. CUANDO se documente la transición ENTONCES el spec DEBERÁ fijar la condición que habilita `enforce`: cero eventos de llamada sin cabecera válida durante 7 días consecutivos de operación normal.
-10. CUANDO se prepare el despliegue ENTONCES `MAKE_WEBHOOK_SECRET` e `INVITE_API_ENFORCE` DEBERÁN estar declaradas en `.env.example` con una descripción de su efecto.
-11. CUANDO `INVITE_API_ENFORCE` cambie de valor ENTONCES el cambio DEBERÁ surtir efecto sin modificar código de la ruta.
+4. CUANDO `/api/invite-candidates` reciba un `POST` ENTONCES el sistema DEBERÁ exigir una sesión autenticada de Supabase, y DEBERÁ comprobarla ANTES de leer el cuerpo de la petición, de modo que un rechazo garantice cero escrituras y cero consultas a las tablas del producto.
+5. SI un `POST` a `/api/invite-candidates` llega sin sesión ENTONCES el sistema DEBERÁ responder `401`, y NO DEBERÁ crear tickets, ni registrar invitaciones, ni enviar correos.
+6. CUANDO la petición traiga sesión válida ENTONCES el sistema DEBERÁ resolver en el servidor la organización dueña del `roleId` recibido y DEBERÁ ignorar cualquier organización enviada en el cuerpo.
+7. SI el `roleId` no resuelve a ninguna organización ENTONCES el sistema DEBERÁ responder `422` y DEBERÁ dejar las tablas sin cambios.
+8. SI el usuario con sesión no pertenece a la organización dueña de la vacante, o pertenece con un rol distinto de `owner` o `admin` ENTONCES el sistema DEBERÁ responder `403` con el mismo mensaje en ambos casos, y DEBERÁ dejar las tablas sin cambios.
+9. CUANDO se compruebe la pertenencia ENTONCES el sistema DEBERÁ aceptarla tanto por `org_members` como por `user_profiles.org_id`, y SI ninguna de las dos consultas puede responder ENTONCES DEBERÁ responder `500` en lugar de conceder o denegar el acceso por omisión.
+10. CUANDO el cuerpo de la petición no sea JSON válido o no cumpla el esquema ENTONCES el sistema DEBERÁ responder `400` devolviendo únicamente las rutas de los campos inválidos, nunca sus valores, y DEBERÁ acotar el número de destinatarios por petición.
+11. CUANDO el sistema rechace una petición ENTONCES DEBERÁ registrar el evento con el prefijo estable del Requisito 11, incluyendo dirección IP de origen, `user-agent`, `referer`, motivo del rechazo y, cuando ya se conozcan, el identificador del usuario, el de la vacante y el número de destinatarios; y NO DEBERÁ incluir el nombre ni el correo de ningún candidato.
+12. CUANDO la ruta atrape una excepción ENTONCES DEBERÁ responder `500` con un mensaje genérico y DEBERÁ dejar la causa técnica únicamente en el log del servidor.
 
-### Requisito 7 — Retirada de políticas anon innecesarias en telemetría y notificaciones
+### Requisito 7 — Retirada de políticas anon innecesarias en telemetría y notificaciones — APLICADO
 
 **Historia de usuario:** Como operador del sistema, quiero eliminar las políticas abiertas que ninguna ruta usa, para que la superficie pública se limite a lo que el producto necesita.
+
+**Estado: los ocho criterios están cumplidos y aplicados.** `202608010006_drop_permissive_insert_policies.sql` retiró `Enable insert for all users` de `interview_telemetry` y `service_insert_notifications` de `coach_notifications` —esta última era deriva repo↔base: no estaba declarada en ninguna migración, y su definición exacta quedó registrada en el bloque de ROLLBACK del archivo antes de eliminarla—. Por el lado del código, `src/app/api/chat/route.ts` construye la telemetría con `createTelemetryClient()`, que EXIGE `SUPABASE_SERVICE_ROLE_KEY` y ya no recurre a `NEXT_PUBLIC_SUPABASE_ANON_KEY`; si la clave falta, omite el registro con un aviso en el log y la entrevista continúa. La lectura de `/admin/telemetry` y la de las notificaciones del asesor siguen yendo con sesión autenticada por las políticas de `authenticated` que ya existían. El orden de despliegue fue el que el propio archivo documenta: primero el código, después la migración.
 
 #### Criterios de aceptación
 
@@ -236,7 +256,7 @@ Los requisitos 1 a 9 están ordenados por riesgo real explotable, no por severid
 4. CUANDO se ejecute la suite ENTONCES DEBERÁN existir pruebas de la ruta de servidor del ticket para los casos token válido, inexistente, expirado y ya usado.
 5. CUANDO se ejecute la suite ENTONCES DEBERÁ existir una prueba que falle si la ruta de marcado de usado modifica una fila cuyo token no coincide con el recibido.
 6. CUANDO se ejecute la suite ENTONCES DEBERÁN existir pruebas de las rutas de sesión de informes para los casos credencial válida, ausente, inválida y perteneciente a otra sesión.
-7. CUANDO se ejecute la suite ENTONCES DEBERÁN existir pruebas de `/api/invite-candidates` que cubran los tres estados de `INVITE_API_ENFORCE`: `log` con cabecera ausente, `enforce` con cabecera ausente y `enforce` con cabecera válida.
+7. CUANDO se ejecute la suite ENTONCES DEBERÁN existir pruebas de `/api/invite-candidates` que cubran los cuatro veredictos de su autorización: sin sesión (`401`), con sesión de otra organización (`403`), con sesión de la organización dueña pero sin rol para invitar (`403`) y con sesión de un `owner`/`admin` de la organización dueña (`200`, con el ticket y su espejo creados). Las tres primeras DEBERÁN fallar si la petición llega a escribir algo.
 8. CUANDO se ejecute la batería de sondas anon contra un entorno de pruebas ENTONCES DEBERÁ fallar si el rol `anon` consigue leer `interview_tickets`, leer `candidate_results`, leer la columna `public_token` de `roles`, leer columnas de facturación de `organizations`, insertar o actualizar `candidate_results`, insertar o actualizar `info_sessions`, o insertar `interview_telemetry`.
 9. CUANDO la batería de sondas anon se ejecute ENTONCES DEBERÁ verificar también que el rol `anon` conserva la lectura de vacantes con `is_published = true` y de `name`, `slug` y `logo_url` de las organizaciones con vacantes publicadas.
 10. CUANDO las sondas anon se ejecuten ENTONCES DEBERÁN usar únicamente la clave anon pública y DEBERÁN apuntar a un entorno distinto de producción, determinado por variables de entorno.

@@ -2,15 +2,31 @@
 -- interview_telemetry + coach_notifications — Retirar las
 -- políticas de inserción abiertas (`WITH CHECK (true)`)
 --
--- ATENCIÓN — MIGRACIÓN PENDIENTE: NO APLICADA
---     ESTE ARCHIVO NO SE HA EJECUTADO CONTRA NINGUNA BASE DE
---     DATOS. Queda versionado a la espera de la decisión del
---     Requisito 14 del spec
---     `.kiro/specs/public-flow-authorization-hardening`:
---     respaldo, entorno de pruebas, guion manual del flujo
---     público y, solo entonces, producción.
+-- ESTADO DE ESTA MIGRACIÓN
+--     LOS DOS `DROP POLICY` DE ESTE ARCHIVO YA ESTÁN APLICADOS EN
+--     PRODUCCIÓN. Se aplicaron después del merge `551561c`
+--     («Merge pull request #20 from
+--     DanielAguilarJ/fix/permissive-policies-cleanup», despliegue
+--     de Vercel correcto), que es el que puso en producción
+--     `createTelemetryClient()` exigiendo
+--     `SUPABASE_SERVICE_ROLE_KEY` y dejó CUMPLIDA la precondición
+--     descrita justo abajo. El archivo queda versionado para que
+--     un despliegue limpio produzca el mismo estado de
+--     autorización que producción (Requisito 9 del spec
+--     `.kiro/specs/public-flow-authorization-hardening`), y es
+--     idempotente (ver la nota de IDEMPOTENCIA al final de esta
+--     cabecera), así que reaplicarlo es un no-op.
 --
--- ATENCIÓN — PRECONDICIÓN DE DESPLIEGUE
+--     VERIFICACIÓN EN LA BASE — pasos 1 y 2 de «CÓMO VERIFICAR»:
+--     `interview_telemetry` conserva ÚNICAMENTE
+--     `Enable read access for authenticated users`, y
+--     `coach_notifications` ÚNICAMENTE
+--     `org_members_manage_notifications`; no queda ninguna
+--     política de `INSERT` sin cláusula `TO`. Con la clave anon,
+--     el `INSERT` se rechaza por violación de política en las DOS
+--     tablas.
+--
+-- PRECONDICIÓN DE DESPLIEGUE — CUMPLIDA EN `551561c`
 --     EL PUNTO 1 REQUIERE QUE YA ESTÉ EN PRODUCCIÓN la versión de
 --     `src/app/api/chat/route.ts` que construye el cliente de
 --     telemetría EXIGIENDO `SUPABASE_SERVICE_ROLE_KEY`

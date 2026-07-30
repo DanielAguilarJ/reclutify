@@ -9,22 +9,43 @@ interface TicketState {
   error: string | null;
 
   addTicket: (candidateName: string, roleId: string, language: 'en' | 'es') => InterviewTicket;
-  markTicketUsed: (token: string) => void;
-  getTicketByToken: (token: string) => InterviewTicket | undefined;
 
   // Sincronización con Supabase
   fetchTickets: () => Promise<void>;
-  fetchTicketByToken: (token: string) => Promise<InterviewTicket | null>;
   syncAddTicket: (ticket: InterviewTicket) => Promise<void>;
-  syncMarkUsed: (token: string) => Promise<void>;
 }
 
 /**
- * Store de tickets — caché en memoria con Supabase como fuente de verdad.
- * SIN persistencia en localStorage para garantizar sincronización cross-device.
+ * Store de tickets del PANEL AUTENTICADO — caché en memoria con Supabase como
+ * fuente de verdad. SIN persistencia en localStorage para garantizar
+ * sincronización cross-device.
+ *
+ * ALCANCE: solo `/admin/tickets` y `/admin/create-role`, ambos con sesión. Sus
+ * consultas van con la clave anon más la sesión del usuario, así que las
+ * políticas `org_tickets_select` y `org_tickets_insert` las acotan a la
+ * organización de quien mira.
+ *
+ * LO QUE YA NO ESTÁ AQUÍ. La pantalla del candidato (`/interview/t/[token]`)
+ * usaba este store para dos cosas que ahora hacen rutas de servidor con
+ * `service_role`:
+ *
+ *  - `fetchTicketByToken`: `SELECT * FROM interview_tickets WHERE token = ...`
+ *    con la clave anon. Devolvía la fila completa —incluido el token— y para
+ *    funcionar necesitaba la política `public_ticket_by_token`
+ *    (`SELECT TO anon USING (true)`), que al ser pública permitía a cualquiera
+ *    listar los tokens de todos los candidatos. Sustituida por
+ *    `POST /api/interview/ticket`.
+ *  - `syncMarkUsed`: `UPDATE interview_tickets SET used = true` con la clave
+ *    anon, apoyado en `anon_tickets_update` (`UPDATE TO anon USING (true)`), que
+ *    permitía invalidar tickets ajenos. Sustituida por
+ *    `POST /api/interview/ticket/consume`.
+ *
+ * Con ellas se fueron `getTicketByToken` y `markTicketUsed`, las dos ayudas de
+ * caché local que solo consumía esa pantalla. El flujo del candidato ya no
+ * mantiene estado de tickets en el navegador: lo pide al servidor.
  */
 export const useTicketStore = create<TicketState>()(
-  (set, get) => ({
+  (set) => ({
     tickets: [],
     loading: false,
     error: null,
@@ -65,44 +86,6 @@ export const useTicketStore = create<TicketState>()(
           console.error('Error en fetchTickets:', err);
         }
         set({ loading: false, error: 'Error cargando tickets' });
-      }
-    },
-
-    // ─── Buscar un ticket por token en Supabase (para candidatos sin auth) ───
-    fetchTicketByToken: async (token: string) => {
-      try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from('interview_tickets')
-          .select('*')
-          .eq('token', token)
-          .single();
-
-        if (error || !data) return null;
-
-        const ticket: InterviewTicket = {
-          id: data.id,
-          token: data.token,
-          candidateName: data.candidate_name,
-          roleId: data.role_id,
-          language: data.language as 'en' | 'es',
-          createdAt: data.created_at,
-          expiresAt: data.expires_at,
-          used: data.used,
-        };
-
-        // Agregar al store local si no existe
-        const existing = get().tickets.find((t) => t.token === token);
-        if (!existing) {
-          set((state) => ({ tickets: [ticket, ...state.tickets] }));
-        }
-
-        return ticket;
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error buscando ticket por token:', err);
-        }
-        return null;
       }
     },
 
@@ -166,35 +149,5 @@ export const useTicketStore = create<TicketState>()(
         }
       }
     },
-
-    // ─── Marcar ticket como usado: store local ───
-    markTicketUsed: (token: string) =>
-      set((state) => ({
-        tickets: state.tickets.map((t) =>
-          t.token === token ? { ...t, used: true } : t
-        ),
-      })),
-
-    // ─── Sincronizar marca de usado con Supabase ───
-    syncMarkUsed: async (token: string) => {
-      try {
-        const supabase = createClient();
-        const { error } = await supabase
-          .from('interview_tickets')
-          .update({ used: true })
-          .eq('token', token);
-
-        if (error && process.env.NODE_ENV === 'development') {
-          console.error('Error actualizando ticket en Supabase:', error);
-        }
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Error sincronizando ticket usado:', err);
-        }
-      }
-    },
-
-    getTicketByToken: (token: string) =>
-      get().tickets.find((t) => t.token === token),
   })
 );

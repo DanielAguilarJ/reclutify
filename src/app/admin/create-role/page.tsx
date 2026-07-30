@@ -1152,11 +1152,14 @@ export default function CreateRolePage() {
         // 2. Sincronizar con Supabase
         await syncAddTicket(ticket);
         
-        // 3. Construir URL con datos embebidos (cross-device trick)
-        const role = { id: newRoleId, title: jobTitle, topics: roleTopics, interviewDuration, interviewMode };
-        const dPayload = JSON.stringify({ t: ticket, r: role });
-        const dParam = typeof window !== 'undefined' ? `?d=${btoa(unescape(encodeURIComponent(dPayload)))}` : '';
-        const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
+        // 3. Construir la URL de la entrevista: solo el token.
+        //    Antes se adjuntaba `?d=` con el ticket y el puesto —criterios de
+        //    evaluación incluidos— codificados en base64, y la pantalla del
+        //    candidato los aceptaba como si vinieran de la base. Cualquiera
+        //    podía fabricar ese parámetro y abrir una entrevista sin ticket, con
+        //    los temas que quisiera y gastando crédito de IA. Hoy el ticket y el
+        //    puesto los resuelve `/api/interview/ticket` en el servidor.
+        const url = `${window.location.origin}/interview/t/${ticket.token}`;
         
         // 4. Enviar email via Brevo (mismo endpoint que tickets page)
         try {

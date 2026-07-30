@@ -1,109 +1,82 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
-import { createAdminClient } from '@/utils/supabase/admin';
 
-// Bug 17 fix: token generator matching the format used by the in-app
-// ticketStore (8-character alphanumeric, omitting visually ambiguous chars).
-function generateInviteToken(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let token = '';
-  for (let i = 0; i < 8; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
-}
+import {
+  PUBLIC_FLOW_AUTH_LOG_PREFIX,
+  authorizeInviteRequest,
+} from '@/lib/invites/authorization';
+import { inviteCandidatesRequestSchema } from '@/lib/invites/contracts';
+import { createCandidateInvites } from '@/lib/invites/service';
 
+/**
+ * API: crear invitaciones de entrevista para una vacante.
+ *
+ * La ruta es una envoltura: autentica, valida el cuerpo y delega en
+ * `createCandidateInvites` (`src/lib/invites/service.ts`), que es el mismo
+ * módulo que usa `applyToJob`. Toda la lógica de escritura vive allí; aquí solo
+ * quedan las decisiones que dependen de la petición HTTP.
+ *
+ * ORDEN DE LAS COMPROBACIONES
+ * ---------------------------
+ * 1. Autenticación por `x-api-key` contra `MAKE_WEBHOOK_SECRET`. Va primero,
+ *    antes incluso de leer el cuerpo: un rechazo garantiza cero escrituras y no
+ *    gasta trabajo en analizar el payload de quien no está autorizado.
+ * 2. JSON válido.
+ * 3. Esquema Zod, con tope en el número de destinatarios.
+ *
+ * Ningún camino acepta la petición "por omisión": el detalle de por qué está en
+ * `src/lib/invites/authorization.ts`.
+ */
 export async function POST(req: Request) {
+  const auth = authorizeInviteRequest(
+    req.headers.get('x-api-key'),
+    process.env.MAKE_WEBHOOK_SECRET,
+  );
+
+  if (!auth.ok) {
+    // El log no incluye el valor de la cabecera ni el secreto configurado: solo
+    // el motivo y el contexto de la llamada, para poder distinguir una
+    // integración mal configurada de un sondeo.
+    console.warn(
+      `${PUBLIC_FLOW_AUTH_LOG_PREFIX} invite-candidates POST rejected: ${auth.reason}`,
+      {
+        hasApiKeyHeader: req.headers.get('x-api-key') !== null,
+        ip: req.headers.get('x-forwarded-for') || null,
+        userAgent: req.headers.get('user-agent') || null,
+        referer: req.headers.get('referer') || null,
+      },
+    );
+
+    return NextResponse.json({ error: auth.message }, { status: auth.status });
+  }
+
+  let raw: unknown;
   try {
-    // We check the secret from headers (or body if Make passed it there)
-    const secret = req.headers.get('x-api-key');
-    if (secret && secret !== process.env.MAKE_WEBHOOK_SECRET) {
-      // return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-      console.warn("x-api-key did not match MAKE_WEBHOOK_SECRET");
-    }
+    raw = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    const body = await req.json();
-    const { roleId, roleTitle, candidates, language } = body;
+  const parsed = inviteCandidatesRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    // Se devuelven las RUTAS de los campos inválidos, nunca sus valores: sirven
+    // para depurar la integración sin reflejar datos de candidatos.
+    const invalidFields = [
+      ...new Set(parsed.error.issues.map((issue) => issue.path.join('.'))),
+    ];
 
-    if (!roleId || !roleTitle || !candidates || !Array.isArray(candidates)) {
-      return NextResponse.json({ error: 'Missing required fields or invalid candidates format' }, { status: 400 });
-    }
+    return NextResponse.json(
+      { error: 'Invalid request body', invalidFields },
+      { status: 400 },
+    );
+  }
 
-    // Bug 17 fix: the only working candidate entry point is /interview/t/[token]
-    // backed by the `interview_tickets` table. The old format
-    // `/interview?candidateId=…&roleId=…` always lands on the "Access Restricted"
-    // page. We now create one ticket per invitee and emit the correct URL.
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://reclutify.com';
-    const ticketLanguage: 'en' | 'es' = language === 'en' ? 'en' : 'es';
-    const supabase = await createClient();
-    // `candidate_invites` pasa a tener RLS activo
-    // (202607290003_candidate_invites_rls.sql) sin políticas de escritura para
-    // `anon`/`authenticated`: la inserción de seguimiento va con `service_role`,
-    // que ignora RLS. El resto de consultas de esta ruta siguen con el cliente
-    // de sesión.
-    const admin = createAdminClient();
-    const results = [];
-
-    // Resolve org_id once from the role (interview_tickets is org-scoped via RLS).
-    const { data: roleRow } = await supabase
-      .from('roles')
-      .select('org_id')
-      .eq('id', roleId)
-      .single();
-    const orgId = roleRow?.org_id || null;
-
-    for (const candidate of candidates) {
-      if (!candidate.email) continue;
-
-      const now = Date.now();
-      const token = generateInviteToken();
-      const ticketId = `ticket-${now}-${Math.random().toString(36).slice(2, 8)}`;
-      const interviewLink = `${baseUrl}/interview/t/${token}`;
-
-      // 1) Insert the ticket — this is what the /interview/t/[token] route reads.
-      const { error: ticketErr } = await supabase.from('interview_tickets').insert({
-        id: ticketId,
-        token,
-        candidate_name: candidate.name || candidate.email,
-        role_id: roleId,
-        language: ticketLanguage,
-        created_at: now,
-        expires_at: now + 24 * 60 * 60 * 1000, // 24h
-        used: false,
-        org_id: orgId,
-      });
-      if (ticketErr) {
-        console.error('Supabase ticket insert error:', ticketErr);
-      }
-
-      // 2) Mirror to candidate_invites (legacy tracking table, kept for the
-      //    admin pipeline / external integrations).
-      const candidateId = candidate.email;
-      const { error: inviteErr } = await admin.from('candidate_invites').insert({
-        id: candidateId,
-        role_id: roleId,
-        role_title: roleTitle,
-        candidate_email: candidate.email,
-        candidate_name: candidate.name || '',
-        interview_link: interviewLink,
-        status: 'pending',
-      });
-      if (inviteErr) {
-        console.error('Supabase invite insert error:', inviteErr);
-      }
-
-      results.push({
-        candidateId,
-        email: candidate.email,
-        token,
-        interviewLink,
-        inserted: !ticketErr && !inviteErr,
-      });
-    }
-
+  try {
+    const results = await createCandidateInvites(parsed.data);
     return NextResponse.json({ success: true, results });
-  } catch (err: any) {
-    console.error('invite-candidates error:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err) {
+    // La causa técnica se queda en el log del servidor: el mensaje de una
+    // excepción puede llevar detalle de configuración o de la base de datos.
+    console.error('[api/invite-candidates][POST] failed:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

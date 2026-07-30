@@ -1,5 +1,6 @@
 'use server';
 
+import { createCandidateInvites } from '@/lib/invites/service';
 import { createClient } from '@/utils/supabase/server';
 import type { JobListing, JobSearchResult, ApplyToJobResult } from '@/types/jobs';
 
@@ -141,22 +142,27 @@ export async function applyToJob(data: {
 
     const roleTitle = roleData?.title || 'Vacante';
 
-    // Create interview invite via internal API call
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://www.reclutify.com';
     const candidateId = data.email.toLowerCase().trim();
     const interviewUrl = `${baseUrl}/interview?candidateId=${encodeURIComponent(candidateId)}&roleId=${encodeURIComponent(data.roleId)}`;
 
-    // Call invite-candidates endpoint internally
+    // Crear la invitación llamando al módulo compartido del servidor.
+    //
+    // Antes esto era un `fetch` a `/api/invite-candidates`. Un server action ya
+    // corre en el servidor, así que el salto por HTTP contra nuestro propio
+    // backend no aportaba nada — y no podía llevar la cabecera `x-api-key`, que
+    // es la razón por la que el endpoint no podía exigir su secreto. Con la
+    // llamada directa, la ruta ya puede rechazar a quien no se autentique sin
+    // romper la postulación pública.
+    //
+    // Sigue sin bloquear: si la invitación falla, la postulación ya está
+    // registrada y se responde con éxito, igual que antes.
     try {
-      await fetch(`${baseUrl}/api/invite-candidates`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roleId: data.roleId,
-          roleTitle,
-          candidates: [{ email: data.email.toLowerCase().trim(), name: data.name.trim() }],
-          language: 'es',
-        }),
+      await createCandidateInvites({
+        roleId: data.roleId,
+        roleTitle,
+        candidates: [{ email: candidateId, name: data.name.trim() }],
+        language: 'es',
       });
     } catch (inviteErr) {
       // Non-blocking — invite record creation failure shouldn't block the application

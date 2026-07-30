@@ -528,6 +528,7 @@ export type Database = {
       }
       info_sessions: {
         Row: {
+          access_token_hash: string | null
           client_age: number | null
           client_email: string | null
           client_name: string | null
@@ -548,6 +549,7 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
+          access_token_hash?: string | null
           client_age?: number | null
           client_email?: string | null
           client_name?: string | null
@@ -568,6 +570,7 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
+          access_token_hash?: string | null
           client_age?: number | null
           client_email?: string | null
           client_name?: string | null

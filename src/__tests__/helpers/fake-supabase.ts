@@ -1,14 +1,16 @@
 /**
  * Cliente de Supabase falso, mínimo y compartido por las suites de los flujos
- * públicos (invitaciones y ticket de entrevista).
+ * públicos (invitaciones, ticket de entrevista y sesión de informes).
  *
  * Imita solo las operaciones que usan `src/lib/invites/service.ts`,
- * `applyToJob`, `src/lib/interview-tickets/service.ts` y
- * `/api/candidate-results`: `select().eq().maybeSingle()`,
- * `select().eq().eq().maybeSingle()`, `insert()`, `upsert()`, `update().eq()` y
- * `update().eq().not().select()`. Las escrituras se aplican de verdad sobre las
- * tablas en memoria y se registran en `writes`, de modo que una prueba pueda
- * afirmar tanto "la fila quedó así" como "no hubo ninguna escritura".
+ * `applyToJob`, `src/lib/interview-tickets/service.ts`,
+ * `src/lib/info-sessions/service.ts` y `/api/candidate-results`:
+ * `select().eq().maybeSingle()`, `select().eq().eq().maybeSingle()`,
+ * `insert().select().single()`, `upsert()`, `update().eq()`,
+ * `update().eq().eq().select()` y `update().eq().not().select()`. Las escrituras
+ * se aplican de verdad sobre las tablas en memoria y se registran en `writes`, de
+ * modo que una prueba pueda afirmar tanto "la fila quedó así" como "no hubo
+ * ninguna escritura".
  *
  * No es un doble del comportamiento de Postgres: no hay RLS, ni tipos, ni
  * claves foráneas. Lo que se verifica con él es la lógica de la aplicación
@@ -76,6 +78,20 @@ export interface FakeQueryBuilder {
 }
 
 export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
+  /**
+   * Contador de las claves primarias que "genera la base" en un `INSERT` que no
+   * las trae. Es determinista y se reinicia con `reset`, así que una prueba puede
+   * afirmar sobre el identificador devuelto sin depender del azar.
+   */
+  let generatedIds = 0;
+
+  /**
+   * Identificador con forma de UUID (versión 4, variante RFC 4122) para que
+   * valga en los esquemas que exigen `uuid`.
+   */
+  const nextGeneratedId = (): string =>
+    `00000000-0000-4000-8000-${String(++generatedIds).padStart(12, '0')}`;
+
   const state: FakeSupabase = {
     client: { from: (table: string) => createBuilder(table) },
     tables: {},
@@ -87,6 +103,7 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
     reset: (nextSeed: FakeTables = {}) => {
       state.tables = cloneTables(nextSeed);
       state.writes = [];
+      generatedIds = 0;
       state.insertErrors = new Map();
       state.updateErrors = new Map();
       state.upsertErrors = new Map();
@@ -129,8 +146,15 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
           return { data: null, error: failure };
         }
         state.writes.push({ table, op: 'insert', payload });
-        rowsOf(table).push({ ...payload });
-        return { data: [payload], error: null };
+        // Postgres rellena la clave primaria con su `DEFAULT` cuando el `INSERT`
+        // no la trae, y eso es lo que devuelve `.select('id')`. Sin ese detalle
+        // no se puede probar un flujo que necesita el identificador generado
+        // —`createInfoSession` lo devuelve al cliente—. `writes` conserva el
+        // payload ORIGINAL: el identificador lo puso la base, no la aplicación.
+        const inserted: FakeRow = { ...payload };
+        if (inserted.id === undefined) inserted.id = nextGeneratedId();
+        rowsOf(table).push(inserted);
+        return { data: [inserted], error: null };
       }
 
       if (operation === 'update') {

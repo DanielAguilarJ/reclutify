@@ -243,6 +243,60 @@ export async function toggleRolePublished(
       return { success: false, error: 'No autenticado.' };
     }
 
+    // Comprobación explícita de pertenencia, además de la que impone RLS.
+    //
+    // POR QUÉ NO BASTA CON RLS AQUÍ
+    // -----------------------------
+    // `org_isolation_roles_update` limita la escritura a la organización del
+    // usuario (`00003_sync_data_persistence.sql`), así que no había fuga entre
+    // empresas. Pero la política no distingue ROL: cualquier miembro, incluido uno
+    // con rol `member`, podía publicar o retirar del portal público la vacante de
+    // su organización. Publicar es una acción de cara al exterior y debe exigir
+    // permiso de escritura de la organización.
+    //
+    // Además, sin esta comprobación un `roleId` ajeno producía un `update` que
+    // afectaba a cero filas y devolvía `success: true`, así que la interfaz
+    // informaba de un cambio que no ocurrió.
+    const { data: role, error: roleError } = await supabase
+      .from('roles')
+      .select('id, org_id')
+      .eq('id', roleId)
+      .maybeSingle();
+
+    if (roleError) {
+      return { success: false, error: 'No se pudo validar la vacante.' };
+    }
+
+    if (!role) {
+      return { success: false, error: 'Vacante no encontrada.' };
+    }
+
+    const { data: membership } = await supabase
+      .from('org_members')
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('org_id', role.org_id)
+      .in('role', ['owner', 'admin'])
+      .maybeSingle();
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('org_id, role')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    // Dos fuentes de pertenencia, por el motivo documentado en
+    // `src/lib/authz/org-role-authorization.ts`: la fila de `org_members` la crea
+    // el onboarding en modo «mejor esfuerzo», así que exigirla en exclusiva
+    // devolvería `403` al dueño legítimo cuya fila nunca se insertó.
+    const isOrgWriter =
+      Boolean(membership) ||
+      (profile?.org_id === role.org_id && ['owner', 'admin'].includes(profile?.role ?? ''));
+
+    if (!isOrgWriter) {
+      return { success: false, error: 'No tienes permiso para publicar esta vacante.' };
+    }
+
     const updateData: Record<string, unknown> = {
       is_published: isPublished,
       published_at: isPublished ? new Date().toISOString() : null,

@@ -1,5 +1,6 @@
 'use server';
 
+import { escapeHtml } from '@/lib/api/email';
 import { createClient } from '@/utils/supabase/server';
 import { Resend } from 'resend';
 
@@ -206,20 +207,39 @@ export async function sendTeamInvitationEmail(
       return { success: false, error: 'No autenticado.' };
     }
 
-    // Get inviter's name
+    // Get inviter's name AND verify they can invite on behalf of an organization.
+    //
+    // Antes solo se comprobaba que hubiera sesión. Cualquier cuenta autenticada
+    // —incluida una de candidato— podía hacer que la infraestructura de Reclutify
+    // enviara un correo de invitación con la marca de la empresa a la dirección
+    // que quisiera y con el `orgName` que quisiera. Es un relé de correo con
+    // sesión, el mismo problema que tenía `/api/send-email`.
     const { data: inviterProfile } = await supabase
       .from('user_profiles')
-      .select('full_name')
+      .select('full_name, org_id, role')
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
 
-    const inviterName = inviterProfile?.full_name || 'Un miembro del equipo';
+    if (!inviterProfile?.org_id || !['owner', 'admin'].includes(inviterProfile.role ?? '')) {
+      return { success: false, error: 'No tienes permiso para invitar miembros.' };
+    }
+
+    const inviterName = inviterProfile.full_name || 'Un miembro del equipo';
+
+    // `inviterName` y `orgName` se interpolan en el HTML del correo. Sin escapar,
+    // un nombre con `<` cierra la etiqueta e inyecta marcado en un mensaje firmado
+    // desde el dominio de la empresa: no es XSS en el navegador, pero permite
+    // falsificar el contenido visible del correo (añadir un botón, cambiar el
+    // texto legal, insertar otro enlace).
+    const safeInviterName = escapeHtml(inviterName);
+    const safeOrgName = escapeHtml(orgName);
 
     const resend = new Resend(resendApiKey);
 
     const { error: emailError } = await resend.emails.send({
       from: 'Reclutify <noreply@reclutify.com>',
       to: [email],
+      // El asunto NO es HTML, así que va el valor original; el cuerpo sí lo es.
       subject: `${inviterName} te ha invitado a unirte a ${orgName} en Reclutify`,
       html: `
         <!DOCTYPE html>
@@ -309,7 +329,7 @@ export async function sendTeamInvitationEmail(
                 <h1>Reclutify</h1>
               </div>
               <h2>Te han invitado a un equipo</h2>
-              <p><strong>${inviterName}</strong> te ha invitado a unirte al equipo de <strong>${orgName}</strong> en Reclutify.</p>
+              <p><strong>${safeInviterName}</strong> te ha invitado a unirte al equipo de <strong>${safeOrgName}</strong> en Reclutify.</p>
               
               <div class="highlight">
                 <p>Al aceptar, podrás colaborar en la gestión de cursos, leads y sesiones de coaching con IA.</p>

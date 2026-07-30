@@ -4,6 +4,37 @@ import { createClient } from '@/utils/supabase/server';
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
+/** Organización mínima que necesita el conmutador de espacios de trabajo. */
+interface EmbeddedOrg {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+/**
+ * Normaliza el embed `organizations(...)` de PostgREST.
+ *
+ * Puede llegar como objeto o como array de un elemento según la cardinalidad que
+ * PostgREST infiera de las claves foráneas, y el tipo generado lo declara de forma
+ * que no se puede usar directamente. Se comprueba la forma en tiempo de ejecución
+ * y se devuelve `null` si falta cualquier campo obligatorio, en vez de empujar a
+ * la interfaz un objeto con `id: undefined`.
+ */
+function normalizeOrgEmbed(raw: unknown): EmbeddedOrg | null {
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const record = candidate as Record<string, unknown>;
+
+  return typeof record.id === 'string' &&
+    typeof record.name === 'string' &&
+    typeof record.slug === 'string'
+    ? { id: record.id, name: record.name, slug: record.slug }
+    : null;
+}
+
+
 const ACTIVE_ORG_COOKIE = 'reclutify_active_org_id';
 
 interface UserOrganization {
@@ -86,8 +117,12 @@ export async function getUserOrganizations(): Promise<UserOrganization[]> {
 
     if (memberOrgs) {
       for (const membership of memberOrgs) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const org = membership.organizations as any;
+        // PostgREST devuelve un embed como objeto o como array según la
+        // cardinalidad que infiera de las claves, y el tipo generado no lo fija.
+        // Se normaliza con un predicado en lugar de castear a `any`, para que un
+        // cambio en el `select` rompa la compilación en vez de propagar
+        // `undefined` a la interfaz.
+        const org = normalizeOrgEmbed(membership.organizations);
         if (org && !orgs.some(o => o.id === org.id)) {
           orgs.push({
             id: org.id,

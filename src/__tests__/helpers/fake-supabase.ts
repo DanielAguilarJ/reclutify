@@ -1,12 +1,13 @@
 /**
- * Cliente de Supabase falso, mínimo y compartido por las suites del flujo de
- * invitaciones.
+ * Cliente de Supabase falso, mínimo y compartido por las suites de los flujos
+ * públicos (invitaciones y ticket de entrevista).
  *
- * Imita solo las operaciones que usa `src/lib/invites/service.ts` y
- * `applyToJob`: `select().eq().maybeSingle()`, `select().eq().eq().maybeSingle()`
- * e `insert()`. Las escrituras se aplican de verdad sobre las tablas en memoria
- * y se registran en `writes`, de modo que una prueba pueda afirmar tanto "la
- * fila quedó así" como "no hubo ninguna escritura".
+ * Imita solo las operaciones que usan `src/lib/invites/service.ts`,
+ * `applyToJob` y `src/lib/interview-tickets/service.ts`:
+ * `select().eq().maybeSingle()`, `select().eq().eq().maybeSingle()`, `insert()`
+ * y `update().eq().not().select()`. Las escrituras se aplican de verdad sobre
+ * las tablas en memoria y se registran en `writes`, de modo que una prueba pueda
+ * afirmar tanto "la fila quedó así" como "no hubo ninguna escritura".
  *
  * No es un doble del comportamiento de Postgres: no hay RLS, ni tipos, ni
  * claves foráneas. Lo que se verifica con él es la lógica de la aplicación
@@ -19,11 +20,11 @@ export type FakeTables = Record<string, FakeRow[]>;
 
 export interface FakeWrite {
   table: string;
-  op: 'insert';
+  op: 'insert' | 'update';
   payload: FakeRow;
 }
 
-/** Error que la tabla debe devolver en su próxima inserción. */
+/** Error que la tabla debe devolver en su próxima escritura. */
 export interface FakeInsertError {
   message: string;
 }
@@ -35,8 +36,10 @@ export interface FakeSupabase {
   tables: FakeTables;
   /** Escrituras en orden de ejecución. */
   writes: FakeWrite[];
-  /** Errores encolados por tabla para forzar el camino de fallo. */
+  /** Errores encolados por tabla para forzar el camino de fallo del `insert`. */
   insertErrors: Map<string, FakeInsertError>;
+  /** Errores encolados por tabla para forzar el camino de fallo del `update`. */
+  updateErrors: Map<string, FakeInsertError>;
   reset: (seed?: FakeTables) => void;
 }
 
@@ -48,7 +51,15 @@ interface QueryOutcome {
 export interface FakeQueryBuilder {
   select: (columns?: string) => FakeQueryBuilder;
   insert: (payload: FakeRow) => FakeQueryBuilder;
+  update: (payload: FakeRow) => FakeQueryBuilder;
   eq: (column: string, value: unknown) => FakeQueryBuilder;
+  /**
+   * Filtro negado. Solo se implementa el operador `is`, que es el que usa
+   * `consumeInterviewTicket` para exigir `used IS NOT TRUE`. Cualquier otro
+   * operador lanza, para que la prueba falle de forma evidente en lugar de
+   * simular una semántica que este doble no tiene.
+   */
+  not: (column: string, operator: string, value: unknown) => FakeQueryBuilder;
   maybeSingle: () => Promise<QueryOutcome>;
   single: () => Promise<QueryOutcome>;
   then: <T>(resolve: (value: QueryOutcome) => T) => Promise<T>;
@@ -60,10 +71,12 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
     tables: {},
     writes: [],
     insertErrors: new Map(),
+    updateErrors: new Map(),
     reset: (nextSeed: FakeTables = {}) => {
       state.tables = cloneTables(nextSeed);
       state.writes = [];
       state.insertErrors = new Map();
+      state.updateErrors = new Map();
     },
   };
 
@@ -73,9 +86,12 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
   }
 
   function createBuilder(table: string): FakeQueryBuilder {
-    const filters: Array<[string, unknown]> = [];
-    let operation: 'select' | 'insert' = 'select';
+    const filters: Array<(row: FakeRow) => boolean> = [];
+    let operation: 'select' | 'insert' | 'update' = 'select';
     let payload: FakeRow = {};
+
+    const matching = (): FakeRow[] =>
+      rowsOf(table).filter((row) => filters.every((filter) => filter(row)));
 
     const exec = (): QueryOutcome => {
       if (operation === 'insert') {
@@ -89,10 +105,26 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
         return { data: [payload], error: null };
       }
 
-      const matching = rowsOf(table).filter((row) =>
-        filters.every(([column, value]) => row[column] === value),
-      );
-      return { data: matching, error: null };
+      if (operation === 'update') {
+        const failure = state.updateErrors.get(table);
+        if (failure) {
+          state.updateErrors.delete(table);
+          return { data: null, error: failure };
+        }
+        const targets = matching();
+        // Un `UPDATE` que no alcanza ninguna fila no es una escritura: así la
+        // prueba puede exigir "cero escrituras" cuando el filtro protege la
+        // fila.
+        if (targets.length === 0) return { data: [], error: null };
+
+        state.writes.push({ table, op: 'update', payload });
+        for (const target of targets) {
+          Object.assign(target, payload);
+        }
+        return { data: targets, error: null };
+      }
+
+      return { data: matching(), error: null };
     };
 
     const builder: FakeQueryBuilder = {
@@ -102,8 +134,20 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
         payload = next;
         return builder;
       },
+      update: (next: FakeRow) => {
+        operation = 'update';
+        payload = next;
+        return builder;
+      },
       eq: (column: string, value: unknown) => {
-        filters.push([column, value]);
+        filters.push((row) => row[column] === value);
+        return builder;
+      },
+      not: (column: string, operator: string, value: unknown) => {
+        if (operator !== 'is') {
+          throw new Error(`Operador no simulado en el doble de Supabase: not.${operator}`);
+        }
+        filters.push((row) => row[column] !== value);
         return builder;
       },
       maybeSingle: async () => firstRow(exec()),

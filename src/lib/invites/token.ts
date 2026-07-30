@@ -22,11 +22,15 @@
  *  - `supabase/migrations/00003_sync_data_persistence.sql:26-40`: la columna es
  *    `token TEXT UNIQUE NOT NULL` con un índice; no hay `CHECK` de longitud ni
  *    de alfabeto. Ninguna otra migración toca `interview_tickets`.
- *  - `src/store/ticketStore.ts`: `fetchTicketByToken` filtra con
- *    `.eq('token', token)` y `getTicketByToken` compara cadenas completas.
- *    Igualdad exacta, sin validación de forma.
- *  - `src/app/interview/t/[token]/page.tsx`: usa el segmento dinámico tal cual
- *    para esas dos búsquedas; no mide longitud ni valida caracteres.
+ *  - `src/lib/interview-tickets/service.ts`: `resolveInterviewTicket` y
+ *    `consumeInterviewTicket` filtran con `.eq('token', token)`. Igualdad
+ *    exacta, sin validación de forma. (Antes esas dos consultas las hacía
+ *    `src/store/ticketStore.ts` desde el navegador con la clave anon.)
+ *  - `src/app/interview/t/[token]/page.tsx`: pasa el segmento dinámico tal cual
+ *    a esas rutas; no mide longitud ni valida caracteres. El único límite es el
+ *    tope de longitud del esquema de la petición
+ *    (`MAX_INTERVIEW_TICKET_TOKEN_LENGTH`, 128), holgado para los tokens de 8
+ *    caracteres ya emitidos.
  *  - `src/app/admin/tickets/page.tsx` y `src/app/admin/create-role/page.tsx`:
  *    solo muestran el token y lo pegan en la URL del enlace.
  *

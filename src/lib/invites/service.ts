@@ -13,13 +13,13 @@ import { generateInviteToken, generateTicketId } from './token';
  * ---------------------------------------
  * Esta lógica vivía dentro de `/api/invite-candidates`, y `applyToJob`
  * (`src/app/actions/jobs.ts`, la postulación pública a vacantes) la consumía
- * haciendo un `fetch` HTTP a su propio backend **sin** cabecera `x-api-key`.
- * Esa llamada era la razón por la que el endpoint no podía exigir el secreto:
- * activar el rechazo rompía las postulaciones.
+ * haciendo un `fetch` HTTP a su propio backend. Esa llamada era la razón por la
+ * que el endpoint no podía cerrarse: cualquier credencial que se le exigiera
+ * rompía las postulaciones, porque el candidato no tiene ninguna.
  *
  * `applyToJob` es un server action, así que ya corre en el servidor: el salto
  * por HTTP no aportaba nada y no tenía forma de autenticarse. Extraída aquí, la
- * ruta queda como una envoltura con autenticación y el server action invoca la
+ * ruta queda como una envoltura con autorización y el server action invoca la
  * misma función directamente. Ambos caminos producen el mismo resultado
  * observable para la misma entrada.
  *
@@ -38,10 +38,24 @@ import { generateInviteToken, generateTicketId } from './token';
  *    sin ticket detrás, es decir, la pantalla de ticket inválido. Con la clave
  *    de servicio el ticket se crea siempre, que es lo que el flujo necesita.
  *
- * Como esta función bypassa RLS, quien la invoca es responsable de autorizar la
- * petición antes: la ruta lo hace con `authorizeInviteRequest`, y `applyToJob`
- * solo la llama después de haber insertado con éxito el candidato de una
- * vacante publicada.
+ * LA AUTORIZACIÓN ES RESPONSABILIDAD DEL LLAMANTE
+ * -----------------------------------------------
+ * Esta función bypassa RLS y no comprueba identidad ni permisos: no puede, uno
+ * de sus dos llamantes corre sin sesión. Cada uno aporta su propia garantía, y
+ * el contrato de esta función no cambia por ello:
+ *
+ *  - `/api/invite-candidates` autentica por sesión de Supabase y exige que el
+ *    usuario pertenezca, con rol `owner` o `admin`, a la organización dueña del
+ *    `roleId` (`src/lib/invites/session-authorization.ts`). Es el camino de una
+ *    persona del equipo invitando a su propia hornada de candidatos.
+ *  - `applyToJob` corre sin sesión —el candidato es público— y solo llama aquí
+ *    después de haber registrado con éxito una postulación a una vacante
+ *    publicada: el `roleId` no lo elige quien invita, sale de la vacante a la
+ *    que la persona acaba de postularse, y la invitación es para su propio
+ *    correo. Por eso este módulo sigue usando `service_role` y no una sesión.
+ *
+ * Cualquier llamante nuevo tiene que traer su propia garantía equivalente antes
+ * de invocarla.
  */
 
 /** Vigencia del ticket. Es el mismo valor que aplicaba la ruta original. */

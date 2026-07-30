@@ -148,10 +148,11 @@ export async function applyToJob(data: {
     //
     // Antes esto era un `fetch` a `/api/invite-candidates`. Un server action ya
     // corre en el servidor, así que el salto por HTTP contra nuestro propio
-    // backend no aportaba nada — y no podía llevar la cabecera `x-api-key`, que
-    // es la razón por la que el endpoint no podía exigir su secreto. Con la
-    // llamada directa, la ruta ya puede rechazar a quien no se autentique sin
-    // romper la postulación pública.
+    // backend no aportaba nada — y no tenía ninguna credencial que presentar,
+    // que es la razón por la que el endpoint no podía exigir ninguna. Con la
+    // llamada directa, la ruta ya puede exigir sesión y pertenencia a la
+    // organización sin romper la postulación pública, que sigue entrando por el
+    // módulo compartido.
     //
     // Sigue sin bloquear: si la invitación falla, la postulación ya está
     // registrada y se responde con éxito, igual que antes.

@@ -47,13 +47,13 @@ export default function TicketsPage() {
     // Sincronizar con Supabase en segundo plano
     syncAddTicket(ticket);
     
-    let dParam = '';
     const role = roles.find((r) => r.id === ticket.roleId);
-    if (role) {
-      const payload = JSON.stringify({ t: ticket, r: role });
-      dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
-    }
-    const url = `${window.location.origin}/interview/t/${ticket.token}${dParam}`;
+    // El enlace lleva solo el token. Antes se le adjuntaba `?d=` con el ticket y
+    // el puesto completo en base64 para que la entrevista abriera sin consultar
+    // la base: eso permitía fabricar entrevistas sin ticket real y con criterios
+    // elegidos por quien armara la URL. Ahora `/api/interview/ticket` resuelve
+    // ambos en el servidor.
+    const url = `${window.location.origin}/interview/t/${ticket.token}`;
 
     // Disparar la petición al API en segundo plano
     if (email.trim()) {
@@ -93,17 +93,10 @@ export default function TicketsPage() {
   };
 
   const copyLink = (token: string) => {
-    const ticket = tickets.find(t => t.token === token);
-    const role = roles.find(r => r.id === ticket?.roleId);
-    let dParam = '';
-    
-    // Cross-device MVP trick: encode role and ticket directly in the URL 
-    if (ticket && role) {
-      const payload = JSON.stringify({ t: ticket, r: role });
-      dParam = `?d=${typeof window !== 'undefined' ? btoa(unescape(encodeURIComponent(payload))) : ''}`;
-    }
-    
-    const url = `${window.location.origin}/interview/t/${token}${dParam}`;
+    // Solo el token: el ticket y el puesto los resuelve el servidor en
+    // `/api/interview/ticket`. El payload `?d=` embebido en la URL desapareció
+    // porque abría entrevistas sin ticket real.
+    const url = `${window.location.origin}/interview/t/${token}`;
     navigator.clipboard.writeText(url);
     setCopiedToken(token);
     setTimeout(() => setCopiedToken(null), 2000);

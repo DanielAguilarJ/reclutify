@@ -11,15 +11,13 @@ import QuickDeviceSetup from '@/components/candidate/QuickDeviceSetup';
 import InterviewRoom from '@/components/candidate/InterviewRoom';
 import InterviewComplete from '@/components/candidate/InterviewComplete';
 import { useInterviewStore } from '@/store/interviewStore';
-import { useAdminStore } from '@/store/adminStore';
-import { useTicketStore } from '@/store/ticketStore';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
-import { createClient } from '@/utils/supabase/client';
+import {
+  consumeInterviewTicket,
+  fetchInterviewTicket,
+} from '@/lib/interview-tickets/client';
 import { ShieldX, Clock, CheckCircle2 } from 'lucide-react';
-
-import type { Role, Topic, InterviewMode } from '@/types';
-import type { InterviewTicket } from '@/types';
 
 type TicketStatus = 'loading' | 'valid' | 'invalid' | 'used' | 'expired';
 
@@ -29,8 +27,6 @@ export default function TicketInterviewPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = use(params);
-  const { getTicketByToken, markTicketUsed, fetchTicketByToken, syncMarkUsed } = useTicketStore();
-  const { roles } = useAdminStore();
   const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode } = useInterviewStore();
   const { language, setLanguage } = useAppStore();
   const t = dictionaries[language];
@@ -46,152 +42,78 @@ export default function TicketInterviewPage({
   // White-label: org plan fetched from DB (not localStorage)
   const [orgPlanTier, setOrgPlanTier] = useState<string>('starter');
 
+  // El ticket, el puesto y el plan de la organización los resuelve
+  // `/api/interview/ticket` con la clave de servicio. Antes esta pantalla hacía
+  // esas tres lecturas desde el navegador con la clave anon, lo que obligaba a
+  // mantener `SELECT TO anon USING (true)` sobre `interview_tickets`: cualquiera
+  // con la clave pública podía listar todos los tokens del sistema y entrar a la
+  // entrevista de cualquier candidato.
+  //
+  // También se eliminó el respaldo que aceptaba el ticket y el puesto completo
+  // —con sus criterios de evaluación— en un payload base64 del parámetro `?d=`
+  // de la URL. Ese atajo abría una entrevista funcional sin ticket real, con los
+  // temas que eligiera quien fabricara el enlace y gastando crédito de IA: era un
+  // puente que anulaba cualquier control de servidor, así que no queda nada que
+  // pueda inyectar estado desde la URL.
   useEffect(() => {
+    let cancelled = false;
+
     const checkTicket = async () => {
-      // 1. Primero intentar encontrar el ticket en el store local (caché)
-      let currentTicket = getTicketByToken(token);
-      let role: Role | undefined;
+      const result = await fetchInterviewTicket(token);
+      if (cancelled) return;
 
-      // 2. Si no está en local, buscar en Supabase directamente
-      if (!currentTicket) {
-        const supabaseTicket = await fetchTicketByToken(token);
-        if (supabaseTicket) {
-          currentTicket = supabaseTicket;
-        }
-      }
-
-      // 3. Fallback: intentar decodificar datos del URL (compatibilidad hacia atrás)
-      if (!currentTicket) {
-        const params = new URLSearchParams(window.location.search);
-        const d = params.get('d');
-        if (d) {
-          try {
-            const decoded = decodeURIComponent(escape(atob(d)));
-            const payload = JSON.parse(decoded);
-            if (payload.t && payload.r) {
-              const currentTickets = useTicketStore.getState().tickets;
-              const currentRoles = useAdminStore.getState().roles;
-              const payloadRole = payload.r as Role;
-              payloadRole.interviewMode = payloadRole.interviewMode || 'restricted';
-              
-              if (!currentTickets.find((t) => t.token === token)) {
-                useTicketStore.setState({ tickets: [payload.t, ...currentTickets] });
-              }
-              if (!currentRoles.find((r: Role) => r.id === payloadRole.id)) {
-                useAdminStore.setState({ roles: [payloadRole, ...currentRoles] });
-              }
-              currentTicket = payload.t as InterviewTicket;
-            }
-          } catch (e) {
-            console.error('Failed to decode fallback payload');
-          }
-        }
-      }
-
-      // Verificar estado del ticket
-      if (!currentTicket) {
-        setTicketStatus('invalid');
-        return;
-      }
-
-      if (currentTicket.used) {
+      if (result.status === 'used') {
         setTicketStatus('used');
         return;
       }
 
-      if (Date.now() > currentTicket.expiresAt) {
+      if (result.status === 'expired') {
         setTicketStatus('expired');
         return;
       }
 
-      // Buscar el rol — primero en store local, luego en Supabase
-      role = useAdminStore.getState().roles.find((r) => r.id === currentTicket!.roleId);
-      
-      if (!role) {
-        // Intentar cargar el rol directamente desde Supabase
-        try {
-          const supabase = createClient();
-          const { data: roleData } = await supabase
-            .from('roles')
-            .select('*')
-            .eq('id', currentTicket.roleId)
-            .single();
-
-          if (roleData) {
-            role = {
-              id: roleData.id,
-              title: roleData.title,
-              description: roleData.description || undefined,
-              location: roleData.location || undefined,
-              salary: roleData.salary || undefined,
-              jobType: roleData.job_type || undefined,
-              interviewDuration: roleData.interview_duration ?? 30,
-              interviewMode: ((roleData.interview_mode as string) || 'restricted') as InterviewMode,
-              topics: roleData.topics || [],
-              createdAt: new Date(roleData.created_at).getTime(),
-            };
-            // Agregar al store local para uso futuro
-            const currentRoles = useAdminStore.getState().roles;
-            if (!currentRoles.find((r) => r.id === role!.id)) {
-              useAdminStore.setState({ roles: [role!, ...currentRoles] });
-            }
-          }
-        } catch (err) {
-          console.error('Error cargando rol desde Supabase:', err);
-        }
-      }
-
-      if (role) {
-        setTopics(role.topics);
-        setLocalRoleId(role.id);
-        setRoleId(role.id);
-        setInterviewDuration(role.interviewDuration ?? 30);
-        setInterviewMode(role.interviewMode || 'restricted');
-        setCandidateName(currentTicket.candidateName);
-
-        // Fetch the org's plan_tier for white-label branding
-        try {
-          const supabase = createClient();
-          const { data: roleRow } = await supabase
-            .from('roles')
-            .select('org_id')
-            .eq('id', role.id)
-            .single();
-          if (roleRow?.org_id) {
-            const { data: orgRow } = await supabase
-              .from('organizations')
-              .select('plan_tier')
-              .eq('id', roleRow.org_id)
-              .single();
-            if (orgRow?.plan_tier) setOrgPlanTier(orgRow.plan_tier);
-          }
-        } catch { /* white-label defaults to off */ }
-
-        // Setear idioma desde el ticket
-        setLanguage(currentTicket.language);
-
-        // Pre-llenar info del candidato
-        setCandidate({
-          name: currentTicket.candidateName,
-          email: '',
-          phone: '',
-        });
-
-        // FIX 7: Removed immediate markTicketUsed/syncMarkUsed calls here.
-        // Ticket is now only burned when the candidate actually enters the InterviewRoom
-        // (phase === 'interview'), preventing permanent ticket loss on early browser close.
-        setPendingToken(token);
-
-        // Iniciar en el formulario de detalles
-        setPhase('details');
-        setTicketStatus('valid');
-      } else {
+      if (result.status !== 'valid') {
         setTicketStatus('invalid');
+        return;
       }
+
+      const { ticket, role, org } = result;
+
+      setTopics(role.topics);
+      setLocalRoleId(role.id);
+      setRoleId(role.id);
+      setInterviewDuration(role.interviewDuration);
+      setInterviewMode(role.interviewMode);
+      setCandidateName(ticket.candidateName);
+
+      // Marca blanca del encabezado.
+      setOrgPlanTier(org.planTier);
+
+      // Idioma de la entrevista, tomado del ticket.
+      setLanguage(ticket.language);
+
+      // Pre-llenar info del candidato
+      setCandidate({
+        name: ticket.candidateName,
+        email: '',
+        phone: '',
+      });
+
+      // FIX 7: el ticket no se quema aquí. Solo cuando el candidato entra de
+      // verdad a la sala (phase === 'interview'), para que cerrar el navegador
+      // antes no le cueste el enlace.
+      setPendingToken(token);
+
+      // Iniciar en el formulario de detalles
+      setPhase('details');
+      setTicketStatus('valid');
     };
 
-    // Pequeño delay para hidratación de Zustand
-    setTimeout(checkTicket, 100);
+    checkTicket();
+
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   // FIX 7: Burn the ticket only when the interview actually starts, not at validation time.
@@ -199,9 +121,10 @@ export default function TicketInterviewPage({
   // can re-open the same link and resume.
   useEffect(() => {
     if (phase === 'interview' && pendingToken && !ticketMarked) {
-      markTicketUsed(pendingToken);
-      syncMarkUsed(pendingToken);
       setTicketMarked(true);
+      // El resultado no cambia lo que ve el candidato, igual que antes: si el
+      // consumo falla, la entrevista sigue.
+      void consumeInterviewTicket(pendingToken);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);

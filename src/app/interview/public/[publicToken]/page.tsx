@@ -41,7 +41,7 @@ export default function PublicInterviewPage({
   params: Promise<{ publicToken: string }>;
 }) {
   const { publicToken } = use(params);
-  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode } = useInterviewStore();
+  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode, setAccessProof } = useInterviewStore();
   const { language } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
@@ -71,6 +71,13 @@ export default function PublicInterviewPage({
         const data = await res.json();
         setRoleData(data.role);
         setOrgData(data.org);
+        // Prueba de acceso de las escrituras de `candidate_results`: el
+        // `public_token` de la vacante, que es lo único que acredita a quien
+        // entra por el enlace general. Se guarda tras confirmar que el enlace
+        // resuelve, y `adminStore` lo lee del store en cada petición —también en
+        // los reintentos—. `/api/candidate-results` ya no acepta escrituras sin
+        // credencial.
+        setAccessProof({ kind: 'public-link', token: publicToken });
         setPageStatus('valid');
       } catch {
         setPageStatus('invalid');
@@ -78,6 +85,9 @@ export default function PublicInterviewPage({
     };
 
     validateToken();
+    // `setAccessProof` es una acción estable de zustand; el efecto depende solo
+    // del token del enlace.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicToken]);
 
   // Handle registration form submit

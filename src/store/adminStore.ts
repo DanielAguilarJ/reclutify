@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { Role, CandidateResult, InterviewMode } from "@/types";
+import { accessProofRequestFields } from "@/lib/candidate-results/access-proof-contracts";
+import { useInterviewStore } from "@/store/interviewStore";
 import { createClient } from "@/utils/supabase/client";
 
 // ─── Tipos de estado del store ───
@@ -112,6 +114,23 @@ function candidateFromSupabase(row: Record<string, unknown>): CandidateResult {
 }
 
 /**
+ * Prueba de acceso que acompaña a cada escritura de `candidate_results`.
+ *
+ * `/api/candidate-results` ya no acepta escrituras sin credencial. Se lee del
+ * store de la entrevista EN EL MOMENTO de cada petición —no al construir el
+ * store— para que valga igual en la escritura inmediata y en los reintentos de
+ * `retrySyncQueue`, que ocurren más tarde.
+ *
+ * Cuando no hay ninguna (el camino del panel: `/admin/pipeline` llama a
+ * `updateCandidate` sin token de candidato) el objeto va vacío y la credencial
+ * pasa a ser la sesión de Supabase, que `fetch` envía en las cookies al ser una
+ * petición al mismo origen.
+ */
+function accessProofFields(): Record<string, string> {
+  return accessProofRequestFields(useInterviewStore.getState().accessProof);
+}
+
+/**
  * Helper: hace POST a /api/candidate-results (upsert de fila completa).
  * Esta ruta usa la SERVICE ROLE KEY en el servidor y por lo tanto bypassa
  * RLS — necesario porque los candidatos que toman la entrevista NUNCA
@@ -141,7 +160,7 @@ async function upsertCandidateResult(params: {
   const res = await fetch("/api/candidate-results", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ ...params, ...accessProofFields() }),
   });
 
   if (!res.ok) {
@@ -163,7 +182,7 @@ async function patchCandidateResult(
   const res = await fetch("/api/candidate-results", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, updates }),
+    body: JSON.stringify({ id, updates, ...accessProofFields() }),
   });
 
   if (!res.ok) {

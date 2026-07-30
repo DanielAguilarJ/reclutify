@@ -181,6 +181,9 @@ describe('/interview/t/[token] — el respaldo por URL ?d= ya no existe', () => 
     expect(interview.roleId).toBeNull();
     expect(interview.interviewDuration).toBe(30);
     expect(interview.interviewMode).toBe('restricted');
+    // Tampoco queda credencial de escritura: un ticket que el servidor no
+    // reconoce no acredita nada ante `/api/candidate-results`.
+    expect(interview.accessProof).toBeNull();
   });
 
   it('el estado del ticket lo decide el servidor, no la URL', async () => {
@@ -235,6 +238,21 @@ describe('/interview/t/[token] — token válido', () => {
     expect(interview.roleId).toBe('role-backend');
     expect(interview.interviewDuration).toBe(45);
     expect(interview.interviewMode).toBe('restricted');
+  });
+
+  it('guarda el token como prueba de acceso de las escrituras del resultado', async () => {
+    // Sin esto, `/api/candidate-results` responde 401 y el candidato no puede
+    // guardar su propia entrevista: es la credencial que viaja en cada escritura.
+    await renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('details-form')).toBeInTheDocument();
+    });
+
+    expect(useInterviewStore.getState().accessProof).toEqual({
+      kind: 'ticket',
+      token: TOKEN,
+    });
   });
 
   it('activa la marca blanca cuando el plan de la organización es enterprise', async () => {

@@ -219,6 +219,19 @@ export interface InterviewTicketLifecycleInput {
 }
 
 /**
+ * Única definición de la caducidad de un ticket.
+ *
+ * Está extraída porque la usan dos decisiones distintas: el pase de entrada a la
+ * entrevista (`classifyInterviewTicketLifecycle`, que además exige que el ticket
+ * no esté consumido) y la prueba de acceso de `/api/candidate-results`, que
+ * acepta tickets ya consumidos pero nunca uno vencido. La regla de vencimiento
+ * tiene que ser la misma en las dos.
+ */
+export function isInterviewTicketExpired(expiresAt: number, now: number): boolean {
+  return now > expiresAt;
+}
+
+/**
  * Decide si un ticket está disponible, ya usado o expirado.
  *
  * El orden importa y reproduce el que aplicaba la página: primero `used`,
@@ -230,6 +243,6 @@ export function classifyInterviewTicketLifecycle(
   now: number,
 ): 'valid' | 'used' | 'expired' {
   if (ticket.used === true) return 'used';
-  if (now > ticket.expiresAt) return 'expired';
+  if (isInterviewTicketExpired(ticket.expiresAt, now)) return 'expired';
   return 'valid';
 }

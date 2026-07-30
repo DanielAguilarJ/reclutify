@@ -31,7 +31,7 @@ const emailSchema = z.string().trim().toLowerCase().email().max(320);
  * arbitrario convertía el endpoint en phishing con la reputación del remitente
  * de la empresa.
  */
-export const sendEmailRequestSchema = z.looseObject({
+export const sendEmailRequestSchema = z.object({
   email: emailSchema,
   candidateName: z.string().trim().min(1).max(200),
   roleTitle: z.string().trim().max(300).catch(''),
@@ -55,7 +55,7 @@ export type SendEmailRequest = z.infer<typeof sendEmailRequestSchema>;
  * conecta el servidor; solo dispara la entrega de la configuración que el
  * empleador guardó en su panel.
  */
-export const webhookDispatchRequestSchema = z.looseObject({
+export const webhookDispatchRequestSchema = z.object({
   ticketToken: z.string().trim().min(1).max(128).nullish(),
   publicToken: z.string().trim().min(1).max(128).nullish(),
 
@@ -93,17 +93,17 @@ export type WebhookDispatchRequest = z.infer<typeof webhookDispatchRequestSchema
  * devuelven en la respuesta ni se registran.
  */
 export const testIntegrationRequestSchema = z.discriminatedUnion('type', [
-  z.looseObject({
+  z.object({
     type: z.literal('webhook'),
-    config: z.looseObject({
+    config: z.object({
       url: z.string().trim().url().max(2_000),
       secret: z.string().max(500).catch(''),
       events: z.array(z.string().max(100)).max(50).catch([]),
     }),
   }),
-  z.looseObject({
+  z.object({
     type: z.literal('google_sheets'),
-    config: z.looseObject({
+    config: z.object({
       spreadsheet_id: z.string().trim().min(1).max(200),
       // Es un JSON de cuenta de servicio; el tope es holgado porque incluye una
       // clave privada PEM.
@@ -111,16 +111,16 @@ export const testIntegrationRequestSchema = z.discriminatedUnion('type', [
       sheet_name: z.string().trim().max(200).catch(''),
     }),
   }),
-  z.looseObject({
+  z.object({
     type: z.literal('hubspot'),
-    config: z.looseObject({
+    config: z.object({
       api_key: z.string().trim().min(1).max(500),
       pipeline_id: z.string().trim().max(200).catch(''),
     }),
   }),
-  z.looseObject({
+  z.object({
     type: z.literal('notion'),
-    config: z.looseObject({
+    config: z.object({
       token: z.string().trim().min(1).max(500),
       database_id: z.string().trim().min(1).max(200),
     }),
@@ -146,7 +146,7 @@ const customTopicSchema = z.looseObject({
  * para no obligar a cambiar las cuatro llamadas del panel en el mismo commit que
  * añade la validación.
  */
-export const generateRubricRequestSchema = z.looseObject({
+export const generateRubricRequestSchema = z.object({
   jobTitle: z.string().trim().max(500).catch(''),
   description: z.string().trim().max(20_000).catch(''),
   jobType: z.string().trim().max(200).catch(''),
@@ -167,7 +167,7 @@ export type GenerateRubricRequest = z.infer<typeof generateRubricRequestSchema>;
 
 // ─── POST /api/generate-course-topics ────────────────────────────────────────
 
-export const generateCourseTopicsRequestSchema = z.looseObject({
+export const generateCourseTopicsRequestSchema = z.object({
   name: z.string().trim().min(1).max(500),
   description: z.string().trim().max(20_000).catch(''),
   targetAudience: z.string().trim().max(2_000).catch(''),
@@ -200,7 +200,7 @@ export type GenerateCourseTopicsRequest = z.infer<typeof generateCourseTopicsReq
 
 // ─── POST /api/group-interview ───────────────────────────────────────────────
 
-export const groupInterviewRequestSchema = z.looseObject({
+export const groupInterviewRequestSchema = z.object({
   roleId: z.string().trim().min(1).max(200),
   language: z.enum(['en', 'es']).catch('es'),
   questionCount: z.number().int().min(1).max(50).catch(10),
@@ -219,7 +219,7 @@ export type GroupInterviewRequest = z.infer<typeof groupInterviewRequestSchema>;
  * tamaño y creaba una fila en `candidate_results` por petición, así que un bucle
  * llenaba el pipeline de la organización.
  */
-export const publicInterviewRegisterSchema = z.looseObject({
+export const publicInterviewRegisterSchema = z.object({
   token: z.string().trim().min(1).max(128),
   candidateName: z.string().trim().min(1).max(200),
   candidateEmail: emailSchema,

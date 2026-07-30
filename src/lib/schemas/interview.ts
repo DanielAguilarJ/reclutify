@@ -23,12 +23,26 @@ import { MAX_ACCESS_PROOF_TOKEN_LENGTH } from '@/lib/candidate-results/access-pr
  * combinado con exigir credencial de entrevista deja de ser explotable por
  * cualquiera.
  *
- * POR QUÉ NO SE USA `strictObject`
- * --------------------------------
- * Los clientes actuales envían campos que la ruta ignora, y un `strictObject`
- * los rechazaría con `400`, rompiendo la entrevista en producción durante el
- * despliegue. Se usa `looseObject`: los campos declarados se validan, los demás
- * se descartan al construir el objeto de salida. La ruta solo ve lo declarado.
+ * POR QUÉ `z.object` Y NO `strictObject` NI `looseObject`
+ * -------------------------------------------------------
+ * Los tres se comportan de forma distinta ante una clave no declarada, y la
+ * diferencia importa:
+ *
+ *  - `strictObject` la RECHAZA con `400`. Inservible aquí: los clientes actuales
+ *    envían campos que la ruta ignora, así que rompería la entrevista en
+ *    producción durante el despliegue.
+ *  - `looseObject` la PROPAGA al objeto de salida. Es lo que había escrito primero,
+ *    y estaba mal: significaba que un campo arbitrario del cuerpo sobrevivía a la
+ *    validación y llegaba al manejador. Lo detectó la prueba
+ *    `descarta los campos no declarados`.
+ *  - `z.object` la DESCARTA en silencio. Es el comportamiento correcto: la ruta ve
+ *    exactamente los campos declarados, ni uno más, y un cliente con campos de
+ *    sobra sigue funcionando.
+ *
+ * Los esquemas ANIDADOS (rúbrica, CV, entradas de experiencia) sí usan
+ * `looseObject` a propósito: los genera un modelo de lenguaje y puede añadir
+ * campos con el tiempo. Ahí propagar es inocuo porque el código solo lee los
+ * campos que conoce, y descartar obligaría a perseguir el esquema del modelo.
  *
  * QUÉ SE MANTIENE DE LA FORMA ANTERIOR
  * ------------------------------------
@@ -158,7 +172,7 @@ export type CvDataInput = z.infer<typeof cvDataSchema>;
  * cualquier entrevista serviría para consumir cuota de IA con el prompt de
  * cualquier otra.
  */
-export const chatRequestSchema = z.looseObject({
+export const chatRequestSchema = z.object({
   ...accessProofFields,
 
   roleId: z.string().trim().min(1).max(200),
@@ -210,7 +224,7 @@ const transcriptEntrySchema = z.looseObject({
  * conversación COMPLETA, no una ventana. El tope sigue existiendo: una
  * entrevista de dos horas no pasa de unos cientos de turnos.
  */
-export const evaluateRequestSchema = z.looseObject({
+export const evaluateRequestSchema = z.object({
   ...accessProofFields,
 
   roleId: z.string().trim().min(1).max(200),
@@ -237,7 +251,7 @@ export type EvaluateRequest = z.infer<typeof evaluateRequestSchema>;
  */
 export const MAX_TTS_TEXT_LENGTH = 4_000;
 
-export const ttsRequestSchema = z.looseObject({
+export const ttsRequestSchema = z.object({
   text: z.string().trim().min(1).max(MAX_TTS_TEXT_LENGTH),
   language: interviewLanguageSchema.default('en'),
 });
@@ -276,7 +290,7 @@ export const ALLOWED_VIDEO_CONTENT_TYPES = [
  * qué extensión, y el servidor deriva la ruta completa. Ver
  * `buildInterviewVideoKey` en la ruta.
  */
-export const uploadVideoRequestSchema = z.looseObject({
+export const uploadVideoRequestSchema = z.object({
   ...accessProofFields,
 
   roleId: z.string().trim().min(1).max(200),

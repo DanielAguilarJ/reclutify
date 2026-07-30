@@ -94,10 +94,30 @@ function blockedIpv6Reason(address: string): string | null {
   // Link-local fe80::/10, que incluye el equivalente IPv6 de los metadatos.
   if (/^fe[89ab]/.test(normalized)) return 'link-local (fe80::/10)';
 
-  // Direcciones IPv4 mapeadas: ::ffff:127.0.0.1 es loopback escrito en IPv6.
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped?.[1]) {
-    const reason = blockedIpv4Reason(mapped[1]);
+  // ─── Direcciones IPv4 mapeadas ───
+  //
+  // `::ffff:127.0.0.1` es loopback escrito en IPv6, y hay que comprobarlo en LAS
+  // DOS notaciones porque `new URL()` normaliza la decimal a hexadecimal: el host
+  // de `https://[::ffff:127.0.0.1]/` sale como `[::ffff:7f00:1]`.
+  //
+  // Solo mirar la forma decimal —que es lo que parece suficiente al escribir el
+  // código— dejaba pasar precisamente la forma que produce el parseo de la URL, es
+  // decir la única que llega aquí en la práctica. Lo detectó la prueba
+  // `rechaza loopback en IPv6 y su forma mapeada de IPv4`.
+  const mappedDecimal = normalized.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedDecimal?.[1]) {
+    const reason = blockedIpv4Reason(mappedDecimal[1]);
+    return reason ? `IPv4-mapped ${reason}` : null;
+  }
+
+  const mappedHex = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const high = Number.parseInt(mappedHex[1], 16);
+    const low = Number.parseInt(mappedHex[2], 16);
+
+    const dotted = [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+    const reason = blockedIpv4Reason(dotted);
+
     return reason ? `IPv4-mapped ${reason}` : null;
   }
 

@@ -11,27 +11,19 @@ import { z } from 'zod';
  * credencial del candidato:
  *
  *  1. `validateCandidateResultUpdates` — lista blanca de columnas para `PATCH`.
- *  2. `isCandidateResultOwnedBy` — pertenencia de una fila existente para el
- *     `upsert` de `POST`.
+ *  2. `isCandidateResultOwnedBy` — pertenencia de una fila para el `upsert` de
+ *     `POST` y para la fila que el `PATCH` va a modificar.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * PENDIENTE (tramo siguiente, NO implementado aquí): PRUEBA DE ACCESO.
+ * La otra mitad de la autorización —la PRUEBA DE ACCESO, que demuestra que quien
+ * llama participa en la entrevista— vive en `access-proof.ts` (resolución contra
+ * la base) y en `access-proof-contracts.ts` (forma de la credencial en el
+ * cuerpo). Este módulo se mantiene puro y sin acceso a la base a propósito: sus
+ * dos funciones se pueden probar como funciones y se ejecutan antes de cualquier
+ * escritura.
  *
- * Ninguna de las dos comprobaciones de este módulo demuestra que quien llama
- * participa en la entrevista que está modificando. Eso exige la prueba de
- * acceso — el `token` del ticket o el `public_token` de la vacante — y es el
- * tramo siguiente del endurecimiento (Requisito 3, criterios 1, 2 y 6 de
- * `.kiro/specs/public-flow-authorization-hardening/requirements.md`).
- *
- * Mientras la prueba de acceso no exista, siguen abiertos:
- *  - `PATCH` sobre el `id` de cualquier candidato de cualquier organización,
- *    aunque limitado a las columnas de la lista blanca.
- *  - `POST` con un `id` nuevo cualquiera contra cualquier `roleId` conocido.
- *
- * Lo que este tramo sí cierra es la escalada entre organizaciones: ya no se
- * puede reescribir `org_id` / `role_id` para arrastrar la fila de otra empresa
- * a la organización del atacante y leerla después con RLS funcionando.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Las dos mitades son necesarias y ninguna sustituye a la otra: la prueba de
+ * acceso dice de qué entrevista es quien escribe, y la pertenencia dice si la
+ * fila que toca es de esa entrevista.
  */
 
 /** Prefijo estable para filtrar los rechazos de autorización en los logs. */
@@ -215,8 +207,8 @@ export interface ExistingCandidateResultOwner {
 }
 
 /**
- * ¿La fila existente pertenece al mismo rol y a la misma organización que se
- * resolvieron del `roleId` del cuerpo?
+ * ¿La fila existente pertenece al mismo rol y a la misma organización que
+ * acredita la prueba de acceso?
  *
  * `org_id` nulo se trata como no perteneciente: hay filas heredadas sin
  * organización y aceptarlas dejaría abierta la vía de pisarlas.

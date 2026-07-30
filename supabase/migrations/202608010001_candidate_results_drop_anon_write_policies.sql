@@ -1,0 +1,202 @@
+-- ============================================================
+-- candidate_results — Retirar la escritura del rol `anon`
+--
+-- ESTADO DE ESTA MIGRACIÓN
+--     LOS DOS `DROP POLICY` DE ESTE ARCHIVO YA SE APLICARON A
+--     MANO EN PRODUCCIÓN. El archivo existe para que el cambio
+--     quede versionado y para que un despliegue limpio produzca
+--     el mismo estado de autorización que producción
+--     (Requisito 9 de
+--     `.kiro/specs/public-flow-authorization-hardening`).
+--     Es idempotente, así que reaplicarlo es un no-op.
+--
+-- QUÉ SE ELIMINA Y POR QUÉ ERA VESTIGIAL
+-- ------------------------------------------------------------
+-- `20260602_fix_candidate_results_rls.sql:63-72` creó dos
+-- políticas para el rol `anon`:
+--
+--   • `anon_results_insert`: FOR INSERT TO anon WITH CHECK (true)
+--   • `anon_results_update`: FOR UPDATE TO anon
+--                            USING (true) WITH CHECK (true)
+--
+-- Su propio comentario las describe como "red de seguridad de
+-- respaldo". No respaldaban nada: la clave anon viaja al
+-- navegador, así que `WITH CHECK (true)` sobre `INSERT` es
+-- permiso público para insertar filas en `candidate_results` con
+-- cualquier `org_id`, y `USING (true)` sobre `UPDATE` es permiso
+-- público para reescribir la evaluación, la transcripción o el
+-- estado de cualquier candidato de cualquier organización.
+--
+-- Y ya no las usaba nada. Las DOS únicas escrituras del flujo
+-- del candidato van con `service_role` desde el servidor:
+--
+--   • `POST`/`PATCH /api/candidate-results`, que es a quien
+--     llaman `upsertCandidateResult` y `patchCandidateResult`
+--     (`src/store/adminStore.ts`), usados por
+--     `src/components/candidate/InterviewRoom.tsx`,
+--     `src/components/candidate/InterviewComplete.tsx` y
+--     `src/app/admin/pipeline/page.tsx`.
+--   • `POST /api/public-interview`, que crea la fila del
+--     candidato que llega por el enlace general de la vacante.
+--
+-- La migración de 2026-06-02 ya había eliminado las políticas
+-- más estrechas de `20260601_public_interview_links.sql`
+-- (acotadas a `source = 'public_link'`), así que tras aplicar
+-- esto no queda ninguna política de `anon` sobre la tabla y no
+-- hay ningún camino de la aplicación que dependa de ellas.
+--
+-- POR QUÉ NO BASTA CON ESTE `DROP`
+-- ------------------------------------------------------------
+-- `service_role` IGNORA RLS por diseño. Retirar el acceso de
+-- `anon` cierra la escritura directa a la base, pero no dice
+-- nada sobre quién puede llamar a la ruta de servidor. Esa parte
+-- es código, no política, y viaja en el mismo cambio:
+-- `/api/candidate-results` exige ahora una PRUEBA DE ACCESO —el
+-- `token` del ticket, el `public_token` de la vacante o una
+-- sesión `owner`/`admin` de la organización dueña de la
+-- vacante—, comprueba que la fila escrita pertenece a la
+-- entrevista acreditada y limita las columnas del `PATCH`
+-- (`src/lib/candidate-results/access-proof.ts` y
+-- `src/lib/candidate-results/authorization.ts`).
+--
+-- Sin esa mitad, este `DROP` solo movería el agujero: la ruta
+-- seguiría escribiendo con `service_role` para cualquiera.
+--
+-- MODELO DE ACCESO QUE QUEDA
+-- ------------------------------------------------------------
+--   • `anon`          → sin acceso a `candidate_results`. La
+--                       tabla nunca tuvo política de `SELECT`
+--                       para `anon`, así que la lectura ya era
+--                       cero filas.
+--   • `authenticated` → las políticas por organización que ya
+--                       existen y NO se tocan aquí:
+--                       `org_results_select`,
+--                       `org_results_insert` y
+--                       `org_results_update`, todas acotadas por
+--                       `org_id IN (SELECT org_id FROM
+--                       user_profiles WHERE user_id = auth.uid())`.
+--                       El panel sigue leyendo y escribiendo los
+--                       resultados de su propia organización.
+--   • `service_role`  → acceso completo, sujeto a la
+--                       autorización de las dos rutas de arriba.
+--
+-- LO QUE ESTA MIGRACIÓN NO HACE
+-- ------------------------------------------------------------
+-- No toca `anon_roles_select` sobre `roles`, que sigue siendo
+-- `USING (true)`: por eso los `roleId` son públicamente
+-- listables y por eso la prueba de acceso de la ruta no puede
+-- ser "conocer un `roleId`". Cerrar esa lectura es un tramo
+-- aparte (Requisito 2 del spec).
+--
+-- IDEMPOTENCIA: `DROP POLICY IF EXISTS` es un no-op si la
+-- política ya no está.
+-- ============================================================
+
+BEGIN;
+
+-- ============================================================
+-- 1. INSERT ANON — lo sustituyen
+--    `POST /api/candidate-results` y
+--    `POST /api/public-interview`, ambos con `service_role` y
+--    con validación de credencial y de pertenencia.
+-- ============================================================
+
+DROP POLICY IF EXISTS "anon_results_insert" ON public.candidate_results;
+
+-- ============================================================
+-- 2. UPDATE ANON — lo sustituye
+--    `PATCH /api/candidate-results`, que además exige que la
+--    fila pertenezca a la entrevista acreditada y aplica una
+--    lista blanca de columnas.
+-- ============================================================
+
+DROP POLICY IF EXISTS "anon_results_update" ON public.candidate_results;
+
+COMMENT ON TABLE public.candidate_results IS
+  'Resultados de entrevista. RLS activo y SIN acceso para anon: la escritura del flujo publico pasa EXCLUSIVAMENTE por rutas de servidor con service_role (/api/candidate-results y /api/public-interview), que exigen prueba de acceso (token de ticket, public_token de la vacante o sesion owner/admin de la organizacion) y comprueban que la fila pertenece a la entrevista acreditada. El panel autenticado accede con las politicas org_results_*.';
+
+COMMIT;
+
+-- ============================================================
+-- 3. RECARGA DEL SCHEMA CACHE DE POSTGREST
+-- Fuera de la transacción. Inocuo si se repite.
+-- ============================================================
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================
+-- ROLLBACK
+-- ------------------------------------------------------------
+-- Restaura EXACTAMENTE las dos políticas eliminadas, tal como
+-- las declara `20260602_fix_candidate_results_rls.sql:63-72`.
+--
+-- ADVERTENCIA: ejecutar este bloque vuelve a dar a cualquier
+-- visitante permiso para insertar resultados de entrevista y
+-- para reescribir los de cualquier organización. No hay ningún
+-- flujo del producto que lo necesite —las escrituras van con
+-- `service_role`—, así que este rollback solo tiene sentido si
+-- se descubre un consumidor externo desconocido, y entonces hay
+-- que retirarlo en cuanto ese consumidor se migre a la ruta de
+-- servidor.
+--
+--   BEGIN;
+--
+--   CREATE POLICY "anon_results_insert" ON public.candidate_results
+--     FOR INSERT TO anon
+--     WITH CHECK (true);
+--
+--   CREATE POLICY "anon_results_update" ON public.candidate_results
+--     FOR UPDATE TO anon
+--     USING (true)
+--     WITH CHECK (true);
+--
+--   COMMIT;
+--
+--   NOTIFY pgrst, 'reload schema';
+-- ============================================================
+
+-- ============================================================
+-- CÓMO VERIFICAR (tras aplicar)
+-- ============================================================
+-- 1. Que no queden políticas de anon sobre la tabla:
+--
+--      SELECT policyname, cmd, roles
+--      FROM pg_policies
+--      WHERE schemaname = 'public'
+--        AND tablename = 'candidate_results';
+--
+--    Resultado esperado: solo `org_results_select`,
+--    `org_results_insert` y `org_results_update`.
+--
+-- 2. El INSERT con la clave anon debe ser rechazado por
+--    violación de política (42501):
+--
+--      curl -s -X POST "$SUPABASE_URL/rest/v1/candidate_results" \
+--        -H "apikey: $ANON_KEY" \
+--        -H "Content-Type: application/json" \
+--        -d '{"id":"sonda","org_id":"cualquiera","candidate_name":"sonda","role_id":"cualquiera"}'
+--
+-- 3. El UPDATE con la clave anon debe afectar cero filas:
+--
+--      curl -s -X PATCH \
+--        "$SUPABASE_URL/rest/v1/candidate_results?id=eq.$ID" \
+--        -H "apikey: $ANON_KEY" \
+--        -H "Content-Type: application/json" \
+--        -d '{"status": "completed"}'
+--
+-- 4. El SELECT con la clave anon debe devolver lista vacía:
+--
+--      curl -s "$SUPABASE_URL/rest/v1/candidate_results?select=id" \
+--        -H "apikey: $ANON_KEY"
+--
+-- 5. Flujos reales, que son la condición de aceptación de todo
+--    el endurecimiento (Requisito 10 del spec):
+--      a. `/interview/t/{token}`: completar una entrevista y
+--         comprobar que la fila queda con su transcripción, su
+--         duración, su evaluación y `status = 'completed'`.
+--      b. `/interview/public/{publicToken}`: registrarse,
+--         completar la entrevista y comprobar lo mismo.
+--      c. `/admin/pipeline`: reintentar la evaluación de un
+--         candidato en `pending-evaluation` y comprobar que
+--         queda `completed` con su evaluación.
+-- ============================================================

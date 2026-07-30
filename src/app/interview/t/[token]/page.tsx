@@ -27,7 +27,7 @@ export default function TicketInterviewPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = use(params);
-  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode } = useInterviewStore();
+  const { phase, setTopics, setCandidate, setPhase, setRoleId, setInterviewDuration, setInterviewMode, interviewMode, setAccessProof } = useInterviewStore();
   const { language, setLanguage } = useAppStore();
   const t = dictionaries[language];
   const es = language === 'es';
@@ -103,6 +103,16 @@ export default function TicketInterviewPage({
       // verdad a la sala (phase === 'interview'), para que cerrar el navegador
       // antes no le cueste el enlace.
       setPendingToken(token);
+
+      // Prueba de acceso de las escrituras de `candidate_results`. El token es
+      // lo único que demuestra que quien guarda esta entrevista es su candidato,
+      // y `/api/candidate-results` ya no acepta escrituras sin credencial. Se
+      // guarda aquí, tras confirmar que el ticket resuelve, porque esta página es
+      // la única que conoce el token; `adminStore` lo lee del store en cada
+      // petición. Que el ticket quede `used = true` al entrar a la sala NO lo
+      // invalida como credencial: si lo hiciera, ningún candidato podría guardar
+      // su propia entrevista.
+      setAccessProof({ kind: 'ticket', token });
 
       // Iniciar en el formulario de detalles
       setPhase('details');

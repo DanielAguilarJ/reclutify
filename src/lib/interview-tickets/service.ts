@@ -6,6 +6,7 @@ import { createAdminClient } from '@/utils/supabase/admin';
 
 import {
   classifyInterviewTicketLifecycle,
+  isInterviewTicketExpired,
   type InterviewTicketConsumeStatus,
   type InterviewTicketResponse,
   interviewTicketTopicSchema,
@@ -193,6 +194,86 @@ export async function resolveInterviewTicket(
       topics: parseTopics(roleRow.data.topics),
     },
     org: { planTier },
+  };
+}
+
+/**
+ * Resultado de mirar un token como PRUEBA DE ACCESO, no como pase de entrada.
+ *
+ * `used` viene informado pero NO invalida la credencial; ver
+ * `resolveInterviewTicketCredential`.
+ */
+export type InterviewTicketCredential =
+  | { status: 'valid'; roleId: string; used: boolean }
+  | { status: 'not_found' }
+  | { status: 'expired' }
+  | { status: 'error' };
+
+/**
+ * Resuelve un token como prueba de que quien escribe participa en la entrevista.
+ *
+ * POR QUÉ NO SIRVE `resolveInterviewTicket` AQUÍ
+ * ----------------------------------------------
+ * Esa función responde a "¿puede esta persona ENTRAR a la entrevista?", y para
+ * eso un ticket ya consumido es un `no`: el ticket es de un solo uso y se quema
+ * al entrar a la sala (`/api/interview/ticket/consume`, invocado por la página
+ * cuando `phase === 'interview'`).
+ *
+ * Esta función responde a otra pregunta: "¿es quien escribe el candidato de esta
+ * entrevista?". Y ahí el ticket consumido es la situación NORMAL, no la
+ * excepción: TODAS las escrituras de `candidate_results` del flujo de ticket
+ * ocurren después de entrar a la sala — la sincronización de la transcripción
+ * durante la entrevista, el `status: 'completed'` con la evaluación al terminar y
+ * los reintentos de la cola. Exigir `used = false` dejaría a cada candidato del
+ * flujo de ticket sin poder guardar su propia entrevista, que es exactamente el
+ * fallo que este endurecimiento no puede provocar.
+ *
+ * La comprobación correcta es, por tanto: el token EXISTE y NO ha vencido. La
+ * vigencia sí se exige, porque un token vencido ya no acredita nada; la regla es
+ * la misma que aplica el pase de entrada (`isInterviewTicketExpired`).
+ *
+ * Lo que la credencial acredita es acotado, y ahí está su seguridad: solo
+ * autoriza a escribir filas del `role_id` de ESE ticket, y la ruta limita además
+ * las columnas. No sustituye a la comprobación de pertenencia de la fila.
+ */
+export async function resolveInterviewTicketCredential(
+  token: string,
+  now: number = Date.now(),
+): Promise<InterviewTicketCredential> {
+  const admin = createAdminClient();
+
+  const { data, error } = await admin
+    .from('interview_tickets')
+    .select('role_id, expires_at, used')
+    .eq('token', token)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`${LOG_PREFIX} credential lookup failed:`, error.message);
+    return { status: 'error' };
+  }
+
+  const ticketRow = z
+    .looseObject({
+      role_id: z.string(),
+      expires_at: z.coerce.number(),
+      used: z.boolean().nullable(),
+    })
+    .safeParse(data);
+
+  // Token inexistente y fila ilegible comparten respuesta: en los dos casos no
+  // hay credencial que valga, y distinguirlos convertiría la ruta en un
+  // confirmador de tokens.
+  if (!ticketRow.success) return { status: 'not_found' };
+
+  if (isInterviewTicketExpired(ticketRow.data.expires_at, now)) {
+    return { status: 'expired' };
+  }
+
+  return {
+    status: 'valid',
+    roleId: ticketRow.data.role_id,
+    used: ticketRow.data.used === true,
   };
 }
 

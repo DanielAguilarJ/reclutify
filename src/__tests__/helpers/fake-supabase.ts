@@ -3,10 +3,11 @@
  * públicos (invitaciones y ticket de entrevista).
  *
  * Imita solo las operaciones que usan `src/lib/invites/service.ts`,
- * `applyToJob` y `src/lib/interview-tickets/service.ts`:
- * `select().eq().maybeSingle()`, `select().eq().eq().maybeSingle()`, `insert()`
- * y `update().eq().not().select()`. Las escrituras se aplican de verdad sobre
- * las tablas en memoria y se registran en `writes`, de modo que una prueba pueda
+ * `applyToJob`, `src/lib/interview-tickets/service.ts` y
+ * `/api/candidate-results`: `select().eq().maybeSingle()`,
+ * `select().eq().eq().maybeSingle()`, `insert()`, `upsert()`, `update().eq()` y
+ * `update().eq().not().select()`. Las escrituras se aplican de verdad sobre las
+ * tablas en memoria y se registran en `writes`, de modo que una prueba pueda
  * afirmar tanto "la fila quedó así" como "no hubo ninguna escritura".
  *
  * No es un doble del comportamiento de Postgres: no hay RLS, ni tipos, ni
@@ -20,7 +21,7 @@ export type FakeTables = Record<string, FakeRow[]>;
 
 export interface FakeWrite {
   table: string;
-  op: 'insert' | 'update';
+  op: 'insert' | 'update' | 'upsert';
   payload: FakeRow;
 }
 
@@ -40,6 +41,10 @@ export interface FakeSupabase {
   insertErrors: Map<string, FakeInsertError>;
   /** Errores encolados por tabla para forzar el camino de fallo del `update`. */
   updateErrors: Map<string, FakeInsertError>;
+  /** Errores encolados por tabla para forzar el camino de fallo del `upsert`. */
+  upsertErrors: Map<string, FakeInsertError>;
+  /** Errores encolados por tabla para forzar el camino de fallo del `select`. */
+  selectErrors: Map<string, FakeInsertError>;
   reset: (seed?: FakeTables) => void;
 }
 
@@ -52,6 +57,11 @@ export interface FakeQueryBuilder {
   select: (columns?: string) => FakeQueryBuilder;
   insert: (payload: FakeRow) => FakeQueryBuilder;
   update: (payload: FakeRow) => FakeQueryBuilder;
+  /**
+   * `upsert` por clave primaria `id`, que es la que usa
+   * `/api/candidate-results`. Si la fila existe se fusiona; si no, se inserta.
+   */
+  upsert: (payload: FakeRow) => FakeQueryBuilder;
   eq: (column: string, value: unknown) => FakeQueryBuilder;
   /**
    * Filtro negado. Solo se implementa el operador `is`, que es el que usa
@@ -72,11 +82,15 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
     writes: [],
     insertErrors: new Map(),
     updateErrors: new Map(),
+    upsertErrors: new Map(),
+    selectErrors: new Map(),
     reset: (nextSeed: FakeTables = {}) => {
       state.tables = cloneTables(nextSeed);
       state.writes = [];
       state.insertErrors = new Map();
       state.updateErrors = new Map();
+      state.upsertErrors = new Map();
+      state.selectErrors = new Map();
     },
   };
 
@@ -87,13 +101,27 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
 
   function createBuilder(table: string): FakeQueryBuilder {
     const filters: Array<(row: FakeRow) => boolean> = [];
-    let operation: 'select' | 'insert' | 'update' = 'select';
+    let operation: 'select' | 'insert' | 'update' | 'upsert' = 'select';
     let payload: FakeRow = {};
 
     const matching = (): FakeRow[] =>
       rowsOf(table).filter((row) => filters.every((filter) => filter(row)));
 
     const exec = (): QueryOutcome => {
+      if (operation === 'upsert') {
+        const failure = state.upsertErrors.get(table);
+        if (failure) {
+          state.upsertErrors.delete(table);
+          return { data: null, error: failure };
+        }
+        state.writes.push({ table, op: 'upsert', payload });
+        const rows = rowsOf(table);
+        const index = rows.findIndex((row) => row.id === payload.id);
+        if (index >= 0) rows[index] = { ...rows[index], ...payload };
+        else rows.push({ ...payload });
+        return { data: [payload], error: null };
+      }
+
       if (operation === 'insert') {
         const failure = state.insertErrors.get(table);
         if (failure) {
@@ -124,6 +152,12 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
         return { data: targets, error: null };
       }
 
+      const selectFailure = state.selectErrors.get(table);
+      if (selectFailure) {
+        state.selectErrors.delete(table);
+        return { data: null, error: selectFailure };
+      }
+
       return { data: matching(), error: null };
     };
 
@@ -136,6 +170,11 @@ export function createFakeSupabase(seed: FakeTables = {}): FakeSupabase {
       },
       update: (next: FakeRow) => {
         operation = 'update';
+        payload = next;
+        return builder;
+      },
+      upsert: (next: FakeRow) => {
+        operation = 'upsert';
         payload = next;
         return builder;
       },

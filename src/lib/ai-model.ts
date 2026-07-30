@@ -97,3 +97,90 @@ export function resolveTrainingAiModel(
 
   return trimmed.length > 0 ? trimmed : DEFAULT_AI_MODEL;
 }
+
+/**
+ * ── Los modelos que quedaban incrustados fuera de este módulo ────────────────
+ *
+ * La cabecera de arriba afirmaba que `DEFAULT_AI_MODEL` era «la ÚNICA aparición
+ * del identificador en el proyecto». No lo era: las rutas de la entrevista
+ * llevaban el suyo escrito a mano en el cuerpo de la petición.
+ *
+ *   - `/api/chat`            → `'x-ai/grok-4.20'` y `'deepseek/deepseek-v4-flash'`
+ *   - `/api/evaluate`        → `'x-ai/grok-4.20'`
+ *   - `/api/generate-rubric` → `'deepseek/deepseek-v4-flash'`
+ *   - `/api/generate-course-topics`, `/api/parse-course-document`,
+ *     `/api/info-chat`      → `'deepseek/deepseek-v4-flash'`
+ *   - `/api/tts`             → `'microsoft/mai-voice-2'`
+ *
+ * En `/api/chat` el literal aparecía SEIS veces en el mismo archivo: una en el
+ * cuerpo de la petición y cinco más en las llamadas de telemetría, que registran
+ * el modelo usado. Cambiar de modelo obligaba a acertar en las seis, y acertar en
+ * cinco de seis produce telemetría que miente sobre qué modelo generó cada turno.
+ *
+ * Cada constante admite sustitución por entorno con la misma semántica que
+ * `resolveTrainingAiModel` —la cadena vacía cuenta como ausencia— para poder
+ * revertir un cambio de modelo sin desplegar código.
+ */
+
+/** Variables de entorno que sustituyen cada modelo. */
+export const AI_MODEL_ENV = {
+  INTERVIEW_CHAT: 'INTERVIEW_CHAT_MODEL',
+  INTERVIEW_EVALUATION: 'INTERVIEW_EVALUATION_MODEL',
+  SENTIMENT: 'SENTIMENT_MODEL',
+  CONTENT_GENERATION: 'CONTENT_GENERATION_MODEL',
+  TTS: 'TTS_MODEL',
+} as const;
+
+/**
+ * Resuelve un modelo desde su variable de entorno, con defecto.
+ *
+ * Trata la cadena vacía y la de solo espacios como ausencia, por el mismo motivo
+ * documentado arriba para `TRAINING_AI_MODEL`: `MODELO=` en el entorno es la
+ * forma que produce una variable borrada a medias en el panel de la plataforma, y
+ * enviar `"model": ""` a OpenRouter devuelve `400`.
+ */
+function resolveModel(envKey: string, fallback: string): string {
+  const trimmed = process.env[envKey]?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback;
+}
+
+/**
+ * Modelo del turno de entrevista en vivo.
+ *
+ * Es el más exigente del conjunto: tiene que seguir un prompt de sistema largo
+ * con reglas duras (presupuesto de preguntas, prohibición de repetir, etiquetas
+ * de control `[NEXT_TOPIC]`/`[END_INTERVIEW]`) y responder en un par de segundos
+ * porque el candidato está esperando.
+ */
+export const INTERVIEW_CHAT_MODEL = resolveModel(AI_MODEL_ENV.INTERVIEW_CHAT, 'x-ai/grok-4.20');
+
+/**
+ * Modelo de la evaluación final.
+ *
+ * Corre en diferido y produce JSON estructurado, así que prioriza calidad de
+ * razonamiento sobre latencia.
+ */
+export const INTERVIEW_EVALUATION_MODEL = resolveModel(
+  AI_MODEL_ENV.INTERVIEW_EVALUATION,
+  'x-ai/grok-4.20',
+);
+
+/** Modelo del análisis de sentimiento por turno: barato y rápido. */
+export const SENTIMENT_MODEL = resolveModel(AI_MODEL_ENV.SENTIMENT, 'deepseek/deepseek-v4-flash');
+
+/** Modelo de la generación de contenido del panel (rúbricas, temas, documentos). */
+export const CONTENT_GENERATION_MODEL = resolveModel(
+  AI_MODEL_ENV.CONTENT_GENERATION,
+  'deepseek/deepseek-v4-flash',
+);
+
+/**
+ * Modelo de síntesis de voz.
+ *
+ * El comentario original de `/api/tts` documenta por qué es este y no otro: solo
+ * ocho modelos de OpenRouter admiten el endpoint `/audio/speech`, y
+ * `mai-voice-2` es el que tiene voces femeninas naturales en español e inglés.
+ * `openai/gpt-audio-mini` NO sirve ahí —solo admite Chat Completions— y era la
+ * causa de los `502` que devolvía el endpoint antes.
+ */
+export const TTS_MODEL = resolveModel(AI_MODEL_ENV.TTS, 'microsoft/mai-voice-2');

@@ -1,12 +1,17 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import type { JobListing } from '@/types/jobs';
+import { PUBLIC_JOB_COLUMNS, toPublicJobListings } from '@/lib/jobs/public-projection';
 
 const JOBS_PER_PAGE = 12;
 
 /**
  * GET /api/jobs/search?q=developer&location=cdmx&job_type=remote&page=1
  * Public endpoint for client-side job search.
+ *
+ * Sin sesión y con respuesta cacheable, así que lo que salga de aquí es público
+ * de verdad. Las columnas y la forma de cada vacante las fija
+ * `src/lib/jobs/public-projection.ts`: la respuesta lleva las etiquetas de los
+ * criterios de evaluación, nunca su rúbrica.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -21,10 +26,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
       .from('roles')
-      .select(
-        'id, org_id, title, description, location, salary, job_type, interview_mode, topics, published_at, organizations(name, slug, logo_url)',
-        { count: 'exact' }
-      )
+      .select(PUBLIC_JOB_COLUMNS, { count: 'exact' })
       .eq('is_published', true)
       .order('published_at', { ascending: false, nullsFirst: false })
       .range(offset, offset + JOBS_PER_PAGE - 1);
@@ -57,7 +59,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const jobs = (data || []) as unknown as JobListing[];
+    // La proyección es obligatoria, no cosmética: `data` trae `topics` con la
+    // rúbrica dentro y `toPublicJobListings` es lo que la deja fuera del JSON.
+    const jobs = toPublicJobListings(data);
     const total = count || 0;
 
     const response = NextResponse.json({

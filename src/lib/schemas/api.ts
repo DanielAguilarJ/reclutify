@@ -233,3 +233,72 @@ export type PublicInterviewRegisterRequest = z.infer<typeof publicInterviewRegis
 export const publicInterviewTokenQuerySchema = z.object({
   token: z.string().trim().min(1).max(128),
 });
+
+
+// ─── POST /api/info-chat ─────────────────────────────────────────────────────
+
+/**
+ * Sesión informativa con el asesor virtual.
+ *
+ * POR QUÉ NO EXIGE SESIÓN (y sí tope de tasa)
+ * -------------------------------------------
+ * Es el mismo caso que `/api/tts`: la usa `/informes/[courseId]`, una página PÚBLICA
+ * para posibles clientes que no tienen cuenta. Exigir sesión dejaría el asesor
+ * virtual sin funcionar, que es el producto entero de ese módulo.
+ *
+ * Y como en TTS, no hay recurso que proteger: la ruta lee la configuración del curso
+ * por su `courseId` y devuelve un turno de conversación. El riesgo es el COSTE —cada
+ * turno es una llamada a un modelo con `max_tokens: 500` y razonamiento activado, de
+ * las más caras del proyecto— y el control correcto para el coste es el tope de tasa
+ * más estos topes de longitud.
+ *
+ * Los topes importan especialmente aquí porque TODO este cuerpo se interpola en el
+ * prompt de sistema: el nombre del curso, sus objetivos, sus beneficios, sus módulos,
+ * sus planes con precios, los testimonios, los ganchos de urgencia y las respuestas a
+ * objeciones. Sin acotar, quien llama controla un prompt de tamaño arbitrario.
+ */
+export const infoChatRequestSchema = z.object({
+  courseId: z.string().trim().min(1).max(200),
+  courseName: z.string().trim().max(500).catch(''),
+  courseDescription: z.string().max(20_000).catch(''),
+  courseObjectives: z.array(z.string().max(1_000)).max(50).catch([]),
+  courseBenefits: z.array(z.string().max(1_000)).max(50).catch([]),
+  courseModules: z.array(z.looseObject({}).catch({})).max(100).catch([]),
+  coursePlans: z.array(z.looseObject({}).catch({})).max(20).catch([]),
+  courseTopics: z.array(z.looseObject({}).catch({})).max(40).catch([]),
+  objectionResponses: z.record(z.string().max(200), z.string().max(4_000)).catch({}),
+  testimonials: z.array(z.string().max(2_000)).max(50).catch([]),
+  urgencyHooks: z.array(z.string().max(1_000)).max(50).catch([]),
+  targetAudience: z.string().max(2_000).catch(''),
+  durationInfo: z.string().max(500).catch(''),
+  modality: z.string().max(100).catch(''),
+
+  clientName: z.string().trim().max(200).catch(''),
+  clientAge: z.number().int().min(0).max(150).nullish().catch(null),
+  clientOccupation: z.string().max(300).catch(''),
+  courseFor: z.string().max(300).catch(''),
+
+  recentMessages: z
+    .array(z.looseObject({ role: z.string().max(50), content: z.string().max(8_000) }))
+    .max(200)
+    .catch([]),
+  language: z.enum(['en', 'es']).catch('es'),
+  sessionDuration: z.number().int().min(1).max(480).nullish().catch(null),
+});
+
+export type InfoChatRequestInput = z.infer<typeof infoChatRequestSchema>;
+
+// ─── POST /api/info-notify ───────────────────────────────────────────────────
+
+export const infoNotifyRequestSchema = z.object({
+  sessionId: z.string().trim().min(1).max(200),
+  orgId: z.string().trim().min(1).max(200),
+  clientName: z.string().trim().max(200).catch(''),
+  courseName: z.string().trim().max(500).catch(''),
+  /**
+   * Tipo de aviso. Es un enum cerrado y no una cadena libre: la ruta lo escribe en
+   * `coach_notifications.type` y lo usa para elegir el asunto del correo, así que un
+   * valor arbitrario acabaría en la base y en la bandeja del asesor.
+   */
+  type: z.enum(['closing_ready', 'new_lead']),
+});

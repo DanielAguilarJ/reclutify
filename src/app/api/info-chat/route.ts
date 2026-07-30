@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import { infoChatRequestSchema } from '@/lib/schemas/api';
 import { resolveSupabaseServerKey } from '@/lib/supabase-server-key';
 import type { InfoChatRequest, InfoChatResponse, DetectedObjection, ClosingMode } from '@/types/informes';
 
@@ -83,9 +87,33 @@ async function getOrgIdForCourse(courseId: string): Promise<string | null> {
   }
 }
 
+/**
+ * POST /api/info-chat — un turno de la sesión informativa con el asesor virtual.
+ *
+ * QUÉ SE AÑADE
+ * ------------
+ * Tope de tasa y validación de entrada. La ruta llama a un modelo con
+ * `max_tokens: 500` y razonamiento activado —de las llamadas más caras del proyecto—
+ * y no tenía ninguno de los dos, así que un bucle agotaba el saldo de OpenRouter.
+ *
+ * NO se añade sesión, y es deliberado: la llama `/informes/[courseId]`, una página
+ * pública para posibles clientes sin cuenta. El razonamiento completo está en
+ * `infoChatRequestSchema`.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const body: InfoChatRequest = await req.json();
+    // El tope va primero: es el control que protege el presupuesto, así que no debe
+    // depender de que el resto del manejador llegue a ejecutarse.
+    await enforceRateLimit(req, RATE_LIMITS.AI_CHAT, null);
+
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
+
+    // Se valida y se vuelve a tipar como `InfoChatRequest` para no alterar el resto
+    // del manejador, que ya usa esos campos: el esquema comprueba la forma y acota
+    // las longitudes, no cambia el contrato.
+    const body = infoChatRequestSchema.parse(rawBody) as unknown as InfoChatRequest;
     const {
       courseId,
       courseName,

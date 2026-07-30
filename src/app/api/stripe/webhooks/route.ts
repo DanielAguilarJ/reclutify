@@ -12,6 +12,19 @@ function getPeriodEnd(subscription: Stripe.Subscription): string | null {
 }
 
 /**
+ * `customer` llega como id o como objeto expandido según el evento (y como
+ * `null` en facturas sin cliente). El `as string` de antes se creía el id
+ * siempre: con un objeto expandido acabaría comparando o consultando por
+ * `"[object Object]"`.
+ */
+function customerIdOf(
+  customer: string | Stripe.Customer | Stripe.DeletedCustomer | null | undefined,
+): string | null {
+  if (!customer) return null;
+  return typeof customer === 'string' ? customer : customer.id;
+}
+
+/**
  * Update org subscription via the SECURITY DEFINER function.
  *
  * MUST run with `service_role`. The RPC `update_org_subscription()` writes
@@ -61,10 +74,52 @@ async function updateOrgSubscription(params: {
   });
 
   if (error) {
+    // Mismo contrato que la mala configuración de arriba: registrar la causa y
+    // relanzar, para que el `catch` del POST responda 500 y Stripe reintente.
+    //
+    // Antes se registraba y se seguía. El handler terminaba devolviendo
+    // `{ received: true }` con 200, así que Stripe daba el evento por entregado
+    // y no volvía a intentarlo: la escritura perdida quedaba en silencio y la
+    // organización se quedaba con un estado obsoleto — quien pagó sigue en
+    // `starter`, quien canceló conserva su plan de pago. Un log en un servidor
+    // no cobra ni deja de cobrar; el 500 sí hace que Stripe reintente.
     console.error('[stripe/webhooks] RPC update_org_subscription error:', error);
+    throw new Error(`update_org_subscription failed: ${error.message}`);
   }
 }
 
+/**
+ * IDEMPOTENCIA — por qué NO se deduplica por `event.id`.
+ * ---------------------------------------------------------------------------
+ * Ahora que un fallo de escritura devuelve 500, Stripe reintenta el mismo
+ * `event.id` hasta que la entrega se acepta. Reaplicarlo es inofensivo:
+ * `update_org_subscription()` solo hace un UPDATE de estado absoluto
+ * (`plan_tier`, `subscription_status`, `subscription_period_end`, ids de
+ * Stripe) con COALESCE por parámetro. No inserta filas, no incrementa
+ * contadores y no aplica deltas, así que ejecutarla N veces con el mismo
+ * payload deja la fila exactamente igual que ejecutarla una vez.
+ *
+ * Un registro de eventos vistos, además de exigir tabla y migración nuevas,
+ * sería un riesgo neto: si se marcase el `event.id` antes de escribir, el
+ * reintento se descartaría sin haber aplicado nada — el mismo silencio que este
+ * cambio elimina. Y no resuelve el problema que sí existe (ver abajo), porque
+ * dos eventos desordenados llevan ids distintos.
+ *
+ * ORDEN DE EVENTOS — riesgo real, no se arregla en este tramo.
+ * ---------------------------------------------------------------------------
+ * Stripe no garantiza el orden de entrega. Un `customer.subscription.updated`
+ * retrasado o reintentado que llega después de `customer.subscription.deleted`
+ * escribe el plan y el estado de su payload viejo sobre un estado más reciente:
+ *
+ *   - con `metadata.org_id`, el UPDATE apunta a esa org y la resucita al plan
+ *     de pago que ya estaba cancelado;
+ *   - sin `metadata.org_id`, el `lookupBySubscription` no encuentra fila porque
+ *     el delete ya limpió `stripe_subscription_id`, y el evento queda en no-op.
+ *
+ * Descartar lo viejo exige comparar la marca temporal del evento con la última
+ * aplicada, o sea una columna nueva en `organizations` (p. ej.
+ * `stripe_event_at`) y su migración: fuera del alcance de este cambio.
+ */
 export async function POST(req: NextRequest) {
   const body      = await req.text();
   const signature = req.headers.get('stripe-signature');
@@ -158,7 +213,12 @@ export async function POST(req: NextRequest) {
       // ── Payment failed ────────────────────────────────────────────────────
       case 'invoice.payment_failed': {
         const invoice    = event.data.object as Stripe.Invoice;
-        const customerId = invoice.customer as string;
+        const customerId = customerIdOf(invoice.customer);
+
+        if (!customerId) {
+          console.warn('[stripe/webhooks] invoice.payment_failed sin cliente: nada que actualizar');
+          break;
+        }
 
         await updateOrgSubscription({
           lookupByCustomer:  customerId,
@@ -178,12 +238,33 @@ export async function POST(req: NextRequest) {
 
         if (!subId) break;
 
+        const invoiceCustomerId = customerIdOf(invoice.customer);
+        if (!invoiceCustomerId) {
+          console.warn('[stripe/webhooks] invoice.payment_succeeded sin cliente: nada que actualizar');
+          break;
+        }
+
         const subscription = await stripe.subscriptions.retrieve(
           typeof subId === 'string' ? subId : subId.id
         );
 
+        // La org se resuelve por `lookupByCustomer` (el cliente de la factura),
+        // pero el `period_end` sale de la suscripción recuperada por id. Si esos
+        // dos objetos no son del mismo cliente se estaría escribiendo el periodo
+        // de una suscripción ajena sobre esta organización, y marcándola
+        // `active` por un cobro que no es suyo. Un desajuste no es transitorio:
+        // reintentar daría el mismo resultado, así que se descarta el evento en
+        // lugar de devolver 500.
+        const subscriptionCustomerId = customerIdOf(subscription.customer);
+        if (subscriptionCustomerId !== invoiceCustomerId) {
+          console.error(
+            `[stripe/webhooks] invoice.payment_succeeded descartado: la suscripción ${subscription.id} pertenece al cliente ${subscriptionCustomerId ?? 'desconocido'}, no a ${invoiceCustomerId}`
+          );
+          break;
+        }
+
         await updateOrgSubscription({
-          lookupByCustomer:      invoice.customer as string,
+          lookupByCustomer:      invoiceCustomerId,
           subscriptionStatus:    'active',
           subscriptionPeriodEnd: getPeriodEnd(subscription),
         });

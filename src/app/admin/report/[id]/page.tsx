@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { use, useState } from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
@@ -30,7 +31,18 @@ import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import ScoreGauge from '@/components/admin/ScoreGauge';
 import TopicScoreBar from '@/components/admin/TopicScoreBar';
-import PDFExportButton from '@/components/admin/ScorecardPDF';
+// `@react-pdf/renderer` pesa ~300 KB comprimido y solo se necesita cuando el
+// reclutador pulsa «exportar». Con el import estático, cada apertura de un informe
+// lo descargaba y evaluaba aunque nadie exportara nada. `ssr: false` porque la
+// librería genera el PDF en el navegador.
+const PDFExportButton = dynamic(() => import('@/components/admin/ScorecardPDF'), {
+  ssr: false,
+  loading: () => (
+    <span className="text-xs text-muted" role="status">
+      Preparando exportación…
+    </span>
+  ),
+});
 import HireModal from '@/components/admin/HireModal';
 
 export default function ReportPage({

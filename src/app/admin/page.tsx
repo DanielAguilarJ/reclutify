@@ -8,7 +8,7 @@ import { useCandidates } from '@/hooks/useCandidates';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell
-} from 'recharts';
+} from '@/components/admin/charts';
 import { Users, CheckCircle2, Clock, Briefcase, ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 

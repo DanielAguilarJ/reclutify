@@ -7,6 +7,7 @@ import { useAppStore } from '@/store/appStore';
 import { sendConnectionRequest } from '@/app/actions/connections';
 import { useToast } from '@/components/ui/Toast';
 import { MapPin, Users, Link2, UserPlus, MessageCircle, Pencil } from 'lucide-react';
+import Link from 'next/link';
 
 interface OpenToWorkBadgeProps {
   size?: 'sm' | 'md' | 'lg';
@@ -148,7 +149,7 @@ export function ProfileHeader({ profile, isOwn = false, connectionStatus = 'none
           {/* Actions */}
           <div className="flex gap-2 shrink-0">
             {isOwn ? (
-              <a
+              <Link
                 href="/profile/edit"
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold
                   bg-foreground text-card hover:opacity-90
@@ -156,7 +157,7 @@ export function ProfileHeader({ profile, isOwn = false, connectionStatus = 'none
               >
                 <Pencil className="w-4 h-4" />
                 {t('Edit profile', 'Editar perfil')}
-              </a>
+              </Link>
             ) : (
               <>
                 <button

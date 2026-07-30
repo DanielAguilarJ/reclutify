@@ -55,8 +55,17 @@ export function NotificationBell({ userId }: { userId: string }) {
     return '/feed';
   };
 
+  // `Date.now()` se lee UNA vez al montar en lugar de en cada render.
+  //
+  // Llamarlo durante el render hace que el mismo componente produzca marcas
+  // distintas en el servidor y en el cliente, lo que rompe la hidratación de
+  // React con un aviso de contenido no coincidente. Anclarlo también evita que
+  // la lista de avisos cambie de texto en re-renderizados que no tienen nada que
+  // ver con el tiempo.
+  const [now] = useState(() => Date.now());
+
   const timeAgo = (d: string) => {
-    const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
+    const s = Math.floor((now - new Date(d).getTime()) / 1000);
     if (s < 60) return language === 'es' ? 'ahora' : 'now';
     const m = Math.floor(s / 60); if (m < 60) return `${m}m`;
     const h = Math.floor(m / 60); if (h < 24) return `${h}h`;

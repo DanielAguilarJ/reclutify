@@ -53,6 +53,27 @@ import { DEFAULT_OCR_PAGE_LIMIT } from '@/lib/training/client-ocr';
 import { focusRing } from '@/components/training/ui';
 
 /**
+ * Mensaje legible de una excepción capturada.
+ *
+ * POR QUÉ EXISTE
+ * --------------
+ * Este archivo tenía ocho `catch (err: any)` y luego hacía `err.message`. Con
+ * `any` el compilador no comprueba nada, y `err` NO es necesariamente un `Error`:
+ * un `throw 'texto'` o un rechazo de promesa con un objeto plano producen un
+ * `err.message` que es `undefined`, y el usuario ve el texto por defecto en lugar
+ * de la causa real.
+ *
+ * Con `unknown` el compilador obliga a estrechar el tipo, y esta función es el
+ * único sitio donde se hace.
+ */
+function errorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err) return err;
+  return fallback;
+}
+
+
+/**
  * Bucket privado de documentos de capacitación.
  *
  * Se repite aquí como literal porque `src/lib/training/documents.ts` es
@@ -530,8 +551,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       
       // Cargar documentos desde biblioteca (asociados y disponibles)
       await loadLibraryDocuments();
-    } catch (err: any) {
-      setError(err.message || 'Error loading program details');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Error loading program details'));
       showToast('error', language === 'es' ? 'Error al cargar detalles' : 'Error loading details');
     } finally {
       setLoading(false);
@@ -545,7 +566,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       const data = await res.json();
       setDocuments(data.attached || []);
       setAvailableDocuments(data.available || []);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to load program documents:', err);
     }
   };
@@ -928,9 +949,14 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         }),
       });
 
-      const processBody = await processRes
-        .json()
-        .catch(() => ({} as Record<string, any>));
+      // `unknown` en vez de `any`: los tres accesos de abajo ya comprueban el tipo
+      // con `typeof ... === 'string'`, así que el compilador no pierde nada y sí
+      // gana la garantía de que nadie lea un campo sin comprobarlo.
+      const processBody: {
+        success?: unknown;
+        failure?: { message?: unknown } | null;
+        error?: unknown;
+      } = await processRes.json().catch(() => ({}));
 
       if (!processRes.ok || processBody?.success !== true) {
         // `failure.message` ya viene traducido y sin causa técnica; el `error`
@@ -946,7 +972,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       patchUploadState(key, { status: 'done', reason: undefined });
       return true;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Fallo de red o de parseo: el archivo queda pendiente para reintentar.
       console.error('[training/configure] Upload flow failed', err);
       patchUploadState(key, {
@@ -1039,8 +1065,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       await loadLibraryDocuments();
       showToast('success', language === 'es' ? 'Documento asociado correctamente' : 'Document associated successfully');
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     }
   };
 
@@ -1107,8 +1133,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
           showToast('success', language === 'es' ? 'Módulos generados con éxito' : 'Modules generated successfully');
         }
       }
-    } catch (err: any) {
-      showToast('error', err.message || (language === 'es' ? 'Error al generar módulos' : 'Error generating modules'));
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, language === 'es' ? 'Error al generar módulos' : 'Error generating modules'));
     } finally {
       setGeneratingModules(false);
     }
@@ -1185,8 +1211,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       } else {
         throw new Error('Sincronización fallida');
       }
-    } catch (err: any) {
-      showToast('error', err.message || (language === 'es' ? 'Error al guardar' : 'Error saving'));
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, language === 'es' ? 'Error al guardar' : 'Error saving'));
     } finally {
       setSaving(false);
     }
@@ -1211,8 +1237,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       showToast('success', language === 'es' ? 'Programa publicado exitosamente' : 'Program published successfully');
       loadProgramDetails();
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     } finally {
       setPublishing(false);
     }
@@ -1234,8 +1260,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       const body = await res.json();
       showToast('success', language === 'es' ? 'Nueva versión borrador creada' : 'New draft version created');
       router.push(`/admin/training/configure/${body.programId}`);
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     } finally {
       setVersioning(false);
     }
@@ -2065,7 +2091,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                             {language === 'es' ? 'Secciones' : 'Sections'} ({mod.content.sections.length})
                           </label>
                           <div className="space-y-1">
-                            {mod.content.sections.map((section: any, idx: number) => (
+                            {mod.content.sections.map((section: { title?: string }, idx: number) => (
                               <div key={idx} className="text-xs text-muted bg-card p-2 rounded-lg border border-border/50">
                                 <span className="font-medium text-foreground">{idx + 1}.</span> {section.title}
                               </div>

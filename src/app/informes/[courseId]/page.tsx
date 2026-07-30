@@ -7,6 +7,7 @@ import ClientDetailsForm from '@/components/informes/ClientDetailsForm';
 import InfoSessionRoom from '@/components/informes/InfoSessionRoom';
 import ClosingPresential from '@/components/informes/ClosingPresential';
 import ClosingRemote from '@/components/informes/ClosingRemote';
+import Link from 'next/link';
 
 export default function InfoSessionPage() {
   const params = useParams();
@@ -90,7 +91,7 @@ export default function InfoSessionPage() {
           </div>
           <h2 className="text-xl font-bold text-white mb-2">Curso no encontrado</h2>
           <p className="text-gray-400 mb-6">{error}</p>
-          <a
+          <Link
             href="/informes"
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-colors"
           >
@@ -98,7 +99,7 @@ export default function InfoSessionPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
             Volver al catalogo
-          </a>
+          </Link>
         </div>
       </div>
     );

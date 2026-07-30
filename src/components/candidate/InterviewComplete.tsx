@@ -46,7 +46,7 @@ export default function InterviewComplete() {
       // FIX 6: The URL pattern is /interview/t/[TOKEN] — the last path segment is the TOKEN,
       // NOT a roleId. Using it as roleId would corrupt evaluation data.
       // Prefer the store value; if absent, warn and degrade gracefully rather than use a wrong ID.
-      let currentRoleId = storeRoleId || '';
+      const currentRoleId = storeRoleId || '';
       if (!currentRoleId) {
         console.warn(
           'InterviewComplete: roleId not found in store. Evaluation roleId will be empty — ' +

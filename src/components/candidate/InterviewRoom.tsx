@@ -304,8 +304,7 @@ export default function InterviewRoom({
   // freeze permanently a few questions into a topic ("ya no escucha").
   const createRecognitionInstance = useCallback(() => {
     const SpeechRecognitionCtor =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
+      window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) return null;
 
     const rec = new SpeechRecognitionCtor();

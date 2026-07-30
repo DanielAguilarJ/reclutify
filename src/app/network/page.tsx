@@ -5,6 +5,7 @@ import { getPendingRequests, getMyConnections } from '@/app/actions/connections'
 import { getMyProfile } from '@/app/actions/profile';
 import { ConnectionButton } from '@/components/network/ConnectionButton';
 import AppNavbar from '@/components/ui/AppNavbar';
+import Link from 'next/link';
 
 export const metadata: Metadata = {
   title: 'Mi Red — Reclutify',
@@ -91,9 +92,9 @@ export default async function NetworkPage() {
               <p className="text-sm text-muted mb-4">
                 Explora perfiles y envía solicitudes de conexión para ampliar tu red.
               </p>
-              <a href="/career-fair" className="inline-flex px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all">
+              <Link href="/career-fair" className="inline-flex px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all">
                 Explorar vacantes
-              </a>
+              </Link>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

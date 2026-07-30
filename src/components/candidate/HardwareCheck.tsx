@@ -11,7 +11,21 @@ import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
 import Logo from '@/components/ui/Logo';
 
-function getMediaErrorMessage(err: unknown, type: 'camera' | 'mic', t: any): string {
+/**
+ * Diccionario de textos, derivado del real en vez de declarado a mano.
+ *
+ * Antes el parámetro era `t: any`. Escribir aquí un `Record<string, string>` no
+ * serviría: el diccionario tiene valores que son arrays (`roleSplitFeaturesCandidate`),
+ * así que el tipo sería falso y volvería a hacer falta un cast.
+ *
+ * Derivarlo de `dictionaries` con `typeof` mantiene los dos en sincronía por
+ * construcción: si se renombra una clave que esta función usa, el error sale en
+ * compilación en vez de producir `undefined` en un mensaje que el candidato lee
+ * justo cuando ya tiene un problema de cámara.
+ */
+type MediaErrorCopy = (typeof dictionaries)[keyof typeof dictionaries];
+
+function getMediaErrorMessage(err: unknown, type: 'camera' | 'mic', t: MediaErrorCopy): string {
   const error = err as DOMException;
   if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
     return type === 'camera' ? t.cameraErrorPermission : t.micErrorPermission;
@@ -42,7 +56,7 @@ export default function HardwareCheck() {
   const [testTranscript, setTestTranscript] = useState('');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   
   const streamRef = useRef<MediaStream | null>(null);
   // Separate ref for the raw mic MediaStream so it can be stopped independently
@@ -191,7 +205,7 @@ export default function HardwareCheck() {
     setTestTranscript('');
 
     const langCode = language === 'es' ? 'es-ES' : 'en-US';
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
@@ -200,7 +214,7 @@ export default function HardwareCheck() {
       recognition.interimResults = true;
       recognition.lang = langCode;
 
-      recognition.onresult = (event: any) => {
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
         let interimTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           interimTranscript += event.results[i][0].transcript;

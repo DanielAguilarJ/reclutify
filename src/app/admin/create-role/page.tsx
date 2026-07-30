@@ -1140,7 +1140,7 @@ export default function CreateRolePage() {
       setBulkSending(true);
       setBulkProgress({ sent: 0, total: candidatesList.length });
       
-      let failedEmails: string[] = [];
+      const failedEmails: string[] = [];
 
       for (let i = 0; i < candidatesList.length; i++) {
         const email = candidatesList[i];

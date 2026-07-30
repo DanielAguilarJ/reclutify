@@ -28,10 +28,10 @@ export function GlobalSearchBar() {
       const { data: profiles } = await supabase.from('profiles')
         .select('user_id, username, full_name, headline, avatar_url')
         .or(`full_name.ilike.%${query}%,headline.ilike.%${query}%,username.ilike.%${query}%`).limit(5);
-      if (profiles) profiles.forEach((p: any) => r.push({ type: 'person', id: p.user_id, title: p.full_name, subtitle: p.headline || p.username, url: `/profile/${p.username}`, avatar: p.avatar_url }));
+      if (profiles) profiles.forEach((p) => r.push({ type: 'person', id: p.user_id, title: p.full_name ?? '', subtitle: p.headline || p.username || '', url: `/profile/${p.username}`, avatar: p.avatar_url ?? undefined }));
       const { data: jobs } = await supabase.from('roles').select('id, title, location')
         .eq('is_published', true).or(`title.ilike.%${query}%,location.ilike.%${query}%`).limit(5);
-      if (jobs) jobs.forEach((j: any) => r.push({ type: 'job', id: j.id, title: j.title, subtitle: j.location || '', url: `/career-fair/${j.id}` }));
+      if (jobs) jobs.forEach((j) => r.push({ type: 'job', id: j.id, title: j.title, subtitle: j.location || '', url: `/career-fair/${j.id}` }));
       setResults(r); setIsOpen(r.length > 0); setLoading(false);
     }, 300);
     return () => { if (debounce.current) clearTimeout(debounce.current); };

@@ -29,7 +29,7 @@ const COACH_ATTENDANCE_POLL_INTERVAL_MS = 5_000;
 
 /**
  * Estado que el asesor fija al atender la sesión desde su panel
- * (`coachStore.markSessionCompleted`). El cliente no puede fijarlo —no está en
+ * (`coachStore.markSessionAttended`). El cliente no puede fijarlo —no está en
  * `INFO_SESSION_CLIENT_STATUSES`—, y por eso sirve como confirmación real.
  */
 const COACH_ATTENDED_SESSION_STATUS = 'completed';

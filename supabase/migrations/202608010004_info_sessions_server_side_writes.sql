@@ -2,13 +2,29 @@
 -- info_sessions — Retirar el acceso del rol `anon` y arreglar la
 --                 pertenencia del asesor
 --
--- ATENCIÓN — MIGRACIÓN PENDIENTE, NO APLICADA
---     ESTE ARCHIVO NO ESTÁ APLICADO EN NINGUNA BASE. Se aplica
---     con decisión explícita del usuario, después del despliegue
---     del código y con respaldo previo (Requisito 14 de
---     `.kiro/specs/public-flow-authorization-hardening`).
+-- ESTADO DE ESTA MIGRACIÓN
+--     LAS SENTENCIAS DE ESTE ARCHIVO YA ESTÁN APLICADAS EN
+--     PRODUCCIÓN. Se aplicaron después del merge `4627774`
+--     («Merge pull request #19 from
+--     DanielAguilarJ/fix/info-sessions-server-writes», despliegue
+--     de Vercel correcto), que es el que puso en producción las
+--     rutas de servidor de la sesión de informes y dejó CUMPLIDA
+--     la precondición descrita justo abajo. El archivo queda
+--     versionado para que un despliegue limpio produzca el mismo
+--     estado de autorización que producción (Requisito 9 de
+--     `.kiro/specs/public-flow-authorization-hardening`), y es
+--     idempotente (ver la nota de IDEMPOTENCIA al final de esta
+--     cabecera), así que reaplicarlo es un no-op.
 --
--- PRECONDICIÓN DE DESPLIEGUE
+--     VERIFICACIÓN EN LA BASE — pasos 1 a 3 de «CÓMO VERIFICAR»:
+--     `info_sessions` conserva ÚNICAMENTE
+--     `org_members_read_sessions` y `org_members_update_sessions`,
+--     ambas con `roles = {authenticated}`; no queda ninguna
+--     política de `anon`/`public` sobre la tabla. Con la clave
+--     anon, el `INSERT` se rechaza por violación de política y el
+--     `SELECT` devuelve cero filas.
+--
+-- PRECONDICIÓN DE DESPLIEGUE — CUMPLIDA EN `4627774`
 --     ESTA MIGRACIÓN REQUIERE QUE YA ESTÉN EN PRODUCCIÓN:
 --       • las rutas de servidor de la sesión de informes
 --         (creación, escritura parcial y lectura de estado), que

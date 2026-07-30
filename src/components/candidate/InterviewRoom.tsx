@@ -10,6 +10,7 @@ import { useInterviewStore } from "@/store/interviewStore";
 import { useAdminStore } from "@/store/adminStore";
 import { useAppStore } from "@/store/appStore";
 import { dictionaries } from "@/lib/i18n";
+import { accessProofRequestFields } from "@/lib/candidate-results/access-proof-contracts";
 import Logo from "@/components/ui/Logo";
 import AiOrb from "./AiOrb";
 import {
@@ -56,6 +57,27 @@ export default function InterviewRoom({
 
   const activeInterviewMode = currentRole?.interviewMode || interviewMode || 'restricted';
   const isInternalInterview = activeInterviewMode === 'internal';
+
+  /**
+   * Credenciales que acreditan esta entrevista ante las rutas de IA.
+   *
+   * `/api/chat`, `/api/evaluate` y `/api/upload-video` ya no aceptan peticiones
+   * anónimas: exigen `roleId` más la prueba de acceso (token del ticket o
+   * `public_token` del enlace general), la misma que `/api/candidate-results`
+   * pedía desde antes.
+   *
+   * Se lee del store con `getState()` en el momento de cada petición, no de una
+   * dependencia del render: en el flujo del enlace público la prueba se guarda
+   * después del montaje del componente, así que capturarla en una constante del
+   * cuerpo del render dejaría fuera al primer turno.
+   */
+  const interviewCredentials = useCallback(
+    (): Record<string, string> => ({
+      roleId,
+      ...accessProofRequestFields(useInterviewStore.getState().accessProof),
+    }),
+    [roleId],
+  );
 
   const { language } = useAppStore();
   const { candidates, addCandidate, updateCandidate } = useAdminStore();
@@ -724,6 +746,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: freshCurrentTopic?.label || "",
           allTopics,
           cvData: candidate?.cvData || null,
@@ -1005,6 +1028,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: freshCurrentTopic?.label || "",
           allTopics,
           cvData: candidate?.cvData || null,
@@ -1233,6 +1257,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: topics[0]?.label || "",
           allTopics: allTopicsPayload,
           cvData: candidate?.cvData || null,
@@ -1610,14 +1635,23 @@ export default function InterviewRoom({
         localStorage.setItem("tempVideoUrl", localUrl);
 
         try {
-          const filename = `recording-${sessionId || Date.now()}.webm`;
           const contentType = "video/webm";
 
           // Step 1 – ask the API for a presigned PUT URL (tiny JSON, well within Vercel limits)
+          //
+          // `filename` ya NO se envía: la ruta derivaba la clave del objeto de ese
+          // campo sin comprobar nada, así que era escritura arbitraria en el
+          // bucket. Ahora se declara a qué entrevista pertenece la grabación y el
+          // servidor construye la ruta con el `orgId` que acredita la credencial.
           const presignRes = await fetch("/api/upload-video", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename, contentType }),
+            body: JSON.stringify({
+              ...interviewCredentials(),
+              resultId: publicResultId || sessionId || `session-${Date.now()}`,
+              extension: "webm",
+              contentType,
+            }),
           });
 
           if (!presignRes.ok) {

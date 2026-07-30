@@ -9,6 +9,7 @@ import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import { useWebhookStore } from '@/store/webhookStore';
 import { dictionaries } from '@/lib/i18n';
+import { accessProofRequestFields } from '@/lib/candidate-results/access-proof-contracts';
 
 export default function InterviewComplete() {
   const { candidate, transcript, topics, reset, sessionId, setSessionId, roleId: storeRoleId } = useInterviewStore();
@@ -85,6 +86,11 @@ export default function InterviewComplete() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
+              // `/api/evaluate` ya no acepta peticiones anónimas: exige `roleId`
+              // más la prueba de acceso de la entrevista, la misma credencial que
+              // `/api/candidate-results` pedía desde antes.
+              roleId: currentRoleId,
+              ...accessProofRequestFields(useInterviewStore.getState().accessProof),
               transcript, 
               topics, 
               candidateName: candidate.name, 
@@ -140,17 +146,20 @@ export default function InterviewComplete() {
         });
 
         // Module 4: Fire webhook if configured
-        const { webhookUrl, webhookSecret, addLog } = useWebhookStore.getState();
+        const { webhookUrl, addLog } = useWebhookStore.getState();
         if (webhookUrl) {
           try {
             const webhookRes = await fetch('/api/webhooks/candidate-completed', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                webhookUrl,
-                webhookSecret,
-                candidateId: currentSessionId,
+                // `webhookUrl` y `webhookSecret` ya NO se envían: la ruta los
+                // leía del cuerpo y hacía `fetch` a esa dirección sin sesión, que
+                // era un SSRF. Ahora los lee de `webhook_configs` para la
+                // organización que acredita esta credencial.
                 roleId: currentRoleId,
+                ...accessProofRequestFields(useInterviewStore.getState().accessProof),
+                candidateId: currentSessionId,
                 candidateName: candidate.name,
                 overallScore: evalData.overallScore,
                 recommendation: evalData.recommendation,

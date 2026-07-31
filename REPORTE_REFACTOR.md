@@ -1,6 +1,6 @@
 # Reporte de auditoría y refactorización — Reclutify
 
-**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **36 commits**
+**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **38 commits**
 
 **Verificación:** `npm run verify` en verde — `tsc --noEmit` sin errores, ESLint con
 0 errores sobre todo `src/`, 905 pruebas en 57 archivos, `next build` correcto.
@@ -584,7 +584,45 @@ candidato antes del saludo. El estado `preparing` de la máquina es ese interval
 todos los temas», «se agotó el tiempo» y «el candidato pulsó terminar». Ahora es un argumento
 con los tres valores, y cerrar dos veces conserva el motivo del primer cierre.
 
-### 2.29 Actualización silenciosa de cero filas
+### 2.29 Una regresión CRÍTICA que introdujo mi propia máquina de estados
+
+La documento con el mismo detalle que las demás porque es la más instructiva del informe.
+
+Al conectar la máquina, `handleCandidateUtterance` quedó roto en tres caminos: los que
+responden **sin consultar al modelo** —reformular una pregunta que el candidato no entendió, y
+las dos ramas de la detección de callejón sin salida—. Los tres llaman a `speakText()` **antes**
+de despachar `TRANSCRIPTION_SETTLED`, así que la máquina recibía `SPEECH_STARTED` estando en
+`transcribing`. Esa transición no existía, el evento se rechazaba, y el estado se quedaba en
+`transcribing` **para siempre**: botón de hablar deshabilitado, candidato sin poder continuar.
+
+Decir «¿cómo?» habría acabado con su entrevista.
+
+**Corregido** aceptando `SPEECH_STARTED` desde `transcribing`, que es lo que el producto hace
+de verdad. NO despachando `TRANSCRIPTION_SETTLED` antes, que era la otra opción: ese evento
+significa «hay texto que enviar al modelo», y estos tres caminos no envían nada.
+
+La misma revisión encontró tres más, todos reales:
+
+ - El botón seguía usando la fórmula de cuatro booleanos, así que **el mensaje de mi commit
+   anterior afirmaba una corrección que no estaba aplicada**: durante `preparing` los cuatro
+   son `false`, luego el botón salía habilitado, y un clic abría el micrófono físicamente
+   mientras el despacho se rechazaba.
+ - La red de seguridad del `finally` solo cubría `processing`, no `transcribing`.
+ - El despachador leía un ref que solo se actualiza en un efecto, así que dos despachos en la
+   misma tarea comparaban contra un estado obsoleto y el segundo podía rechazarse siendo
+   válido. `finishCandidateTurn` seguido de `completeCandidateTurn` hace exactamente eso.
+
+**Lo que enseña, y por eso está aquí:** 42 pruebas unitarias de transiciones estaban en verde
+mientras la máquina tenía un fallo fatal, porque **probar transiciones sueltas no prueba
+secuencias**. Se añadió un bloque que reproduce las once secuencias que el componente despacha
+de verdad, en su orden real, y afirma que la lista de eventos rechazados esté VACÍA: un rechazo
+a mitad de una secuencia legítima es el síntoma exacto del atasco.
+
+Y enseña algo sobre el proceso: lo encontró una revisión independiente leyendo el componente,
+no las pruebas ni yo. Someter el cambio de mayor riesgo a un revisor que no comparte el
+contexto de quien lo escribió fue lo que evitó que esto llegara a producción.
+
+### 2.30 Actualización silenciosa de cero filas
 
 `jobs.toggleRolePublished` devolvía `success: true` cuando el `roleId` no era de la
 organización, así que la interfaz informaba de un cambio que no ocurrió.
@@ -920,14 +958,14 @@ recomendar la reescritura de `InterviewRoom` en esta ronda.
 
 | | |
 |---|---|
-| Commits | 36, atómicos |
+| Commits | 38, atómicos |
 | Archivos cambiados | 150 (68 nuevos, 80 modificados, 2 eliminados) |
 | Líneas | +19 127 / −4 093 |
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
-| Bugs funcionales corregidos | 26 |
-| Pruebas | 798 → **1 084** (+286); 52 → 66 archivos |
+| Bugs funcionales corregidos | 30 |
+| Pruebas | 798 → **1 097** (+299); 52 → 66 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
@@ -946,7 +984,7 @@ recomendar la reescritura de `InterviewRoom` en esta ronda.
 ```
 npm run typecheck        →  0 errores
 npm run lint             →  0 errores, 92 avisos (documentados)
-npm run test:run         →  1 084 pruebas, 66 archivos, todas en verde
+npm run test:run         →  1 097 pruebas, 66 archivos, todas en verde
 npm run check:endpoints  →  toda ruta declara un control
 npm run build            →  compilación correcta, 69 páginas
 ```
@@ -959,10 +997,16 @@ El resultado se sometió a una revisión de seguridad independiente, sin compart
 contexto de la implementación, con el encargo explícito de **desmentir** las
 afirmaciones del informe y de buscar regresiones en los flujos del candidato.
 
-Conclusión: ninguna regresión; los tres caminos de entrada establecen la prueba de
-acceso antes de que las rutas la necesiten; ninguna afirmación falsa. Corrigió dos
-cifras mías —la línea base de pruebas era 798 y no 800, y los avisos de lint son 101 y
-no 99— y ambas están ya rectificadas arriba.
+Conclusión de la primera revisión (rutas y RLS): ninguna regresión; los tres caminos de
+entrada establecen la prueba de acceso antes de que las rutas la necesiten; ninguna afirmación
+falsa. Corrigió dos cifras mías —la línea base de pruebas era 798 y no 800, y los avisos de
+lint eran 101 y no 99—.
+
+Una **segunda revisión independiente** del cambio de mayor riesgo —el conectado de la máquina
+de estados a `InterviewRoom`— encontró una **regresión crítica** y tres fallos más. Están
+documentados en 2.29. Esa revisión es la razón de que la regresión no llegara a producción, y
+la conclusión operativa es que el paso de revisión externa sobre el componente crítico no es
+opcional: mis 42 pruebas de la máquina estaban en verde con el fallo dentro.
 
 ### Antes de desplegar
 

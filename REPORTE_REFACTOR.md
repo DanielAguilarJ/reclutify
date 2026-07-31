@@ -1,6 +1,6 @@
 # Reporte de auditoría y refactorización — Reclutify
 
-**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **18 commits**
+**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **21 commits**
 
 **Verificación:** `npm run verify` en verde — `tsc --noEmit` sin errores, ESLint con
 0 errores sobre todo `src/`, 905 pruebas en 57 archivos, `next build` correcto.
@@ -721,9 +721,9 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 
 | | |
 |---|---|
-| Commits | 18, atómicos |
-| Archivos cambiados | 101 (42 nuevos, 57 modificados, 2 eliminados) |
-| Líneas | +10 277 / −3 677 |
+| Commits | 21, atómicos |
+| Archivos cambiados | 108 (44 nuevos, 62 modificados, 2 eliminados) |
+| Líneas | +11 779 / −3 775 |
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 17 (9 críticas, 6 altas, 2 medias) |
@@ -741,11 +741,25 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 ### Verificación
 
 ```
-npm run typecheck   →  0 errores
-npm run lint        →  0 errores, 101 avisos (documentados)
-npm run test:run    →  905 pruebas, 57 archivos, todas en verde
-npm run build       →  compilación correcta, 69 páginas
+npm run typecheck        →  0 errores
+npm run lint             →  0 errores, 101 avisos (documentados)
+npm run test:run         →  905 pruebas, 57 archivos, todas en verde
+npm run check:endpoints  →  toda ruta declara un control
+npm run build            →  compilación correcta, 69 páginas
 ```
+
+`npm run verify` ejecuta los cuatro primeros de una pasada.
+
+### Revisión independiente
+
+El resultado se sometió a una revisión de seguridad independiente, sin compartirle el
+contexto de la implementación, con el encargo explícito de **desmentir** las
+afirmaciones del informe y de buscar regresiones en los flujos del candidato.
+
+Conclusión: ninguna regresión; los tres caminos de entrada establecen la prueba de
+acceso antes de que las rutas la necesiten; ninguna afirmación falsa. Corrigió dos
+cifras mías —la línea base de pruebas era 798 y no 800, y los avisos de lint son 101 y
+no 99— y ambas están ya rectificadas arriba.
 
 ### Antes de desplegar
 

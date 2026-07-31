@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useId } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { useFeedStore } from '@/store/feedStore';
 import type { Post } from '@/types/feed';
@@ -14,6 +14,14 @@ interface FeedRealtimeProps {
  * When a new post is created by another user, it will be shown in the feed.
  */
 export function FeedRealtime({ currentUserId }: FeedRealtimeProps) {
+  // Identificador único de esta instancia, para el nombre del canal de Realtime.
+  //
+  // El nombre era estático, así que dos instancias montadas a la vez —o el doble montaje
+  // del modo estricto de React en desarrollo— pedían el MISMO canal y la segunda
+  // suscripción no se establecía. El síntoma es una lista que deja de actualizarse en
+  // tiempo real, sin ningún error. `useId` da un valor estable por instancia.
+  const channelId = useId();
+
   const prependPost = useFeedStore((s) => s.prependPost);
   const postsRef = useRef(useFeedStore.getState().posts);
 
@@ -29,7 +37,7 @@ export function FeedRealtime({ currentUserId }: FeedRealtimeProps) {
     const supabase = createClient();
 
     const channel = supabase
-      .channel('feed-realtime')
+      .channel(`feed-realtime-${channelId}`)
       .on(
         'postgres_changes',
         {
@@ -78,7 +86,7 @@ export function FeedRealtime({ currentUserId }: FeedRealtimeProps) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUserId, prependPost]);
+  }, [currentUserId, prependPost, channelId]);
 
   return null; // Invisible component
 }

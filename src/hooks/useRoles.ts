@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useId } from 'react';
 import { useAdminStore } from '@/store/adminStore';
 import { createClient } from '@/utils/supabase/client';
 import type { Role, InterviewMode } from '@/types';
@@ -12,6 +12,14 @@ import type { Role, InterviewMode } from '@/types';
  * 3. Limpia suscripciones al desmontar
  */
 export function useRoles() {
+  // Identificador único de esta instancia, para el nombre del canal de Realtime.
+  //
+  // El nombre era estático, así que dos instancias montadas a la vez —o el doble montaje
+  // del modo estricto de React en desarrollo— pedían el MISMO canal y la segunda
+  // suscripción no se establecía. El síntoma es una lista que deja de actualizarse en
+  // tiempo real, sin ningún error. `useId` da un valor estable por instancia.
+  const channelId = useId();
+
   const { roles, loading, error, fetchFromSupabase, orgId } = useAdminStore();
   const channelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null);
   const initializedRef = useRef(false);
@@ -31,7 +39,7 @@ export function useRoles() {
 
     const supabase = createClient();
     const channel = supabase
-      .channel('roles-realtime')
+      .channel(`roles-realtime-${channelId}`)
       .on(
         'postgres_changes',
         {
@@ -78,7 +86,7 @@ export function useRoles() {
         channelRef.current = null;
       }
     };
-  }, [orgId]);
+  }, [orgId, channelId]);
 
   return { roles, loading, error };
 }

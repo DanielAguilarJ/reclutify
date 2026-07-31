@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import { Bell } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useAppStore } from '@/store/appStore';
@@ -11,6 +11,14 @@ interface Notification {
 }
 
 export function NotificationBell({ userId }: { userId: string }) {
+  // Identificador único de esta instancia, para el nombre del canal de Realtime.
+  //
+  // El nombre era estático, así que dos instancias montadas a la vez —o el doble montaje
+  // del modo estricto de React en desarrollo— pedían el MISMO canal y la segunda
+  // suscripción no se establecía. El síntoma es una lista que deja de actualizarse en
+  // tiempo real, sin ningún error. `useId` da un valor estable por instancia.
+  const channelId = useId();
+
   const { language } = useAppStore();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -25,12 +33,12 @@ export function NotificationBell({ userId }: { userId: string }) {
       if (data) { setNotifications(data); setUnreadCount(data.filter((n: Notification) => !n.read).length); }
     };
     fetch();
-    const channel = supabase.channel('notif-rt')
+    const channel = supabase.channel(`notif-rt-${channelId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
         (payload) => { const n = payload.new as Notification; setNotifications(prev => [n, ...prev.slice(0, 19)]); setUnreadCount(prev => prev + 1); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [userId]);
+  }, [userId, channelId]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => { if (panelRef.current && !panelRef.current.contains(e.target as Node)) setIsOpen(false); };

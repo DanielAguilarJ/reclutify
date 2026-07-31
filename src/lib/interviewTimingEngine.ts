@@ -108,8 +108,14 @@ export interface RealTimePacing {
   message: string;
   /**
    * Effective per-topic question hard limit AFTER applying real-time pacing.
-   * When urgency is 'hurry' or 'critical', this is REDUCED below the base budget
-   * so the LLM is forced to advance instead of just being "suggested" to.
+   *
+   * When urgency is 'hurry' or 'critical' this is REDUCED below the base budget so the LLM is
+   * forced to advance instead of just being "suggested" to.
+   *
+   * INVARIANTE: no depende de cuántas preguntas se hayan hecho ya. Tiene que poder quedar por
+   * DEBAJO de ese número, porque el consumidor decide con `asked >= effectiveHardLimit`; un
+   * tope que siguiera a `asked` haría esa comparación insatisfacible y el avance de tema nunca
+   * se dispararía. Suelo de 1: ningún tema se queda sin ninguna pregunta.
    */
   effectiveHardLimit: number;
 }
@@ -393,12 +399,61 @@ export function computeRealTimePacing(
     urgency = 'relaxed';
   }
 
+  // ─── Tope efectivo ───
+  //
+  // ESTO ESTABA INVERTIDO, Y ERA EL FALLO MÁS GRAVE DEL MOTOR.
+  //
+  // El contrato de `effectiveHardLimit` (ver la interfaz) es reducirse POR DEBAJO del
+  // presupuesto cuando hay prisa, para FORZAR el avance de tema en vez de solo sugerírselo al
+  // modelo. La ruta de chat lo consume así:
+  //
+  //     mustAdvanceNow = questionsInCurrentTopic >= effectiveHardLimit
+  //
+  // La versión anterior lo calculaba con un suelo de `questionsAskedOnCurrentTopic + 1`:
+  //
+  //     effectiveHardLimit = max(max(1, asked + 1), currentBudget - suggestSkipQuestions)
+  //
+  // Ese suelo garantiza `effectiveHardLimit > asked` SIEMPRE, luego `asked >= limit` es
+  // insatisfacible y `mustAdvanceNow` NUNCA podía ser cierto con urgencia `hurry` o
+  // `critical`. Con presupuesto 4 y urgencia normal el tema avanzaba a las 4 preguntas; con
+  // urgencia crítica el tope subía a 5, luego 6, luego 7… siguiendo a `asked + 1`.
+  //
+  // El efecto en producto es el contrario del buscado: la entrevista se quedaba CLAVADA en un
+  // tema justo cuando se estaba quedando sin tiempo, y los temas restantes terminaban con cero
+  // evidencia. Como la evaluación puntúa por tema, el candidato acababa juzgado sobre una
+  // rúbrica que la entrevista nunca llegó a cubrir.
+  //
+  // El otro término tampoco servía: `suggestSkipQuestions` está topado a propósito con
+  // `max(0, currentBudget - asked - 1)` —«deja al menos una más»— porque es una SUGERENCIA
+  // para el prompt, no un tope. Derivar un límite duro de una sugerencia blanda que por
+  // construcción se mantiene por encima de lo ya preguntado no podía funcionar.
+  //
+  // Ahora el tope se calcula desde la urgencia, sin mirar lo ya preguntado, con suelo de 1
+  // para que ningún tema se quede sin ninguna pregunta.
+  let effectiveHardLimit = currentBudget;
+  if (urgency === 'critical') {
+    // Queda menos del 10 % del tiempo: una pregunta por tema y cerrar. Es preferible tocar los
+    // temas que faltan a profundizar en uno solo. Si la organización quiere alargar la
+    // entrevista, el camino es el periodo de gracia, que ya sale antes por el atajo de arriba.
+    effectiveHardLimit = 1;
+  } else if (urgency === 'hurry') {
+    effectiveHardLimit = Math.max(1, currentBudget - Math.ceil(Math.abs(progressDelta)));
+  }
+
   // Suggest adjustments
   let suggestAddQuestions = 0;
   let suggestSkipQuestions = 0;
   let message = '';
 
-  if (progressDelta > 1.0 && questionsAskedOnCurrentTopic < currentBudget) {
+  // El orden de las ramas importa: `critical` va PRIMERO porque a partir del 90 % del tiempo
+  // no hay nada que explorar en profundidad. Antes iba en tercer lugar, así que con más de diez
+  // temas —donde `progressDelta` puede pasar de 1 estando al 90 %— el modelo recibía «vas
+  // adelantado, puedes hacer preguntas extra» mientras la urgencia era crítica.
+  if (urgency === 'critical') {
+    const topicsLeft = Math.max(0, numTopics - currentTopicIndex - 1);
+    suggestSkipQuestions = Math.max(0, currentBudget - effectiveHardLimit);
+    message = `CRITICAL: ${Math.round(remainingSeconds)}s remaining with ${topicsLeft} topic(s) left. Wrap up immediately.`;
+  } else if (progressDelta > 1.0 && questionsAskedOnCurrentTopic < currentBudget) {
     // Ahead of schedule — candidate is answering fast
     suggestAddQuestions = Math.min(2, Math.floor(progressDelta));
     message = `Ahead of schedule by ~${Math.round(progressDelta * 10) / 10} topics. You can ask ${suggestAddQuestions} extra question(s) on this topic for deeper exploration.`;
@@ -409,23 +464,13 @@ export function computeRealTimePacing(
       Math.ceil(Math.abs(progressDelta))
     );
     message = `Behind schedule by ~${Math.round(Math.abs(progressDelta) * 10) / 10} topics. Consider shorter questions or skipping ${suggestSkipQuestions} question(s).`;
-  } else if (urgency === 'critical') {
-    const topicsLeft = numTopics - currentTopicIndex - 1;
-    message = `CRITICAL: ${Math.round(remainingSeconds)}s remaining with ${topicsLeft} topic(s) left. Wrap up immediately.`;
-    suggestSkipQuestions = Math.max(0, currentBudget - questionsAskedOnCurrentTopic - 1);
   } else {
     message = `On track. ~${Math.round(secondsPerRemainingTopic)}s available per remaining topic.`;
   }
 
-  // Effective hard limit: when behind schedule, reduce the budget so the LLM is
-  // forced to advance — not just "suggested" to. When ahead, allow up to +1 extra.
-  let effectiveHardLimit = currentBudget;
-  if (urgency === 'critical' || urgency === 'hurry') {
-    effectiveHardLimit = Math.max(
-      Math.max(1, questionsAskedOnCurrentTopic + 1), // allow finishing the current question
-      currentBudget - suggestSkipQuestions
-    );
-  } else if (urgency === 'relaxed' && suggestAddQuestions > 0) {
+  // La holgura solo se concede si el modelo va adelantado de verdad, y nunca con urgencia
+  // crítica: esta rama va después para no deshacer la reducción de arriba.
+  if (urgency === 'relaxed' && suggestAddQuestions > 0) {
     effectiveHardLimit = currentBudget + Math.min(1, suggestAddQuestions);
   }
 
@@ -441,7 +486,9 @@ export function computeRealTimePacing(
 
 /**
  * Generates a human-readable "min-max" range string for the system prompt.
- * The range is budget ± 1, clamped to [1, budget + 2].
+ *
+ * El rango es `budget ± 1` con el mínimo a 1. La documentación anterior decía «clamped to
+ * [1, budget + 2]», que nunca fue cierto: el máximo es `budget + 1` y no hay recorte superior.
  */
 export function getQuestionsRange(budget: TopicBudget): string {
   const min = Math.max(1, budget.questionBudget - 1);

@@ -9,6 +9,7 @@ import Logo from '@/components/ui/Logo';
 import LanguageToggle from '@/components/ui/LanguageToggle';
 import { useAppStore } from '@/store/appStore';
 import { dictionaries } from '@/lib/i18n';
+import { useDisclosure } from '@/hooks/useDisclosure';
 /**
  * Sección «Header» de la landing.
  *
@@ -22,7 +23,17 @@ export function Header() {
   const t = dictionaries[language];
   const es = language === 'es';
   const [scrolled, setScrolled] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  // Apertura, cierre con Escape, clic fuera y `aria-expanded`.
+  //
+  // El menú solo se cerraba pulsando su fondo, que es una acción de ratón: quien navega con
+  // teclado no tenía forma de cerrarlo. Y sin `aria-expanded` el lector de pantalla anunciaba
+  // el botón sin decir si el menú está abierto. Ver `src/hooks/useDisclosure.ts`.
+  const {
+    isOpen: mobileOpen,
+    close: closeMobile,
+    triggerProps: mobileTriggerProps,
+    panelProps: mobilePanelProps,
+  } = useDisclosure();
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20);
@@ -118,10 +129,21 @@ export function Header() {
 
             {/* Mobile menu toggle */}
             <button
-              onClick={() => setMobileOpen(!mobileOpen)}
+              {...mobileTriggerProps}
+              aria-label={
+                mobileOpen
+                  ? es ? 'Cerrar menú' : 'Close menu'
+                  : es ? 'Abrir menú' : 'Open menu'
+              }
               className="md:hidden flex items-center justify-center h-8 w-8 rounded-full text-white/70 hover:text-white hover:bg-white/[0.08] transition-all duration-300"
             >
-              {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+              {/* El icono es decorativo: el estado y la acción los comunica `aria-label`
+                  junto a `aria-expanded`. */}
+              {mobileOpen ? (
+                <X className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Menu className="h-4 w-4" aria-hidden="true" />
+              )}
             </button>
           </div>
         </motion.nav>
@@ -135,9 +157,16 @@ export function Header() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3 }}
+            {...mobilePanelProps}
             className="fixed inset-0 z-40 md:hidden"
           >
-            <div className="absolute inset-0 bg-[#0a0a0a]/90 backdrop-blur-2xl" onClick={() => setMobileOpen(false)} />
+            {/* El fondo queda como atajo de ratón; el cierre con teclado lo cubre el hook.
+                `aria-hidden` porque no es contenido: es superficie de clic. */}
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 bg-[#0a0a0a]/90 backdrop-blur-2xl"
+              onClick={closeMobile}
+            />
             <motion.div
               initial={{ y: -10, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -160,7 +189,7 @@ export function Header() {
                     initial={{ x: -10, opacity: 0 }}
                     animate={{ x: 0, opacity: 1 }}
                     transition={{ delay: 0.15 + i * 0.05 }}
-                    onClick={() => setMobileOpen(false)}
+                    onClick={closeMobile}
                     className="px-4 py-3 text-sm text-white/70 hover:text-white hover:bg-white/[0.06] rounded-xl transition-all duration-300"
                   >
                     {item.label}

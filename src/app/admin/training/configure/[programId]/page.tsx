@@ -1,8 +1,10 @@
 'use client';
 
-import { use, useEffect, useState, useRef } from 'react';
+import { use, useCallback, useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+
+import { useDebouncedPersist } from '@/hooks/useDebouncedPersist';
 import {
   ArrowLeft,
   Upload,
@@ -589,9 +591,14 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   // sin texto de OCR».
   useEffect(() => () => ocrAbortRef.current?.abort(), []);
 
-  const showToast = (type: 'success' | 'warning' | 'error', message: string) => {
-    setToast({ type, message });
-  };
+  // Memoizado porque `persistModuleField` depende de él: sin esto, su `useCallback` cambiaba de
+  // identidad en cada renderizado y arrastraba a todo lo que lo tuviera como dependencia.
+  const showToast = useCallback(
+    (type: 'success' | 'warning' | 'error', message: string) => {
+      setToast({ type, message });
+    },
+    [],
+  );
 
   // Drag & drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -1171,12 +1178,66 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     }
   };
 
-  const handleUpdateModuleFields = async (moduleId: string, fields: Partial<TrainingModule>) => {
+  /**
+   * Escribe el campo en el servidor. Lo invoca el hook cuando el usuario deja de teclear.
+   *
+   * La clave que recibe es `${moduleId}:${campo}`; el `moduleId` es un UUID sin dos puntos, así
+   * que basta partir por el primero.
+   */
+  const persistModuleField = useCallback(
+    (key: string, value: string | number) => {
+      const separator = key.indexOf(':');
+      const moduleId = key.slice(0, separator);
+      const field = key.slice(separator + 1);
+
+      void updateModule(programId, moduleId, {
+        [field]: value,
+      } as Partial<TrainingModule>).then((success) => {
+        if (!success) {
+          showToast(
+            'error',
+            language === 'es'
+              ? 'No se pudo guardar el cambio del módulo'
+              : 'Could not save the module change',
+          );
+        }
+      });
+    },
+    [programId, updateModule, showToast, language],
+  );
+
+  const { schedule: scheduleModuleField, flush: flushModuleField } =
+    useDebouncedPersist<string | number>(persistModuleField);
+
+  /**
+   * Aplica el cambio de un campo de módulo: al instante en pantalla, con retardo en el servidor.
+   *
+   * ANTES ESTO ROMPÍA EL TECLEO
+   * ---------------------------
+   * La versión anterior hacía `await updateModule(...)` y solo entonces `setModules`. Con un input
+   * controlado por `value={mod.title}`, entre la pulsación y la respuesta de la red el input
+   * volvía al valor anterior, así que escribir era a saltos y se perdían caracteres. Si el `PATCH`
+   * fallaba, la letra no aparecía nunca.
+   *
+   * Además llamaba al servidor en CADA pulsación, sin cancelar las anteriores: la petición de
+   * «Módulo de intro» podía llegar después que la de «Módulo de introducción» y dejar el texto a
+   * medias en la base de datos.
+   *
+   * Ahora el estado local se actualiza primero —el input responde— y el guardado se agrupa por
+   * campo. `useDebouncedPersist` emite lo pendiente al desmontar, así que navegar sin esperar no
+   * pierde la última edición.
+   */
+  const handleUpdateModuleField = (
+    moduleId: string,
+    field: 'title' | 'description' | 'durationEstimate',
+    value: string | number,
+  ) => {
     if (isReadOnly) return;
-    const success = await updateModule(programId, moduleId, fields);
-    if (success) {
-      setModules((prev) => prev.map(m => m.id === moduleId ? { ...m, ...fields } : m));
-    }
+
+    setModules((prev) =>
+      prev.map((m) => (m.id === moduleId ? { ...m, [field]: value } : m)),
+    );
+    scheduleModuleField(`${moduleId}:${field}`, value);
   };
 
   const handleRemoveModule = async (moduleId: string) => {
@@ -2055,7 +2116,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                           type="text"
                           value={mod.title}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { title: e.target.value })}
+                          onChange={(e) => handleUpdateModuleField(mod.id, 'title', e.target.value)}
+                          onBlur={() => flushModuleField(`${mod.id}:title`)}
                           className="w-full px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
                         />
                       </div>
@@ -2066,7 +2128,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                         <textarea
                           value={mod.description || ''}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { description: e.target.value })}
+                          onChange={(e) => handleUpdateModuleField(mod.id, 'description', e.target.value)}
+                          onBlur={() => flushModuleField(`${mod.id}:description`)}
                           rows={2}
                           className="w-full px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none disabled:opacity-60"
                         />
@@ -2080,7 +2143,16 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                           min={1}
                           value={mod.durationEstimate}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { durationEstimate: Math.max(1, Number(e.target.value)) })}
+                          onChange={(e) => {
+                            // `Math.max(1, Number(v))` no basta: `Number('-')` y `Number('1e')`
+                            // son `NaN`, y `Math.max(1, NaN)` es `NaN`, que acababa guardado en la
+                            // base de datos. Con `type="number"` esos valores intermedios ocurren
+                            // al teclear un negativo o notación científica, y al pegar texto.
+                            const parsed = Number(e.target.value);
+                            if (!Number.isFinite(parsed)) return;
+                            handleUpdateModuleField(mod.id, 'durationEstimate', Math.max(1, Math.round(parsed)));
+                          }}
+                          onBlur={() => flushModuleField(`${mod.id}:durationEstimate`)}
                           className="w-32 px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
                         />
                       </div>

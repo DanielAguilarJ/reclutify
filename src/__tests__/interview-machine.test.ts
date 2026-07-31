@@ -143,6 +143,219 @@ describe('el flujo completo de una entrevista', () => {
 
 // ══════════════════════════════════════════════════════════════════════════════
 
+describe('secuencias REALES de despacho de InterviewRoom', () => {
+  /**
+   * Reproduce una secuencia y devuelve el estado final más los eventos RECHAZADOS.
+   *
+   * POR QUÉ ESTE BLOQUE EXISTE
+   * --------------------------
+   * Las pruebas de arriba comprueban transiciones sueltas, y con todas ellas en verde la
+   * máquina tenía una regresión crítica: los caminos de `handleCandidateUtterance` que
+   * responden SIN consultar al modelo llamaban a `speakText()` antes de despachar
+   * `TRANSCRIPTION_SETTLED`, así que el `SPEECH_STARTED` se rechazaba y la entrevista quedaba
+   * atascada en `transcribing` — botón deshabilitado, sesión perdida.
+   *
+   * Lo encontró una revisión independiente leyendo el componente, no las pruebas. La lección
+   * es que probar transiciones sueltas no prueba las SECUENCIAS, así que este bloque reproduce
+   * las secuencias que el componente despacha de verdad, en su orden real.
+   *
+   * Un evento rechazado a mitad de una secuencia legítima es el síntoma exacto del atasco, así
+   * que la aserción es que la lista de rechazos esté VACÍA.
+   */
+  function replay(events: readonly InterviewEvent[]): {
+    final: InterviewPhase;
+    rejected: InterviewEventType[];
+  } {
+    let phase = initialInterviewPhase;
+    const rejected: InterviewEventType[] = [];
+
+    for (const event of events) {
+      const next = interviewReducer(phase, event);
+      if (next === phase) rejected.push(event.type);
+      phase = next;
+    }
+
+    return { final: phase, rejected };
+  }
+
+  it('turno normal: el candidato responde y Zara pregunta lo siguiente', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Hola, soy Zara. ¿Tu experiencia con React?' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_SETTLED', at: 2_000 },
+      { type: 'AI_RESPONSE', text: '¿Y cómo resolviste el problema de rendimiento?' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('REFORMULACIÓN: el candidato dice «¿cómo?» y Zara repite sin llamar al modelo', () => {
+    // Es la secuencia exacta que estaba rota. `handleCandidateUtterance` detecta un fragmento
+    // confuso y llama a `speakText()` DIRECTAMENTE, sin despachar `TRANSCRIPTION_SETTLED`.
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Cuéntame sobre tu experiencia.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      // Sin `TRANSCRIPTION_SETTLED`: no se envía nada al modelo.
+      { type: 'SPEECH_STARTED', text: 'Perdona, lo pregunto de otra forma: ¿en qué has trabajado?' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    // Y lo que importa: el candidato PUEDE volver a hablar.
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('CALLEJÓN SIN SALIDA: dos respuestas evasivas y Zara cambia de tema', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta uno.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_SETTLED', at: 2_000 },
+      { type: 'AI_RESPONSE', text: 'Pregunta dos.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 3_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      // Segunda evasiva: se cambia de tema sin consultar al modelo.
+      { type: 'SPEECH_STARTED', text: 'Pasemos a hablar de trabajo en equipo.' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('la transcripción no captó nada: el turno vuelve al candidato', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_EMPTY' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('el saludo falla y se usa el de respaldo', () => {
+    // `startInterview` habla un saludo fijo cuando la llamada al modelo falla, sin pasar por
+    // `OPENING_READY`.
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'SPEECH_STARTED', text: 'Hola, empecemos la entrevista.' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('la llamada al modelo falla y Zara dice el mensaje de error', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_SETTLED', at: 2_000 },
+      { type: 'PROCESSING_SLOW' },
+      // El `catch` del manejador habla el mensaje de error.
+      { type: 'SPEECH_STARTED', text: 'Disculpa, tuve un problema. ¿Puedes repetir?' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('el límite de preguntas del tema fuerza el avance', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Última pregunta del tema.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_SETTLED', at: 2_000 },
+      // Presupuesto agotado: se habla la transición desde `processing`.
+      { type: 'SPEECH_STARTED', text: 'Buena respuesta. Pasemos al siguiente tema.' },
+      { type: 'SPEECH_ENDED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('el candidato termina anticipadamente en medio de un turno', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'END', reason: 'candidate-ended' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final).toEqual({ status: 'finished', reason: 'candidate-ended' });
+  });
+
+  it('el reloj cierra la entrevista mientras Zara habla', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Cierre por tiempo.' },
+      { type: 'END', reason: 'time-exhausted' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final).toEqual({ status: 'finished', reason: 'time-exhausted' });
+  });
+
+  it('la red de seguridad del finally desatasca un turno abandonado', () => {
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      // El manejador falla antes de hablar y el `finally` despacha esto.
+      { type: 'TURN_ABORTED' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+
+  it('DOS despachos consecutivos en el mismo turno del bucle de eventos', () => {
+    // `finishCandidateTurn` despacha `CANDIDATE_TURN_SUBMITTED` y `completeCandidateTurn` puede
+    // despachar `TRANSCRIPTION_EMPTY` inmediatamente después, sin renderizado entre medias.
+    //
+    // Es el caso que obligó a que el despachador del componente actualice su ref de forma
+    // SÍNCRONA: leyendo el ref del efecto, el segundo evento se comparaba contra un estado
+    // obsoleto y se rechazaba siendo válido.
+    const { final, rejected } = replay([
+      { type: 'START' },
+      { type: 'OPENING_READY', text: 'Pregunta.' },
+      { type: 'SPEECH_ENDED' },
+      { type: 'CANDIDATE_TURN_STARTED', at: 1_000 },
+      { type: 'CANDIDATE_TURN_SUBMITTED' },
+      { type: 'TRANSCRIPTION_EMPTY' },
+    ]);
+
+    expect(rejected).toEqual([]);
+    expect(final.status).toBe('awaitingCandidate');
+  });
+});
+
 describe('las once combinaciones imposibles dejan de ser alcanzables', () => {
   it('RECHAZA que el candidato hable mientras Zara habla', () => {
     // ESTE es el fallo central que la máquina elimina.
@@ -221,7 +434,9 @@ describe('matriz completa de estado × evento', () => {
     aiSpeaking: ['SPEECH_ENDED', 'SPEECH_STARTED', 'FAILED', 'END', 'RESET'],
     awaitingCandidate: ['CANDIDATE_TURN_STARTED', 'SPEECH_STARTED', 'FAILED', 'END', 'RESET'],
     listening: ['CANDIDATE_TURN_SUBMITTED', 'TURN_ABORTED', 'FAILED', 'END', 'RESET'],
-    transcribing: ['TRANSCRIPTION_SETTLED', 'TRANSCRIPTION_EMPTY', 'TURN_ABORTED', 'FAILED', 'END', 'RESET'],
+    // `SPEECH_STARTED` desde `transcribing`: Zara responde sin consultar al modelo. Son los
+    // caminos de reformulación y de callejón sin salida. Ver el comentario en el reductor.
+    transcribing: ['TRANSCRIPTION_SETTLED', 'TRANSCRIPTION_EMPTY', 'TURN_ABORTED', 'SPEECH_STARTED', 'FAILED', 'END', 'RESET'],
     processing: ['AI_RESPONSE', 'SPEECH_STARTED', 'PROCESSING_SLOW', 'TURN_ABORTED', 'FAILED', 'END', 'RESET'],
     // Terminal: solo se puede empezar de nuevo.
     finished: ['RESET'],
@@ -358,6 +573,37 @@ describe('fin de la entrevista', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+
+describe('Zara responde sin consultar al modelo', () => {
+  it('permite hablar directamente desde transcribing', () => {
+    // REGRESIÓN que encontró una revisión independiente. `handleCandidateUtterance` tiene tres
+    // caminos que responden sin llamar al modelo —reformular cuando el candidato no entendió,
+    // y las dos ramas del callejón sin salida— y los tres llaman a `speakText()` antes de
+    // despachar `TRANSCRIPTION_SETTLED`.
+    //
+    // Sin esta transición el evento se rechazaba, el estado quedaba en `transcribing` para
+    // siempre y el botón de hablar deshabilitado: el candidato perdía la entrevista por haber
+    // dicho «¿cómo?».
+    const phase = interviewReducer(
+      { status: 'transcribing' },
+      { type: 'SPEECH_STARTED', text: '¿Podrías contarme un ejemplo concreto?' },
+    );
+
+    expect(phase).toEqual({
+      status: 'aiSpeaking',
+      text: '¿Podrías contarme un ejemplo concreto?',
+    });
+  });
+
+  it('y desde ahí vuelve al candidato al terminar de hablar', () => {
+    let phase: InterviewPhase = { status: 'transcribing' };
+    phase = interviewReducer(phase, { type: 'SPEECH_STARTED', text: 'Reformulo la pregunta.' });
+    phase = interviewReducer(phase, { type: 'SPEECH_ENDED' });
+
+    // El camino completo tiene que devolver el control, no solo salir de `transcribing`.
+    expect(phase.status).toBe('awaitingCandidate');
+  });
+});
 
 describe('turno abandonado', () => {
   it('devuelve el control al candidato desde los tres estados intermedios', () => {

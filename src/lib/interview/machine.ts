@@ -335,6 +335,23 @@ export function interviewReducer(phase: InterviewPhase, event: InterviewEvent): 
       // una cadena vacía, que además produciría una pregunta desconectada.
       if (event.type === 'TRANSCRIPTION_EMPTY') return { status: 'awaitingCandidate' };
       if (event.type === 'TURN_ABORTED') return { status: 'awaitingCandidate' };
+      //
+      // ZARA PUEDE HABLAR DIRECTAMENTE DESDE AQUÍ, SIN PASAR POR EL MODELO.
+      //
+      // Se me pasó al diseñar la máquina y lo encontró una revisión independiente. Es una
+      // REGRESIÓN CRÍTICA, no un caso teórico: `handleCandidateUtterance` tiene tres caminos
+      // que responden sin consultar al modelo —reformular una pregunta que el candidato no
+      // entendió, y las dos ramas de la detección de callejón sin salida— y los tres llaman a
+      // `speakText()` ANTES de despachar `TRANSCRIPTION_SETTLED`.
+      //
+      // Sin esta transición, ese `SPEECH_STARTED` se rechazaba, el estado se quedaba en
+      // `transcribing` para siempre y el botón de hablar quedaba deshabilitado: el candidato
+      // perdía la entrevista por haber dicho «¿cómo?».
+      //
+      // No se corrige despachando `TRANSCRIPTION_SETTLED` antes, que era la otra opción: ese
+      // evento significa «hay texto que enviar al modelo», y en estos tres caminos no se
+      // envía nada. Sería registrar un estado `processing` que no ocurre.
+      if (event.type === 'SPEECH_STARTED') return { status: 'aiSpeaking', text: event.text };
       return phase;
 
     case 'processing':

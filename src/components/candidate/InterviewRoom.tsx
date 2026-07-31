@@ -87,6 +87,7 @@ export default function InterviewRoom({
     isProcessing,
     isProcessingSlow: processingTooLong,
     canStartTurn,
+    canFinishTurn,
   } = deriveInterviewFlags(phase);
 
   // El estado actual también en un ref, para que los manejadores de eventos y los
@@ -106,10 +107,23 @@ export default function InterviewRoom({
    */
   const dispatch = useCallback((event: InterviewEvent) => {
     const current = phaseRef.current;
-    if (interviewReducer(current, event) === current) {
+    const next = interviewReducer(current, event);
+
+    if (next === current) {
       console.warn(describeRejectedEvent(current, event));
       return;
     }
+
+    // El ref se adelanta al renderizado A PROPÓSITO.
+    //
+    // Sin esta línea, dos despachos en la misma tarea leían el mismo `phaseRef` —que solo se
+    // actualiza en un efecto, después del renderizado— así que el segundo se comparaba contra
+    // un estado obsoleto y podía rechazarse siendo válido. Y ocurre de verdad:
+    // `finishCandidateTurn` despacha `CANDIDATE_TURN_SUBMITTED` y `completeCandidateTurn`
+    // puede despachar `TRANSCRIPTION_EMPTY` en el mismo turno del bucle de eventos.
+    //
+    // El efecto de abajo se queda como red: reasigna el mismo valor tras el renderizado.
+    phaseRef.current = next;
     rawDispatch(event);
   }, []);
 
@@ -943,7 +957,11 @@ export default function InterviewRoom({
       // normal esto es un no-op. Existe para que un camino nuevo que se olvide de hablar no
       // deje la entrevista atascada en `processing` con el botón deshabilitado y el
       // candidato sin poder continuar.
-      if (phaseRef.current.status === "processing") {
+      // Cubre `processing` Y `transcribing`. Solo `processing` era insuficiente: los caminos
+      // de reformulación y de callejón sin salida responden desde `transcribing` sin pasar por
+      // el modelo, y si alguno de ellos fallara antes de hablar, el estado se quedaría ahí.
+      const stuckStatus = phaseRef.current.status;
+      if (stuckStatus === "processing" || stuckStatus === "transcribing") {
         dispatch({ type: "TURN_ABORTED" });
       }
       processingLockRef.current = false;
@@ -2268,14 +2286,26 @@ export default function InterviewRoom({
               <div className="flex flex-col items-start gap-2 mb-3">
                 <button
                   type="button"
-                  onClick={isRecording ? finishCandidateTurn : startCandidateTurn}
-                  disabled={!isRecording && (isAiSpeaking || isProcessing || isTranscribing)}
+                  onClick={canFinishTurn ? finishCandidateTurn : startCandidateTurn}
+                  // La habilitación sale de la MÁQUINA, no de una expresión con cuatro
+                  // booleanos.
+                  //
+                  // La fórmula anterior era `!isRecording && (isAiSpeaking || isProcessing ||
+                  // isTranscribing)` negada, y tenía un hueco que encontró una revisión
+                  // independiente: durante `preparing` —permisos concedidos, saludo en camino—
+                  // los cuatro booleanos son `false`, así que el botón salía HABILITADO. Un
+                  // clic ahí abría el micrófono físicamente y el `dispatch` se rechazaba, con
+                  // lo que el micrófono quedaba abierto sin que el estado lo reflejara.
+                  //
+                  // `canStartTurn` es verdadero solo en `awaitingCandidate`, que es la
+                  // definición de «Zara calló y te toca». No hay hueco posible.
+                  disabled={!canStartTurn && !canFinishTurn}
                   className={`min-w-[250px] inline-flex items-center justify-center gap-3 px-6 py-3.5 rounded-full text-sm font-semibold text-white shadow-lg transition-all focus:outline-none focus-visible:ring-4 cursor-pointer disabled:cursor-not-allowed disabled:shadow-none ${
-                    isRecording
+                    canFinishTurn
                       ? "bg-danger hover:bg-danger/90 shadow-danger/20 focus-visible:ring-danger/20"
-                      : isAiSpeaking || isProcessing || isTranscribing
-                        ? "bg-slate-400/70"
-                        : "bg-primary hover:bg-primary-hover shadow-primary/25 focus-visible:ring-primary/20"
+                      : canStartTurn
+                        ? "bg-primary hover:bg-primary-hover shadow-primary/25 focus-visible:ring-primary/20"
+                        : "bg-slate-400/70"
                   }`}
                   aria-pressed={isRecording}
                 >

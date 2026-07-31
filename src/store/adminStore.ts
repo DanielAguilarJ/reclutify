@@ -367,6 +367,56 @@ function commitSyncQueueAfterRetry(
  */
 let retryInFlight: Promise<void> | null = null;
 
+/**
+ * Mensaje para cuando una escritura optimista de rol no llega a la base.
+ *
+ * Las tres acciones de rol aplicaban el cambio en local, fallaban contra Supabase, lo registraban
+ * en consola y dejaban el estado divergente sin revertir ni avisar. `removeRole` era el peor: el
+ * puesto desaparecía de la pantalla y seguía existiendo —y publicado— en la base, así que el admin
+ * creía haberlo retirado y los candidatos seguían pudiendo entrar.
+ *
+ * `addRole` tampoco era inocuo: `create-role` espera a `addRole` y a continuación crea tickets
+ * contra ese id, así que los tickets apuntaban a un puesto inexistente.
+ */
+/** Devuelve un rol a su versión previa. Si no había previa, lo saca de la lista. */
+function revertRole(
+  set: (fn: (state: AdminState) => Partial<AdminState>) => void,
+  id: string,
+  previous: Role | undefined,
+): void {
+  set((state: AdminState) => ({
+    roles: previous
+      ? state.roles.map((r) => (r.id === id ? previous : r))
+      : state.roles.filter((r) => r.id !== id),
+    error: ROLE_SYNC_ERROR,
+  }));
+}
+
+/** Reinserta un rol cuyo borrado falló, en la posición que ocupaba. */
+function restoreRemovedRole(
+  set: (fn: (state: AdminState) => Partial<AdminState>) => void,
+  removed: Role | undefined,
+  index: number,
+): void {
+  if (!removed) {
+    set(() => ({ error: ROLE_SYNC_ERROR }));
+    return;
+  }
+
+  set((state: AdminState) => {
+    // Si otra escritura ya lo repuso, no se duplica.
+    if (state.roles.some((r) => r.id === removed.id)) {
+      return { error: ROLE_SYNC_ERROR };
+    }
+
+    const roles = [...state.roles];
+    roles.splice(Math.max(0, Math.min(index, roles.length)), 0, removed);
+    return { roles, error: ROLE_SYNC_ERROR };
+  });
+}
+
+const ROLE_SYNC_ERROR = "No se pudo guardar el cambio del puesto. Se ha deshecho para no mostrar algo distinto de lo guardado.";
+
 function pushToSyncQueue(
   item: Omit<SyncQueueItem, "id" | "createdAt" | "attempts">,
 ): number {
@@ -485,15 +535,28 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
 
         if (error) {
           console.error("[AdminStore] Error guardando rol en Supabase:", error);
+          // Reversión quirúrgica: se quita ESE rol en lugar de restaurar el array completo, que
+          // descartaría cualquier otro cambio ocurrido durante la petición.
+          set((state: AdminState) => ({
+            roles: state.roles.filter((r) => r.id !== role.id),
+            error: ROLE_SYNC_ERROR,
+          }));
         }
       } catch (err) {
         console.error("[AdminStore] Error sincronizando rol:", err);
+        set((state: AdminState) => ({
+          roles: state.roles.filter((r) => r.id !== role.id),
+          error: ROLE_SYNC_ERROR,
+        }));
       }
     }
   },
 
   // ─── Actualizar rol: Supabase + store local ───
   updateRole: async (id: string, updates: Partial<Role>) => {
+    // Versión previa de ESTE rol, para poder deshacer solo lo que se cambió.
+    const previous = get().roles.find((r) => r.id === id);
+
     set((state: AdminState) => ({
       roles: state.roles.map((r) => (r.id === id ? { ...r, ...updates } : r)),
     }));
@@ -536,18 +599,26 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
             "[AdminStore] Error actualizando rol en Supabase:",
             error,
           );
+          revertRole(set, id, previous);
         }
       } catch (err) {
         console.error(
           "[AdminStore] Error sincronizando actualización de rol:",
           err,
         );
+        revertRole(set, id, previous);
       }
     }
   },
 
   // ─── Eliminar rol: Supabase + store local ───
   removeRole: async (id: string) => {
+    // Se guarda el rol Y su posición para devolverlo a su sitio si el borrado no cuaja: la lista
+    // está ordenada por fecha de creación y reinsertar al principio la desordenaría.
+    const roles = get().roles;
+    const removedIndex = roles.findIndex((r) => r.id === id);
+    const removed = removedIndex >= 0 ? roles[removedIndex] : undefined;
+
     set((state: AdminState) => ({
       roles: state.roles.filter((r) => r.id !== id),
     }));
@@ -563,12 +634,14 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
             "[AdminStore] Error eliminando rol en Supabase:",
             error,
           );
+          restoreRemovedRole(set, removed, removedIndex);
         }
       } catch (err) {
         console.error(
           "[AdminStore] Error sincronizando eliminación de rol:",
           err,
         );
+        restoreRemovedRole(set, removed, removedIndex);
       }
     }
   },

@@ -1212,8 +1212,18 @@ export default function CreateRolePage() {
         // 1. Crear ticket (igual que tickets page)
         const ticket = addTicket(candidateName, newRoleId, generationLanguage);
         
-        // 2. Sincronizar con Supabase
-        await syncAddTicket(ticket);
+        // 2. Sincronizar con Supabase.
+        //
+        // Si la fila no llega a escribirse, el enlace que lleva el correo devuelve un 404: el
+        // candidato recibe una invitación a una entrevista que no existe. Antes el resultado se
+        // ignoraba y el correo salía igual, así que el fallo lo descubría el candidato.
+        const sync = await syncAddTicket(ticket);
+        if (!sync.ok) {
+          failedEmails.push(email);
+          console.error(`No se persistió el ticket de ${email} (${sync.reason}) — no se envía el correo`);
+          setBulkProgress({ sent: i + 1, total: candidatesList.length });
+          continue;
+        }
         
         // 3. Construir la URL de la entrevista: solo el token.
         //    Antes se adjuntaba `?d=` con el ticket y el puesto —criterios de

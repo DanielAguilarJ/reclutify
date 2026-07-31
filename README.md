@@ -208,7 +208,7 @@ src/
 │   │                     # openrouter · interview-access · email
 │   ├── authz/            # Autorización compartida sesión + organización
 │   ├── candidate-results/# Prueba de acceso del candidato
-│   ├── interview/        # machine · zara-prompt · telemetry
+│   ├── interview/        # machine · zara-prompt · telemetry · rubric
 │   ├── interview-tickets/# Servicio y contratos del ticket
 │   ├── coach/            # Redacción de credenciales de integraciones
 │   ├── schemas/          # Esquemas Zod de entrada
@@ -216,7 +216,8 @@ src/
 │   └── training/         # Centro de capacitación
 ├── hooks/                # useMediaStream · useMediaRecorder · useTTS ·
 │                         # useSTT · useSupabaseRealtime · useModalDialog ·
-│                         # useDisclosure
+│                         # useDisclosure · useDebouncedPersist ·
+│                         # useUnsavedChangesWarning
 ├── store/                # Zustand
 ├── types/                # Tipos y ampliaciones del entorno
 ├── utils/supabase/       # Los cuatro clientes
@@ -278,6 +279,7 @@ Controles que aplica el código, y dónde:
 | Aislamiento por organización | RLS + comprobación explícita en cada endpoint |
 | Secretos de terceros | `src/lib/coach/integration-secrets.ts` — nunca salen del servidor |
 | Estados imposibles | `src/lib/interview/machine.ts` — unión discriminada, no booleanos |
+| Telemetría con datos personales | `interview_telemetry` sin políticas; se lee por `org_id` |
 
 Al añadir un endpoint que use `createAdminClient()`, valida identidad y organización
 en el propio endpoint: RLS no interviene ahí.

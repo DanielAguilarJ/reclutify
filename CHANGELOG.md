@@ -139,9 +139,46 @@ que había quedado fuera.
 - Los quince avatares con `alt` coherente y respaldo de iniciales, centralizados en un
   componente que optimiza cuando el host lo permite y nunca revienta cuando no.
 
+### Ritmo de la entrevista
+
+- **El tope de preguntas por tema estaba invertido.** Se calculaba con un suelo de
+  `preguntas_hechas + 1`, y la ruta de chat decide con `hechas >= tope`, así que la comparación era
+  insatisfacible: con urgencia alta el tema **nunca** avanzaba, y el tope escalaba siguiendo a las
+  preguntas hechas. La entrevista se clavaba en un tema justo cuando se estaba quedando sin tiempo,
+  los temas restantes acababan sin evidencia, y como la evaluación puntúa por tema, el candidato
+  salía con una nota que no le correspondía.
+- Con urgencia crítica el modelo podía recibir «vas adelantado, haz preguntas extra» con el 95 % del
+  reloj consumido.
+
+### Datos que se perdían
+
+- **La cola de reintento** de `adminStore`, cuya única razón de ser es no perder los resultados de
+  una entrevista, los perdía: escribía al final del recorrido pisando lo encolado durante los
+  `await`, no tenía guarda de concurrencia, reintentaba indefinidamente lo que siempre falla, y leía
+  `localStorage` con un `as` sin validar.
+- **Las tres acciones de puesto** dejaban la pantalla divergente de la base al fallar. `removeRole`
+  hacía creer al admin que había retirado un puesto que seguía publicado.
+- **Los tickets** se sincronizaban en silencio: en producción cualquier fallo se tragaba, el admin
+  copiaba el enlace y el candidato recibía un 404. Y el alta masiva **enviaba el correo igualmente**.
+- **Generar y enriquecer con IA** reemplazaban el trabajo manual del reclutador sin confirmar, y el
+  camino de error de «Generar» sustituía sus criterios por cinco genéricos.
+- **Cuatro campos de `/coach/settings`** eran decorativos: no había ningún camino que llevara esos
+  datos a la base.
+- **Los campos de módulo** llamaban al servidor en cada tecla y solo actualizaban la pantalla si el
+  `PATCH` tenía éxito, así que escribir era a saltos y se perdían caracteres.
+- Aviso de cambios sin guardar en los cuatro formularios más largos.
+
+### Informe y telemetría
+
+- **La gráfica de sentimiento pintaba una confianza medida de 0 como 50 %** mientras la lista de
+  abajo la marcaba en rojo. Y una confianza no medida salía como «0 %» en rojo, penalizando al
+  candidato por un hueco en los datos.
+- **El panel de telemetría devolvía cero filas** desde que se cerró la política que permitía leer
+  los CV de todas las organizaciones. La tabla no tenía por dónde filtrar; ahora tiene `org_id`.
+
 ### Pruebas
 
-De 798 a **1 084** en 66 archivos. Cobertura nueva del middleware (33), de la
+De 798 a **1 167** en 72 archivos. Cobertura nueva del middleware (33), de la
 autorización de `/api/chat` (15), del limitador de tasa (10), de la guardia anti-SSRF
 (22), de los esquemas de entrada (25), de los hooks de medios y voz (38), del diálogo
 accesible (10), de la redacción de credenciales (12) y del cálculo de la puntuación del

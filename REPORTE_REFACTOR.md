@@ -1,6 +1,6 @@
 # Reporte de auditoría y refactorización — Reclutify
 
-**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **38 commits**
+**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **50 commits**
 
 **Verificación:** `npm run verify` en verde — `tsc --noEmit` sin errores, ESLint con
 0 errores sobre todo `src/`, 905 pruebas en 57 archivos, `next build` correcto.
@@ -622,7 +622,167 @@ Y enseña algo sobre el proceso: lo encontró una revisión independiente leyend
 no las pruebas ni yo. Someter el cambio de mayor riesgo a un revisor que no comparte el
 contexto de quien lo escribió fue lo que evitó que esto llegara a producción.
 
-### 2.30 Actualización silenciosa de cero filas
+### 2.30 El tope de ritmo estaba INVERTIDO: la entrevista se clavaba justo al quedarse sin tiempo
+
+`computeRealTimePacing` calculaba el tope de preguntas por tema con un suelo de
+`preguntas_hechas + 1`:
+
+```ts
+effectiveHardLimit = max(max(1, asked + 1), budget - suggestSkipQuestions)
+```
+
+La ruta de chat decide con `asked >= effectiveHardLimit`. Ese suelo garantiza que el tope
+SIEMPRE supera lo ya preguntado, luego la comparación era insatisfacible y `mustAdvanceNow` **no
+podía ser cierto** con urgencia `hurry` ni `critical`. Con presupuesto 4 y urgencia normal el tema
+avanzaba a las 4 preguntas; con urgencia crítica el tope subía a 5, luego 6, luego 7, siguiendo a
+`asked + 1`.
+
+El efecto es el contrario del documentado: la entrevista se quedaba **clavada en un tema justo
+cuando se estaba quedando sin tiempo**, y los temas restantes acababan con cero evidencia. Y como
+la evaluación puntúa por tema y **un criterio sin puntuación cuenta como 0**, un candidato que
+cubrió bien el tema 1 de 5 salía con ~20/100 sin culpa alguna. El bug de ritmo hundía la nota.
+
+El segundo término tampoco servía: `suggestSkipQuestions` está topado a propósito con
+`max(0, budget - asked - 1)` —«deja al menos una más»— porque es una SUGERENCIA para el prompt.
+Derivar un límite duro de una sugerencia blanda que por construcción se mantiene por encima de lo
+ya preguntado no podía funcionar.
+
+El tope ahora es función de la urgencia y nunca de lo ya preguntado, con suelo de 1. Se añadió un
+barrido exhaustivo —6 duraciones × 5 cantidades de temas × cada índice de tema × 5 posiciones del
+reloj— que afirma que para toda combinación existe una cantidad de preguntas que fuerza el avance.
+
+### 2.31 Otra regresión mía: el panel de telemetría devolvía cero filas
+
+`202608020002` eliminó la única política de lectura de `interview_telemetry`, y con razón: era
+`FOR SELECT TO authenticated USING (true)` sobre una tabla que guarda el CV extraído del
+candidato. Pero la página seguía consultando con el cliente de **sesión**, y RLS sin políticas no
+da error: devuelve vacío. Mi propio comentario en esa migración afirmaba que leía con
+`service_role`, y era falso.
+
+No se podía arreglar con una política: la tabla **no tenía por dónde filtrar**. `session_id` y
+`role_title` son texto libre. La corrección fue estructural —`202608030001` añade `org_id`,
+`/api/chat` lo rellena desde la autorización que ya hizo, y la página filtra por él—. Las filas
+antiguas quedan en `NULL` a propósito: adivinar su organización por `role_title` significaría
+enseñar el CV de un candidato a otra empresa.
+
+De paso: la página solo exigía sesión (`if (!user) redirect`), así que cualquier cuenta
+autenticada —incluido un candidato— abría el panel.
+
+### 2.32 La cola que existía para no perder datos del candidato los perdía
+
+`adminStore` tiene una cola en `localStorage` cuya única razón de ser es no perder los resultados
+de una entrevista cuando la escritura a Supabase falla. No tenía ninguna prueba y tenía cuatro
+defectos:
+
+ 1. **`attempts` se incrementaba y se guardaba, pero no se leía para decidir nada.** La única
+    evicción era por antigüedad (14 días) o por la cota de 200, así que una entrada que falla
+    siempre —un puesto borrado, un candidato que el servidor rechaza con 4xx— se reintentaba en
+    cada carga del panel durante dos semanas.
+ 2. **`writeSyncQueue(remaining)` al final del recorrido pisaba lo encolado durante los `await`.**
+    Y se encola: `addCandidate` lo hace justo al agotar sus tres reintentos, que es cuando la red
+    va mal, que es cuando el reintento está corriendo.
+ 3. **Sin guarda de concurrencia.** `fetchFromSupabase` dispara `retrySyncQueue` al terminar, así
+    que dos navegaciones seguidas lanzaban dos recorridos que se pisaban el resultado.
+ 4. **`JSON.parse(raw) as SyncQueueItem[]`**, un `as` sin comprobar nada sobre almacenamiento del
+    cliente. Un JSON válido con otra forma pasaba el cast y luego `item.kind` caía en el `else`,
+    enviando basura al endpoint.
+
+### 2.33 Tres divergencias silenciosas entre la pantalla y la base
+
+ - **Las tres acciones de puesto** aplicaban el cambio en local, fallaban contra Supabase y lo
+   dejaban así. `removeRole` era el peor: el puesto desaparecía de la pantalla y seguía existiendo
+   —y publicado— en la base, así que el admin creía haberlo retirado y los candidatos seguían
+   pudiendo entrar. `addRole` tampoco era inocuo: `create-role` lo espera y a continuación crea
+   tickets contra ese id.
+ - **`ticketStore.syncAddTicket`** devolvía `void` y solo registraba errores
+   `if (NODE_ENV === 'development')`. En producción, cualquier fallo era completamente silencioso:
+   el admin copiaba el enlace, lo enviaba al candidato, y el candidato recibía un 404. Peor:
+   `create-role` **enviaba el correo igualmente**, así que el candidato recibía una invitación a
+   una entrevista que no existía.
+ - **`trainingStore.sendGeneralMessage`** caía a una instantánea capturada ANTES de añadir el
+   mensaje del usuario. Con un `200` sin `history`, el mensaje que la persona acababa de escribir
+   desaparecía junto con la conversación, y sin error porque `response.ok` era verdadero.
+
+### 2.34 Formularios que destruían el trabajo del reclutador
+
+ - **«Generar Rúbrica con IA»** reemplazaba todos los criterios sin confirmar. Y su `catch`
+   **sustituía los del reclutador por cinco genéricos**: el camino de error era destructivo.
+ - **«Enriquecer con IA»** hacía `setTopics(enriched)`, así que pulsarlo porque a UN criterio le
+   faltaba la rúbrica machacaba las de todos, incluidas las escritas a mano. El nombre del botón
+   promete completar, no sustituir.
+ - **Doble envío en `create-role`**: el botón solo miraba `bulkSending`, que únicamente se activa
+   si hay correos que enviar. Sin lista de candidatos, un segundo clic durante el `await addRole`
+   creaba OTRO puesto con su propio token público y reenviaba los correos.
+ - **La subida de documento en `create-course`** reemplazaba trece campos sin confirmar. Y la
+   comprobación que se añadió vivía en un `useCallback` con dependencias vacías, así que capturaba
+   los valores del primer renderizado —todos vacíos— y la confirmación no se habría mostrado nunca.
+
+### 2.35 Cuatro campos de ajustes que descartaban todo lo que se escribía
+
+En `/coach/settings`, `orgName`, `coachName`, `contactEmail` y `timezone` vivían en `useState`
+local, no se cargaban del servidor y `handleSave` no los miraba. No era un fallo de guardado: **no
+existía ningún camino** que llevara esos datos a la base, y `coach_settings` no tenía columnas para
+ellos. El usuario los rellenaba, guardaba, recargaba, y estaban vacíos.
+
+Ahora el nombre de la organización va a `organizations.name` y el del coach a
+`user_profiles.full_name` mediante una acción de servidor que resuelve la organización del perfil
+de quien llama —no la acepta como argumento—; el correo es el de la CUENTA y pasa a solo lectura,
+porque cambiarlo es cambiar de credencial; y `timezone` tiene columna propia.
+
+### 2.36 El informe pintaba una confianza medida de 0 como 50 %
+
+La pantalla que decide una contratación leía el mismo dato de dos formas, y las dos estaban mal en
+sentidos opuestos:
+
+```ts
+e.sentiment?.confidence || 50   // en la gráfica
+entry.sentiment?.confidence || 0 // en la lista, treinta líneas más abajo
+```
+
+`confidence` va de 0 a 100 y **0 es un valor válido**: el candidato no mostró ninguna seguridad. Al
+ser falsy, en la gráfica pasaba a 50 —el punto medio, o sea sereno— mientras la lista lo marcaba en
+rojo. El mismo turno se pintaba de dos formas contradictorias.
+
+Y el `|| 0` tenía el error inverso: una confianza que el modelo **no midió** salía como «0 %» en
+rojo, es decir evasión máxima, cuando la verdad es «no se midió». Penalizaba al candidato por un
+hueco en los datos. Son tres estados y con un `number` no se pueden representar.
+
+### 2.37 Peticiones por tecla que además rompían el tecleo
+
+Los campos de módulo de `training/configure` llamaban al servidor en CADA pulsación, y solo
+actualizaban el estado local **si el `PATCH` tenía éxito**. Con un input controlado por
+`value={mod.title}`, entre la pulsación y la respuesta de la red el input volvía al valor anterior:
+escribir era a saltos y se perdían caracteres. Si el `PATCH` fallaba, la letra no aparecía nunca.
+Las peticiones tampoco se cancelaban, así que «Módulo de intro» podía llegar después de «Módulo de
+introducción» y dejar el texto a medias en la base.
+
+`durationEstimate` usaba `Math.max(1, Number(v))`, y `Number('-')` es `NaN`, que atraviesa
+`Math.max` y acaba guardado.
+
+### 2.38 Alta de candidato: la marca de completado iba antes que el perfil
+
+`setupCandidateProfile` escribía `user_profiles` con `onboarding_completed: true` PRIMERO y el
+perfil social después. Si la segunda escritura fallaba, la cuenta quedaba marcada como completada
+sin perfil social — y el middleware decide con ese campo: al verlo en `true` dejaba de redirigir a
+`/onboarding`, así que la persona entraba al producto sin perfil y nada le indicaba que tenía que
+volver. El flujo de empleador sí compensaba; este no.
+
+La marca es ahora la última escritura. Es preferible a compensar con borrados: no hay transacción
+entre dos `upsert` desde el cliente, así que la compensación puede fallar ella misma.
+
+### 2.39 Cualquier cuenta podía etiquetar la publicación de otra persona
+
+`hashtags` y `post_hashtags` tenían tres políticas de escritura sin condición.
+`post_hashtags_insert` no comprobaba de quién era la publicación, así que cualquiera podía colgar
+cualquier etiqueta de la publicación de otro —y no hay política de DELETE, tampoco para el autor,
+así que no se podía deshacer—. `hashtags_update USING (true)` permitía modificar `post_count`, que
+ordena las tendencias, y `tag`, que es la etiqueta para todo el mundo.
+
+Se pueden quitar las tres sin romper nada: las etiquetas las mantiene íntegramente el disparador
+`process_post_hashtags`, que es `SECURITY DEFINER` y por tanto no pasa por RLS. La autorización
+real es la de `posts`, que sí comprueba el autor.
+
+### 2.40 Actualización silenciosa de cero filas
 
 `jobs.toggleRolePublished` devolvía `success: true` cuando el `roleId` no era de la
 organización, así que la interfaz informaba de un cambio que no ocurrió.
@@ -896,7 +1056,9 @@ justifica ese radio en la misma ronda que los cambios de seguridad.
 
 ### 6.11 Stores Zustand sin selectores
 
-**Resuelto:** `coachSettingsStore` (1.18) y `webhookStore` ya no traen secretos al navegador.
+**Resuelto:** `coachSettingsStore` (1.18) y `webhookStore` ya no traen secretos al navegador. Y
+`adminStore` dejó de perder entradas de su cola de reintento (2.32) y de dejar la pantalla
+divergente de la base cuando una escritura falla (2.33).
 
 **Queda:** ningún store expone selectores granulares, así que los componentes se
 re-renderizan con cualquier cambio del store. Y cinco siguen consultando Supabase
@@ -954,18 +1116,62 @@ recomendar la reescritura de `InterviewRoom` en esta ronda.
 
 ---
 
+### 6.14 La exportación de PDF y transcripción no respeta el plan
+
+`src/lib/stripe/index.ts` declara `transcriptExport: false` para el plan `starter`, y
+`admin/report/[id]` extrae `planTier` del store —evidencia de que alguien pensó en limitarlo— pero
+nunca lo usa. Hoy cualquier plan exporta.
+
+**No se ha implementado la restricción, y la razón es que un tope en el cliente aquí no serviría de
+nada.** El informe se pinta con datos que ya están en el navegador: la generación del PDF y la
+descarga de la transcripción son locales. Esconder el botón lo esconde de quien no abre las
+herramientas de desarrollo, y nada más.
+
+Una restricción real exige mover el informe a servidor y generar el PDF allí, comprobando el plan
+antes de responder. Es un cambio de arquitectura, no una condición en un `render`. Se documenta como
+decisión de producto en lugar de dejar un tope que aparente proteger.
+
+### 6.15 Claves ajenas sin `ON DELETE` y tipos de fecha incoherentes
+
+Una auditoría de las migraciones encontró siete tablas fundacionales cuyas claves ajenas a
+`organizations`, `roles` y `candidates` no declaran `ON DELETE`, así que quedan en `RESTRICT`
+implícito: borrar una organización o un puesto falla con un error de integridad en lugar de
+propagarse o de bloquearse con un mensaje claro. Y `groups.creator_id` apunta a `auth.users` sin
+acción, así que borrar una cuenta deja filas huérfanas.
+
+Además, `interview_tickets.created_at`/`expires_at` y `candidate_results.date` son `BIGINT` con
+epoch en milisegundos mientras el resto del esquema usa `TIMESTAMPTZ`. Los dos lados son coherentes
+consigo mismos —se comprobó que no hay desajuste de unidades— pero obliga a conversiones distintas
+según la tabla.
+
+Ninguna de las dos cosas se ha tocado: cambiar el tipo de una columna o la acción de una clave ajena
+en tablas con datos requiere acceso al proyecto de Supabase para medir el impacto, y una migración
+mal medida ahí es de las pocas cosas de este trabajo que no serían reversibles.
+
+### 6.16 El aviso de cambios sin guardar no cubre la navegación interna
+
+`useUnsavedChangesWarning` se apoya en `beforeunload`, que cubre recargar, cerrar la pestaña y salir
+del sitio. **No** cubre pulsar un enlace del panel, porque el App Router lo resuelve en el cliente
+sin descargar el documento y no hay punto de intercepción estable para eso en Next 16.
+
+Cubrirlo exigiría envolver cada enlace o vigilar el historial, y las dos cosas se rompen con cada
+cambio del enrutador. Queda documentado en el propio hook para que nadie dé por hecho que protege
+más de lo que protege.
+
+---
+
 ## 7. Métricas
 
 | | |
 |---|---|
-| Commits | 38, atómicos |
+| Commits | 50, atómicos |
 | Archivos cambiados | 150 (68 nuevos, 80 modificados, 2 eliminados) |
 | Líneas | +19 127 / −4 093 |
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
-| Bugs funcionales corregidos | 30 |
-| Pruebas | 798 → **1 097** (+299); 52 → 66 archivos |
+| Bugs funcionales corregidos | 40 |
+| Pruebas | 798 → **1 167** (+369); 52 → 72 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
@@ -984,7 +1190,7 @@ recomendar la reescritura de `InterviewRoom` en esta ronda.
 ```
 npm run typecheck        →  0 errores
 npm run lint             →  0 errores, 92 avisos (documentados)
-npm run test:run         →  1 097 pruebas, 66 archivos, todas en verde
+npm run test:run         →  1 167 pruebas, 72 archivos, todas en verde
 npm run check:endpoints  →  toda ruta declara un control
 npm run build            →  compilación correcta, 69 páginas
 ```

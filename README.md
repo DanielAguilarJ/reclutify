@@ -208,14 +208,15 @@ src/
 │   │                     # openrouter · interview-access · email
 │   ├── authz/            # Autorización compartida sesión + organización
 │   ├── candidate-results/# Prueba de acceso del candidato
-│   ├── interview/        # zara-prompt · telemetry
+│   ├── interview/        # machine · zara-prompt · telemetry
 │   ├── interview-tickets/# Servicio y contratos del ticket
 │   ├── coach/            # Redacción de credenciales de integraciones
 │   ├── schemas/          # Esquemas Zod de entrada
 │   ├── services/         # interview · evaluation
 │   └── training/         # Centro de capacitación
 ├── hooks/                # useMediaStream · useMediaRecorder · useTTS ·
-│                         # useSTT · useSupabaseRealtime · useModalDialog
+│                         # useSTT · useSupabaseRealtime · useModalDialog ·
+│                         # useDisclosure
 ├── store/                # Zustand
 ├── types/                # Tipos y ampliaciones del entorno
 ├── utils/supabase/       # Los cuatro clientes
@@ -275,6 +276,8 @@ Controles que aplica el código, y dónde:
 | Errores sin fugas | `src/lib/api/errors.ts` |
 | CSP y cabeceras | `next.config.ts` |
 | Aislamiento por organización | RLS + comprobación explícita en cada endpoint |
+| Secretos de terceros | `src/lib/coach/integration-secrets.ts` — nunca salen del servidor |
+| Estados imposibles | `src/lib/interview/machine.ts` — unión discriminada, no booleanos |
 
 Al añadir un endpoint que use `createAdminClient()`, valida identidad y organización
 en el propio endpoint: RLS no interviene ahí.

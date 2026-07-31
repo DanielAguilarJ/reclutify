@@ -1,6 +1,6 @@
 # Reporte de auditoría y refactorización — Reclutify
 
-**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **28 commits**
+**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **36 commits**
 
 **Verificación:** `npm run verify` en verde — `tsc --noEmit` sin errores, ESLint con
 0 errores sobre todo `src/`, 905 pruebas en 57 archivos, `next build` correcto.
@@ -542,7 +542,49 @@ La sala comunicaba «grabando», «procesando» y «transcribiendo» solo con co
 Para quien usa lector de pantalla ese estado no existía, así que no había forma de saber
 si el micrófono estaba abierto durante una entrevista de trabajo grabada.
 
-### 2.26 Actualización silenciosa de cero filas
+### 2.26 Once combinaciones de estado imposibles en la sala de entrevista
+
+`InterviewRoom` representaba la entrevista con cuatro booleanos independientes
+—`isAiSpeaking`, `isRecording`, `isProcessing`, `isTranscribing`— más `hasStarted`. Cuatro
+booleanos son dieciséis combinaciones y solo cinco significan algo. Entre las otras once:
+
+    isAiSpeaking && isRecording   Zara habla con el micrófono del candidato abierto. El
+                                  reconocedor transcribía la voz de Zara y ESA transcripción
+                                  se enviaba al modelo como respuesta del candidato.
+    isProcessing && isRecording   la respuesta se envió y se sigue grabando, así que lo que
+                                  el candidato diga después se pierde.
+
+Y las transiciones estaban escritas como PARES DE ASIGNACIONES repartidos por 2 190 líneas
+(`setIsRecording(false); setIsProcessing(true)` en la 640, otro par en la 1353, tres
+asignaciones en la 1588). Nada garantizaba que las dos mitades ocurrieran juntas: entre ellas
+hay un renderizado que muestra una combinación imposible, y un camino que olvide una deja el
+estado inconsistente para siempre.
+
+**Corregido** con una unión discriminada de nueve estados y una tabla explícita de
+transiciones (`src/lib/interview/machine.ts`, reductor puro, 42 pruebas). Las once
+combinaciones dejan de ser representables, y un evento que no corresponde al estado **se
+rechaza y se registra**: eso convierte «el candidato pulsó hablar mientras Zara hablaba» de
+una carrera silenciosa en una línea de log con la que se puede depurar una queja concreta.
+
+La matriz de pruebas encontró una decisión que había dejado implícita: `END` y `FAILED` se
+aceptaban desde `idle`, lo que produciría una entrevista «terminada» que nunca ocurrió — y
+`finished` es lo que dispara el guardado del resultado y la subida del vídeo.
+
+### 2.27 El orbe animaba sobre silencio, con el botón habilitado
+
+`startInterview` hacía `setIsAiSpeaking(true)` **antes** de que la petición del saludo hubiera
+salido. El efecto visible es el orbe de Zara animándose sin audio; el efecto real es que los
+cuatro booleanos en `false` durante ese intervalo eran indistinguibles de «Zara terminó, te
+toca», así que el botón de hablar salía habilitado y un clic temprano iniciaba el turno del
+candidato antes del saludo. El estado `preparing` de la máquina es ese intervalo.
+
+### 2.28 El motivo del cierre de la entrevista no se distinguía
+
+`endInterview()` no recibía parámetro, así que el informe no podía diferenciar «Zara recorrió
+todos los temas», «se agotó el tiempo» y «el candidato pulsó terminar». Ahora es un argumento
+con los tres valores, y cerrar dos veces conserva el motivo del primer cierre.
+
+### 2.29 Actualización silenciosa de cero filas
 
 `jobs.toggleRolePublished` devolvía `success: true` cuando el `roleId` no era de la
 organización, así que la interfaz informaba de un cambio que no ocurrió.
@@ -599,6 +641,11 @@ manejo de errores entrelazados. Nada se podía leer ni probar por separado.
 | `hooks/useModalDialog.ts` | Trampa de foco, Escape y devolución del foco |
 | `lib/services/interview.service.ts` | Acceso a datos de la entrevista |
 | `lib/services/evaluation.service.ts` | Puntuación ponderada, en funciones puras |
+| `lib/interview/machine.ts` | Máquina de estados de la entrevista, reductor puro |
+| `hooks/useDisclosure.ts` | Desplegable anclado: `aria-expanded`, Escape, clic fuera |
+| `components/ui/Avatar.tsx` | Avatares con optimización condicionada y `alt` coherente |
+| `app/actions/webhook-config.ts` | Configuración de webhook sin exponer el secreto |
+| `__tests__/helpers/query-spy.ts` | Espía de consultas, para afirmar sobre la CONSULTA |
 | `lib/coach/integration-secrets.ts` | Redacción y recomposición de credenciales |
 | `app/actions/coach-settings-secure.ts` | Lectura y escritura sin exponer secretos |
 
@@ -745,39 +792,37 @@ Se acepta porque el resto quita el valor al ataque: ambas rutas exigen sesión d
 
 | Archivo | Líneas |
 |---|---|
-| `admin/training/configure/[programId]/page.tsx` | 2 158 |
-| `components/candidate/InterviewRoom.tsx` | 2 190 |
+| `admin/training/configure/[programId]/page.tsx` | ~2 170 |
+| `components/candidate/InterviewRoom.tsx` | ~2 210 |
 | `admin/create-role/page.tsx` | 1 817 |
 | `coach/create-course/page.tsx` | 1 231 |
 | `coach/settings/page.tsx` | 1 130 |
 
-Son también donde viven los 19 avisos de las reglas del compilador de React.
+Son también donde viven los avisos restantes de las reglas del compilador de React.
 
-**`InterviewRoom` en particular:** el hook `useZaraInterview` con máquina de estados
-**no** se implementó. El diseño está listo —un `type` discriminado de siete estados
-mutuamente excluyentes que sustituye 6 booleanos de estado y 8 refs booleanas, con los
-efectos de TTS, STT, temporizador, `MediaRecorder`, `AudioContext` y llamada al modelo
-encapsulados y con cleanup— y el motivo de no hacerlo es honesto: es la reescritura del
-componente crítico del producto, con condiciones de carrera reales entre TTS, STT y
-chat, y sin pruebas de integración del flujo completo que respalden el cambio. El orden
-correcto es primero esas pruebas, después la máquina de estados.
+**Lo que sí se hizo en `InterviewRoom`:** la máquina de estados (ver 2.26, 2.27 y 2.28) y las
+fugas de recursos (2.19, 2.20). El componente sigue teniendo 2 200 líneas, pero ya no tiene
+estados imposibles ni deja la cámara encendida, que era el riesgo real; el tamaño es
+mantenibilidad.
 
-Se corrigió lo que sí era acotable en el archivo: los `any` de `SpeechRecognition`, y
-el envío de credenciales.
+**Lo que queda:** partirlo. El orden correcto es primero pruebas de integración del flujo
+completo, y esas necesitan un navegador de verdad —cámara, micrófono, reconocimiento de voz—,
+es decir Playwright, que este proyecto no tiene configurado. Montarlo es un trabajo con su
+propio alcance.
 
-### 6.7 Los hooks nuevos aún no se han sustituido dentro de `InterviewRoom`
+### 6.7 Los hooks de medios y voz aún no se usan dentro de `InterviewRoom`
 
-**Las fugas de recursos SÍ están corregidas** (ver 2.19, 2.20 y 2.21): el cleanup detiene
-cámara, micrófono y grabadora, y el temporizador ya no se duplica.
+**Las fugas de recursos están corregidas** (2.19, 2.20, 2.21) y **la máquina de estados está
+conectada** (2.26). Lo que queda es que `InterviewRoom` siga gestionando TTS, reconocimiento
+de voz y grabación con sus propios refs en lugar de con `useTTS`, `useSTT`, `useMediaStream` y
+`useMediaRecorder`, que existen y tienen 38 pruebas.
 
-Lo que queda es que `InterviewRoom` siga gestionando TTS, STT y la grabación con sus refs
-propios en vez de con `useTTS`, `useSTT`, `useMediaStream` y `useMediaRecorder`, que ya
-existen y están probados. Sustituirlos es exactamente el mismo trabajo que 6.6 —reescribir
-el ciclo de vida del componente crítico— así que va con él y no antes.
+Sustituirlos es el mismo trabajo que 6.6 —reestructurar el componente— así que va con él.
 
-Los hooks se escribieron primero a propósito: son la parte que se puede probar en
-aislamiento, y tener 38 pruebas verdes sobre el comportamiento correcto es lo que hará
-seguro el reemplazo cuando se haga.
+Los hooks se escribieron primero a propósito: son la parte que se puede probar en aislamiento,
+y tener pruebas verdes sobre el comportamiento correcto es lo que hará seguro el reemplazo.
+Uno de ellos, `useSTT`, ya aporta valor sin estar conectado: corrigió el idioma fijo de
+`src/lib/stt.ts`, que sí se usa en el módulo de informes.
 
 ### 6.8 Fetch en cliente que debería ser Server Component
 
@@ -785,20 +830,24 @@ seguro el reemplazo cuando se haga.
 veces**, la misma información), `/admin/group-interview`, `/informes`. Afecta al LCP
 del panel. Es refactor de páginas, no de seguridad.
 
-### 6.9 Accesibilidad: cuatro modales hechos, dos pendientes
+### 6.9 Accesibilidad: hecho lo estructural, quedan las imágenes
 
-`HireModal`, `CompareModal`, `ReportModal` y `JobDetailModal` ya tienen `role="dialog"`,
-`aria-modal`, trampa de foco, cierre con Escape, devolución del foco al disparador y
-`aria-label` en los botones de solo icono. La sala de entrevista ya anuncia sus estados con
-`role="status"` y `aria-live="polite"`.
+**Resuelto:** los cuatro modales (`HireModal`, `CompareModal`, `ReportModal`,
+`JobDetailModal`) con `role="dialog"`, `aria-modal`, trampa de foco, Escape y devolución del
+foco; los dos desplegables (menú móvil y panel de notificaciones) con `aria-expanded`,
+`aria-controls`, Escape y clic fuera; la sala de entrevista anunciando sus estados con
+`role="status"` y `aria-live="polite"`; `prefers-reduced-motion` en las animaciones CSS,
+incluidas las de bucle infinito del orbe de Zara; y los quince avatares con `alt` coherente y
+respaldo de iniciales.
 
-Quedan dos superficies que no son modales propiamente dichos y necesitan otro tratamiento:
-el menú móvil de la landing y el panel de notificaciones. Ambos son desplegables ancorados
-a un botón, así que el patrón correcto no es `role="dialog"` sino `aria-expanded` más
-`role="menu"`, y el cierre con Escape sin bloquear el desplazamiento de la página.
+**Queda:** 19 de los 26 `<img>` originales. Los siete de avatar están hechos vía el
+componente `Avatar`; los 19 restantes son logotipos de empresa, vistas previa de medios, la
+foto del testimonio y el vídeo de la portada. Cada grupo necesita una decisión distinta
+—dimensiones conocidas, `sizes` correcto, `priority` solo en el que está sobre el pliegue— y
+convertirlos en bloque sin esa decisión produce peor rendimiento, no mejor.
 
-También quedan 26 `<img>` nativos —sin lazy loading ni formato moderno— y ausencia de
-`prefers-reduced-motion` en las animaciones CSS de `globals.css`.
+También queda el vídeo `hero.mp4` (1,5 MB) sin `poster` ni `preload`, que provoca un salto de
+diseño visible al cargar la portada.
 
 ### 6.10 `LazyMotion` no aplicado
 
@@ -807,30 +856,63 @@ migrar `motion.*` a `m.*` en los 29, porque sin `strict` la envoltura no reduce 
 mecánico pero toca todas las animaciones del producto, y el ahorro (~30 KB) no
 justifica ese radio en la misma ronda que los cambios de seguridad.
 
-### 6.11 Stores Zustand sin selectores, y seis con acceso directo a Supabase
+### 6.11 Stores Zustand sin selectores
 
-**El caso de `coachSettingsStore` está corregido** (ver 1.18): las credenciales de
-terceros ya no salen del servidor.
+**Resuelto:** `coachSettingsStore` (1.18) y `webhookStore` ya no traen secretos al navegador.
 
-Queda que ningún store exponga selectores granulares, así que los componentes se
-re-renderizan con cualquier cambio del store; y que seis sigan consultando Supabase
-directamente desde el navegador (`adminStore`, `ticketStore`, `webhookStore`, `coachStore`,
-`trainingAdminStore`, `infoSessionStore`). El de mayor riesgo restante es `webhookStore`,
-que carga `webhook_secret` al cliente — menos grave que el caso anterior porque es un
-secreto NUESTRO y no de un tercero, y porque `/api/webhooks/candidate-completed` ya no lo
-acepta del cuerpo, pero debería seguir el mismo patrón de redacción.
+**Queda:** ningún store expone selectores granulares, así que los componentes se
+re-renderizan con cualquier cambio del store. Y cinco siguen consultando Supabase
+directamente desde el navegador (`adminStore`, `ticketStore`, `coachStore`,
+`trainingAdminStore`, `infoSessionStore`). Ninguno de los cinco maneja secretos: lo que
+mueven son datos que su propia organización puede leer, así que es un asunto de arquitectura
+y de rendimiento, no de exposición.
 
-### 6.12 Cobertura aún nula en varios módulos
+`adminStore` es el de mayor peso: 682 líneas con cola de reintento en `localStorage`, mapeos
+y detección de organización. Debería delegar en un servicio.
 
-`/api/tts`, `/api/send-email`, `/api/upload-video`, `/api/test-integration`, casi todas
-las server actions, los stores e `InterviewRoom`. El recálculo de la evaluación sí está
-cubierto ahora (16 pruebas), que era la lógica de negocio con más consecuencias sin probar.
+### 6.12 Cobertura: el 70 % en `actions/` no se alcanzó
 
-El objetivo de 70 % en `actions/` no se alcanzó. Se priorizó, por este orden: los controles
-de seguridad nuevos, el middleware —donde un fallo concede acceso en silencio—, el ciclo de
-vida de los recursos del navegador, y la puntuación del candidato. Las server actions
-quedan detrás porque su riesgo principal era la autorización, y esa se corrigió en el código
-con comprobaciones explícitas en vez de confiar en RLS.
+**Estado real, medido con `npm run test:coverage`:**
+
+| Ruta | Cobertura de sentencias |
+|---|---|
+| `src/lib/coach/` | **100 %** |
+| `src/lib/schemas/` | ~95 % |
+| `src/lib/interview/` | **70 %** |
+| `src/lib/api/` | **53 %** |
+| `src/lib/services/` | **41 %** |
+| `src/app/actions/` | **17,2 %** (era 2,89 %) |
+
+Dentro de `actions/`, los archivos que se corrigieron por seguridad sí están cubiertos:
+`billing` 86 %, `coach-settings-secure` 80 %, `jobs` 67 %, `company` 66 %, `search` 54 %.
+
+**Por qué no se alcanzó el 70 % del directorio completo, y por qué no se forzó:** los doce
+archivos sin cubrir son más de 2 500 líneas de `feed`, `profile`, `onboarding`,
+`organizations` y `coach-settings`, casi todas lectores y escrituras cuyo riesgo principal
+era la autorización — y esa se corrigió **en el código**, con comprobaciones explícitas en
+lugar de confiar en RLS. Escribir 2 500 líneas de prueba para subir un número, en lugar de
+cubrir el middleware, el tope de tasa, la guardia anti-SSRF, el ciclo de vida de cámara y
+micrófono y la puntuación del candidato, habría sido optimizar la métrica en vez del riesgo.
+
+Lo que sí se hizo para que no retroceda: `vitest.config.ts` fija **umbrales por ruta**, no
+uno global. Un umbral global tendría que estar en el 30 % para pasar, y el 30 % no protege
+nada porque cabe dentro cualquier módulo nuevo sin una sola prueba. Los umbrales por ruta se
+sitúan justo por debajo de lo que cada módulo tiene hoy, así que una regresión en un módulo
+cubierto falla aunque el número global suba.
+
+Sin cobertura: `/api/tts`, `/api/send-email`, `/api/upload-video`, `/api/test-integration`,
+los stores e `InterviewRoom`.
+
+### 6.13 No hay pruebas de extremo a extremo
+
+Es la carencia que bloquea 6.6 y 6.7. El flujo de entrevista necesita un navegador real
+—permisos de cámara y micrófono, reconocimiento de voz, reproducción de audio— y este
+proyecto no tiene Playwright ni equivalente configurado.
+
+Hasta que exista, la máquina de estados (42 pruebas) y los hooks (38) son la mejor garantía
+disponible: cubren las decisiones y el ciclo de vida en aislamiento, que es donde estaban los
+fallos. Lo que no cubren es la integración de las piezas, y eso es exactamente lo que impide
+recomendar la reescritura de `InterviewRoom` en esta ronda.
 
 ---
 
@@ -838,22 +920,24 @@ con comprobaciones explícitas en vez de confiar en RLS.
 
 | | |
 |---|---|
-| Commits | 28, atómicos |
-| Archivos cambiados | 133 (59 nuevos, 72 modificados, 2 eliminados) |
-| Líneas | +15 641 / −3 863 |
+| Commits | 36, atómicos |
+| Archivos cambiados | 150 (68 nuevos, 80 modificados, 2 eliminados) |
+| Líneas | +19 127 / −4 093 |
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
 | Bugs funcionales corregidos | 26 |
-| Pruebas | 798 → **981** (+183); 52 → 62 archivos |
-| Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Quedan 101 avisos |
+| Pruebas | 798 → **1 084** (+286); 52 → 66 archivos |
+| Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
 | `/api/chat` | 939 → 297 líneas |
 | `LandingClient.tsx` | 1068 → 42 líneas (+ 11 módulos) |
 | Error boundaries | 1 → 8 |
-| Hooks reutilizables nuevos | 5 (medios, voz, realtime, diálogo) |
-| Modales con teclado accesible | 0 → 4 |
+| Hooks reutilizables nuevos | 7 (medios, voz, realtime, diálogo, desplegable) |
+| Modales con teclado accesible | 0 → 4 · Desplegables accesibles | 0 → 2 |
+| `<img>` nativos | 26 → 19 |
+| Cobertura de `src/app/actions` | 2,89 % → **17,21 %** |
 | Variables en `.env.example` | 14 → 34 |
 | Dependencias | −1 (`@clerk/nextjs`), +1 (`server-only`, antes transitiva) |
 
@@ -861,8 +945,8 @@ con comprobaciones explícitas en vez de confiar en RLS.
 
 ```
 npm run typecheck        →  0 errores
-npm run lint             →  0 errores, 101 avisos (documentados)
-npm run test:run         →  981 pruebas, 62 archivos, todas en verde
+npm run lint             →  0 errores, 92 avisos (documentados)
+npm run test:run         →  1 084 pruebas, 66 archivos, todas en verde
 npm run check:endpoints  →  toda ruta declara un control
 npm run build            →  compilación correcta, 69 páginas
 ```
@@ -890,5 +974,5 @@ no 99— y ambas están ya rectificadas arriba.
    toda la cartera fueron legibles con la clave anon.
 3. **Comprobar los flujos de candidato** en un entorno de prueba: los tres caminos de
    entrada ahora envían credenciales que antes no enviaban.
-4. **Revisar los avisos de ESLint** (101). Ninguno bloquea, y son la lista de trabajo
+4. **Revisar los avisos de ESLint** (92). Ninguno bloquea, y son la lista de trabajo
    de 6.6 y 6.9.

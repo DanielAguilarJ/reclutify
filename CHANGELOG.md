@@ -117,13 +117,40 @@ que había quedado fuera.
 - **Cinco hooks reutilizables**: `useMediaStream`, `useMediaRecorder`, `useTTS`, `useSTT` y
   `useSupabaseRealtime`, con el ciclo de vida garantizado y 38 pruebas.
 
+### Estado de la entrevista
+
+- **Máquina de estados en lugar de cuatro booleanos.** `InterviewRoom` los representaba con
+  `isAiSpeaking`, `isRecording`, `isProcessing` e `isTranscribing` independientes: dieciséis
+  combinaciones de las que solo cinco significan algo. Entre las otras once, «Zara habla con
+  el micrófono abierto», que hacía que el reconocedor transcribiera la voz de Zara y la
+  enviara al modelo como respuesta del candidato. Ahora una unión discriminada con tabla
+  explícita de transiciones y rechazos registrados (reductor puro, 42 pruebas).
+- **El orbe ya no anima sobre silencio.** `setIsAiSpeaking(true)` se hacía antes de que la
+  petición del saludo saliera, y durante ese intervalo el botón de hablar salía habilitado.
+- **El motivo del cierre se distingue** en el informe: temas completados, tiempo agotado o
+  cierre del candidato.
+
+### Accesibilidad
+
+- Los dos desplegables (menú móvil y notificaciones) con `aria-expanded`, `aria-controls`,
+  Escape y clic fuera. El menú móvil solo se cerraba pulsando su fondo, que es una acción de
+  ratón.
+- `prefers-reduced-motion` en las animaciones CSS, incluidas las de bucle infinito del orbe.
+- Los quince avatares con `alt` coherente y respaldo de iniciales, centralizados en un
+  componente que optimiza cuando el host lo permite y nunca revienta cuando no.
+
 ### Pruebas
 
-De 798 a **981** en 62 archivos. Cobertura nueva del middleware (33), de la
+De 798 a **1 084** en 66 archivos. Cobertura nueva del middleware (33), de la
 autorización de `/api/chat` (15), del limitador de tasa (10), de la guardia anti-SSRF
 (22), de los esquemas de entrada (25), de los hooks de medios y voz (38), del diálogo
 accesible (10), de la redacción de credenciales (12) y del cálculo de la puntuación del
-candidato (16).
+candidato (16), la máquina de estados de la entrevista (42), el desplegable accesible (11),
+la autorización de las server actions (31) y las actions que guardan secretos (19).
+
+Cobertura de `src/app/actions` de 2,89 % a 17,21 %; `vitest.config.ts` fija umbrales **por
+ruta** para que lo cubierto no retroceda. El objetivo del 70 % en `actions/` no se alcanzó y
+`REPORTE_REFACTOR.md` explica por qué no se forzó.
 
 Dos defectos reales aparecieron al escribir las pruebas: la guardia anti-SSRF no
 detectaba las IPv4 mapeadas en forma hexadecimal —la única notación que produce

@@ -61,6 +61,8 @@ const eslintConfig = defineConfig([
     '.next/**',
     'out/**',
     'build/**',
+    // Informe de cobertura que genera vitest: código de terceros, no del proyecto.
+    'coverage/**',
     // Tipos que genera Next; no se editan a mano.
     'next-env.d.ts',
     // Configuración de sondeo puntual, no forma parte del proyecto.

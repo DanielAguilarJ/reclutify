@@ -3,6 +3,7 @@
 import { escapeHtml } from '@/lib/api/email';
 import { createClient } from '@/utils/supabase/server';
 import { Resend } from 'resend';
+import { redactIntegrationSecrets } from '@/lib/coach/integration-secrets';
 
 // ─── Types ───
 
@@ -110,7 +111,20 @@ export async function getCoachSettings(orgId: string): Promise<GetSettingsResult
       return { success: false, error: error.message };
     }
 
-    return { success: true, data: data as CoachSettingsRow };
+    // Los secretos de integraciones NO salen del servidor, aunque quien llame sea el
+    // dueño de la organización. Son credenciales de sistemas de TERCEROS (Google, HubSpot,
+    // Notion) y la interfaz solo necesita saber si están configuradas.
+    //
+    // Esta acción ya no la usa el store —pasó a `coach-settings-secure.ts`— pero sigue
+    // exportada, así que se redacta igual: dejar un camino con fuga solo porque hoy nadie
+    // lo recorre es dejar la fuga.
+    return {
+      success: true,
+      data: {
+        ...(data as CoachSettingsRow),
+        integrations: redactIntegrationSecrets((data as CoachSettingsRow).integrations),
+      } as CoachSettingsRow,
+    };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }

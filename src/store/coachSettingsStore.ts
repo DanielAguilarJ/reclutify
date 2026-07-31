@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createClient } from '@/utils/supabase/client';
+import {
+  getCoachSettings as getCoachSettingsAction,
+  saveCoachSettings as saveCoachSettingsAction,
+} from '@/app/actions/coach-settings-secure';
 
 // ─── Types ───
 
@@ -148,48 +152,54 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
 
         set({ loading: true, error: null });
         try {
-          const supabase = createClient();
-          const { data, error } = await supabase
-            .from('coach_settings')
-            .select('*')
-            .eq('org_id', orgId)
-            .single();
+          // La lectura pasa por una server action que REDACTA los secretos de
+          // integraciones antes de que salgan del servidor.
+          //
+          // Antes era `select('*')` desde el navegador, lo que enviaba al cliente el JSON
+          // de la cuenta de servicio de Google (con su clave privada), el token de HubSpot,
+          // el de Notion y el secreto del webhook. Son credenciales de sistemas de
+          // TERCEROS: quien las captura hace daño en el CRM del cliente, no en el nuestro.
+          // Ver `src/lib/coach/integration-secrets.ts`.
+          const result = await getCoachSettingsAction(orgId);
 
-          if (error && error.code === 'PGRST116') {
-            // No settings yet — create defaults
-            const { error: insertError } = await supabase
-              .from('coach_settings')
-              .insert({ org_id: orgId });
+          if (!result.success) {
+            set({ error: result.error ?? 'No se pudo cargar la configuración', loading: false });
+            return;
+          }
 
-            if (insertError) throw insertError;
+          const data = result.data;
+
+          if (!data) {
+            // Organización sin configuración todavía: valores por defecto.
             set({ settings: { ...defaultSettings }, loading: false });
             return;
           }
 
-          if (error) throw error;
-
           if (data) {
-            const integrations = (data.integrations as Integrations) || defaultSettings.integrations;
+
+            // `row` acota el acceso a la fila sin repetir el cast en cada campo.
+            const row = data as Record<string, never>;
+            const integrations = (row.integrations as Integrations) || defaultSettings.integrations;
             set({
               settings: {
-                assistantName: data.assistant_name || defaultSettings.assistantName,
-                conversationTone: data.conversation_tone || defaultSettings.conversationTone,
-                sessionLanguage: data.session_language || defaultSettings.sessionLanguage,
-                welcomeMessage: data.welcome_message || '',
-                salesPersistence: data.sales_persistence ?? defaultSettings.salesPersistence,
-                customInstructions: data.custom_instructions || '',
-                defaultSessionDuration: data.default_session_duration ?? defaultSettings.defaultSessionDuration,
-                defaultClosingMode: data.default_closing_mode || defaultSettings.defaultClosingMode,
-                autoNotifyOnInvestment: data.auto_notify_on_investment ?? true,
-                notificationSound: data.notification_sound ?? true,
-                emailOnClosing: data.email_on_closing ?? true,
-                emailOnNewLead: data.email_on_new_lead ?? true,
-                emailOnObjection: data.email_on_objection ?? false,
-                emailDailySummary: data.email_daily_summary ?? false,
-                additionalEmails: data.additional_emails || [],
-                publicWelcomeMessage: data.public_welcome_message || '',
-                showOrgName: data.show_org_name ?? true,
-                accentColor: data.accent_color || '#D3FB52',
+                assistantName: row.assistant_name || defaultSettings.assistantName,
+                conversationTone: row.conversation_tone || defaultSettings.conversationTone,
+                sessionLanguage: row.session_language || defaultSettings.sessionLanguage,
+                welcomeMessage: row.welcome_message || '',
+                salesPersistence: row.sales_persistence ?? defaultSettings.salesPersistence,
+                customInstructions: row.custom_instructions || '',
+                defaultSessionDuration: row.default_session_duration ?? defaultSettings.defaultSessionDuration,
+                defaultClosingMode: row.default_closing_mode || defaultSettings.defaultClosingMode,
+                autoNotifyOnInvestment: row.auto_notify_on_investment ?? true,
+                notificationSound: row.notification_sound ?? true,
+                emailOnClosing: row.email_on_closing ?? true,
+                emailOnNewLead: row.email_on_new_lead ?? true,
+                emailOnObjection: row.email_on_objection ?? false,
+                emailDailySummary: row.email_daily_summary ?? false,
+                additionalEmails: row.additional_emails || [],
+                publicWelcomeMessage: row.public_welcome_message || '',
+                showOrgName: row.show_org_name ?? true,
+                accentColor: row.accent_color || '#D3FB52',
                 integrations: {
                   webhook: integrations.webhook || defaultSettings.integrations.webhook,
                   google_sheets: integrations.google_sheets || defaultSettings.integrations.google_sheets,
@@ -228,10 +238,11 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
         if (!orgId) return false;
 
         try {
-          const supabase = createClient();
-          const { error } = await supabase
-            .from('coach_settings')
-            .upsert({
+          // La escritura pasa por la server action, que recompone los secretos que el
+          // cliente no cambió: el marcador `'__SAVED__'` conserva el valor almacenado. Sin
+          // eso, pulsar «Guardar» sin tocar nada sobrescribiría la credencial real con el
+          // marcador y el usuario destruiría su propia integración.
+          const result = await saveCoachSettingsAction(orgId, {
               org_id: orgId,
               assistant_name: settings.assistantName,
               conversation_tone: settings.conversationTone,
@@ -252,9 +263,13 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               show_org_name: settings.showOrgName,
               accent_color: settings.accentColor,
               integrations: settings.integrations,
-            }, { onConflict: 'org_id' });
+          });
 
-          if (error) throw error;
+          if (!result.success) {
+            set({ error: result.error ?? 'No se pudo guardar la configuración' });
+            return false;
+          }
+
           return true;
         } catch (err) {
           set({ error: (err as Error).message });

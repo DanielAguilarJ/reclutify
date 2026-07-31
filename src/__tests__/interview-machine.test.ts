@@ -10,7 +10,7 @@ import {
   isInterviewActive,
   type InterviewEvent,
   type InterviewEventType,
-  type InterviewPhase,
+  type InterviewTurnState,
   type InterviewStatus,
 } from '@/lib/interview/machine';
 
@@ -43,7 +43,7 @@ const ALL_STATUSES: readonly InterviewStatus[] = [
 ];
 
 /** Construye un estado de ejemplo para cada nombre. */
-function phaseOf(status: InterviewStatus): InterviewPhase {
+function phaseOf(status: InterviewStatus): InterviewTurnState {
   switch (status) {
     case 'idle':
       return { status: 'idle' };
@@ -121,7 +121,7 @@ describe('el flujo completo de una entrevista', () => {
   });
 
   it('cierra la entrevista cuando Zara emite el fin', () => {
-    let phase: InterviewPhase = { status: 'aiSpeaking', text: 'Gracias por tu tiempo.' };
+    let phase: InterviewTurnState = { status: 'aiSpeaking', text: 'Gracias por tu tiempo.' };
 
     phase = interviewReducer(phase, { type: 'SPEECH_ENDED' });
     phase = interviewReducer(phase, { type: 'END', reason: 'completed' });
@@ -163,7 +163,7 @@ describe('secuencias REALES de despacho de InterviewRoom', () => {
    * que la aserción es que la lista de rechazos esté VACÍA.
    */
   function replay(events: readonly InterviewEvent[]): {
-    final: InterviewPhase;
+    final: InterviewTurnState;
     rejected: InterviewEventType[];
   } {
     let phase = initialInterviewPhase;
@@ -364,7 +364,7 @@ describe('las once combinaciones imposibles dejan de ser alcanzables', () => {
     // tocar `isAiSpeaking`: micrófono abierto con el altavoz sonando. El reconocedor
     // transcribía la voz de Zara y esa transcripción se enviaba al modelo como si la
     // hubiera dicho el candidato.
-    const speaking: InterviewPhase = { status: 'aiSpeaking', text: 'Cuéntame sobre React.' };
+    const speaking: InterviewTurnState = { status: 'aiSpeaking', text: 'Cuéntame sobre React.' };
 
     const after = interviewReducer(speaking, { type: 'CANDIDATE_TURN_STARTED', at: 500 });
 
@@ -374,13 +374,13 @@ describe('las once combinaciones imposibles dejan de ser alcanzables', () => {
   it('RECHAZA abrir el micrófono mientras se procesa la respuesta', () => {
     // Con booleanos, `isProcessing && isRecording` significaba que lo que el candidato
     // dijera durante la espera se perdía: el buffer ya se había enviado.
-    const processing: InterviewPhase = { status: 'processing', startedAt: 0, slow: false };
+    const processing: InterviewTurnState = { status: 'processing', startedAt: 0, slow: false };
 
     expect(interviewReducer(processing, { type: 'CANDIDATE_TURN_STARTED', at: 1 })).toBe(processing);
   });
 
   it('RECHAZA abrir el micrófono mientras se transcribe', () => {
-    const transcribing: InterviewPhase = { status: 'transcribing' };
+    const transcribing: InterviewTurnState = { status: 'transcribing' };
 
     expect(interviewReducer(transcribing, { type: 'CANDIDATE_TURN_STARTED', at: 1 })).toBe(
       transcribing,
@@ -391,7 +391,7 @@ describe('las once combinaciones imposibles dejan de ser alcanzables', () => {
     // `preparing` existe precisamente por esto: antes era «los cuatro booleanos en false»,
     // indistinguible de `awaitingCandidate`, así que el botón salía habilitado y un clic
     // temprano iniciaba el turno del candidato antes del saludo.
-    const preparing: InterviewPhase = { status: 'preparing' };
+    const preparing: InterviewTurnState = { status: 'preparing' };
 
     expect(interviewReducer(preparing, { type: 'CANDIDATE_TURN_STARTED', at: 1 })).toBe(preparing);
   });
@@ -498,7 +498,7 @@ describe('fallos', () => {
   });
 
   it('RECHAZA un fallo antes de empezar', () => {
-    const idle: InterviewPhase = { status: 'idle' };
+    const idle: InterviewTurnState = { status: 'idle' };
 
     // La denegación de permisos ocurre aquí, y NO es un fallo de la entrevista: es de la
     // pantalla previa, que tiene su propio estado de error y ofrece reintentar. Aceptarlo
@@ -507,7 +507,7 @@ describe('fallos', () => {
   });
 
   it('RECHAZA terminar una entrevista que no empezó', () => {
-    const idle: InterviewPhase = { status: 'idle' };
+    const idle: InterviewTurnState = { status: 'idle' };
 
     // `finished` es lo que dispara el guardado del resultado y la subida del vídeo, así que
     // alcanzarlo desde `idle` crearía el registro de una sesión que nunca ocurrió.
@@ -515,7 +515,7 @@ describe('fallos', () => {
   });
 
   it('un fallo después de terminar no cambia nada', () => {
-    const finished: InterviewPhase = { status: 'finished', reason: 'completed' };
+    const finished: InterviewTurnState = { status: 'finished', reason: 'completed' };
 
     // El resultado ya se guardó; un fallo tardío de una petición en vuelo no debe alterarlo.
     expect(
@@ -524,7 +524,7 @@ describe('fallos', () => {
   });
 
   it('se puede fallar desde un fallo, actualizando el mensaje', () => {
-    const first: InterviewPhase = { status: 'failed', message: 'primero', recoverable: true };
+    const first: InterviewTurnState = { status: 'failed', message: 'primero', recoverable: true };
 
     const second = interviewReducer(first, {
       type: 'FAILED',
@@ -596,7 +596,7 @@ describe('Zara responde sin consultar al modelo', () => {
   });
 
   it('y desde ahí vuelve al candidato al terminar de hablar', () => {
-    let phase: InterviewPhase = { status: 'transcribing' };
+    let phase: InterviewTurnState = { status: 'transcribing' };
     phase = interviewReducer(phase, { type: 'SPEECH_STARTED', text: 'Reformulo la pregunta.' });
     phase = interviewReducer(phase, { type: 'SPEECH_ENDED' });
 
@@ -634,7 +634,7 @@ describe('espera larga del modelo', () => {
   });
 
   it('PROCESSING_SLOW es idempotente', () => {
-    const slow: InterviewPhase = { status: 'processing', startedAt: 100, slow: true };
+    const slow: InterviewTurnState = { status: 'processing', startedAt: 100, slow: true };
 
     // El temporizador puede disparar más de una vez; crear un objeto nuevo provocaría un
     // renderizado por nada.
@@ -642,7 +642,7 @@ describe('espera larga del modelo', () => {
   });
 
   it('la respuesta que llega tras marcarse lenta sigue siendo válida', () => {
-    let phase: InterviewPhase = { status: 'processing', startedAt: 0, slow: false };
+    let phase: InterviewTurnState = { status: 'processing', startedAt: 0, slow: false };
     phase = interviewReducer(phase, { type: 'PROCESSING_SLOW' });
     phase = interviewReducer(phase, { type: 'AI_RESPONSE', text: 'Perdona la espera.' });
 

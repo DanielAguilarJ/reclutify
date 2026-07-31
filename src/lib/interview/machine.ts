@@ -67,7 +67,23 @@
  * `idle` → `preparing` → `aiSpeaking` → `awaitingCandidate` → `listening` →
  * `transcribing` → `processing` → (vuelta a `aiSpeaking`) … → `finished`.
  */
-export type InterviewPhase =
+/**
+ * Estado del TURNO de conversación. No confundir con las otras dos «fases» del dominio.
+ *
+ * En este proyecto conviven tres conceptos con ese nombre, y se llegó a tener dos tipos exportados
+ * llamados `InterviewPhase` con significados distintos:
+ *
+ *  - `InterviewPhase` de `@/types`: por dónde va la PÁGINA del candidato —`details`, `overview`,
+ *    `hardware`, `interview`, `complete`—. Lo usa `interviewStore`.
+ *  - `InterviewPhaseKind` de `zara-prompt`: qué le toca hacer al MODELO en este turno.
+ *  - este tipo: quién tiene la palabra AHORA MISMO dentro de la sala.
+ *
+ * Son ortogonales: se puede estar en la fase `interview` de la página, con el modelo en fase de
+ * cierre, y con el turno en `listening`. El compilador cazaría un cambiazo entre ellos porque las
+ * formas no encajan, pero el lector no tiene por qué pelearse con eso, así que este se llama
+ * `InterviewTurnState`.
+ */
+export type InterviewTurnState =
   /** Antes de empezar. El candidato está en la pantalla previa. */
   | { readonly status: 'idle' }
   /**
@@ -121,10 +137,10 @@ export type InterviewEndReason =
   | 'failed';
 
 /** Nombre de cada fase, para tablas y registros. */
-export type InterviewStatus = InterviewPhase['status'];
+export type InterviewStatus = InterviewTurnState['status'];
 
 /** Estado inicial. */
-export const initialInterviewPhase: InterviewPhase = { status: 'idle' };
+export const initialInterviewPhase: InterviewTurnState = { status: 'idle' };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Eventos
@@ -207,7 +223,7 @@ const ACTIVE_STATUSES: readonly InterviewStatus[] = [
 ];
 
 /** ¿La entrevista está en curso? */
-export function isInterviewActive(phase: InterviewPhase): boolean {
+export function isInterviewActive(phase: InterviewTurnState): boolean {
   return ACTIVE_STATUSES.includes(phase.status);
 }
 
@@ -222,7 +238,7 @@ export function isInterviewActive(phase: InterviewPhase): boolean {
  * @param event Evento a aplicar.
  * @returns El estado nuevo, o `phase` sin cambios si la transición no es válida.
  */
-export function interviewReducer(phase: InterviewPhase, event: InterviewEvent): InterviewPhase {
+export function interviewReducer(phase: InterviewTurnState, event: InterviewEvent): InterviewTurnState {
   // ─── Eventos aceptados desde varios estados ───
   //
   // Se resuelven antes del `switch` por estado para no repetirlos en seis ramas, que es
@@ -422,7 +438,7 @@ export interface InterviewFlags {
  * el atributo `disabled` del botón, así que la regla de cuándo puede hablar el candidato
  * vivía en el JSX. Ahora es una sola comparación con el estado.
  */
-export function deriveInterviewFlags(phase: InterviewPhase): InterviewFlags {
+export function deriveInterviewFlags(phase: InterviewTurnState): InterviewFlags {
   return {
     hasStarted: phase.status !== 'idle',
     isPreparing: phase.status === 'preparing',
@@ -448,7 +464,7 @@ export function deriveInterviewFlags(phase: InterviewPhase): InterviewFlags {
  * una queja de un candidato.
  */
 export function describeRejectedEvent(
-  phase: InterviewPhase,
+  phase: InterviewTurnState,
   event: InterviewEvent,
 ): string {
   return `[interview-machine] ${event.type} rechazado en estado '${phase.status}'`;

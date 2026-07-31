@@ -120,6 +120,7 @@ const turn = {
   turnIndex: 1,
   model: 'modelo-ficticio',
   responseText: 'Hola, soy Zara.',
+  orgId: 'org-de-prueba',
 };
 
 async function logTurn(): Promise<boolean> {
@@ -136,6 +137,9 @@ describe('la telemetría exige la clave de servicio', () => {
     expect(createClientMock).toHaveBeenCalledWith(FAKE_URL, FAKE_SECRET_KEY, expect.anything());
     expect(insertMock).toHaveBeenCalledTimes(1);
     expect(insertMock.mock.calls[0][0]).toMatchObject({ session_id: 'sesion-de-prueba' });
+    // La organización tiene que llegar a la fila: es lo único que permite que `/admin/telemetry`
+    // enseñe lo suyo y solo lo suyo, ahora que la tabla no tiene políticas de lectura.
+    expect(insertMock.mock.calls[0][0]).toMatchObject({ org_id: 'org-de-prueba' });
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });

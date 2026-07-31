@@ -115,6 +115,16 @@ export async function createTelemetryClient(): Promise<SupabaseClient | null> {
 /** Un turno a registrar. */
 export interface TelemetryTurn {
   sessionId: string;
+  /**
+   * Organización dueña del turno. Es lo que permite que `/admin/telemetry` enseñe lo suyo y solo
+   * lo suyo.
+   *
+   * La tabla no tenía por dónde filtrar —`session_id` y `role_title` son texto libre— así que al
+   * cerrar la política de lectura que permitía a cualquier cuenta leer todas las organizaciones,
+   * el panel se quedó sin datos. Quien escribe es `/api/chat`, que ya autorizó la petición y por
+   * tanto conoce la organización.
+   */
+  orgId: string | null;
   candidateName: string | null;
   roleTitle: string | null;
   turnIndex: number;
@@ -149,6 +159,7 @@ export async function logInterviewTurn(turn: TelemetryTurn): Promise<boolean> {
 
     const { error } = await supabase.from('interview_telemetry').insert({
       session_id: turn.sessionId,
+      org_id: turn.orgId,
       candidate_name: turn.candidateName,
       role_title: turn.roleTitle,
       turn_index: turn.turnIndex,

@@ -100,8 +100,10 @@ function computeTimeMetrics(request: ChatRequest, totalTopics: number): TimeMetr
 export async function POST(req: NextRequest) {
   // Se declara fuera del `try` para que el `catch` pueda registrar el turno
   // fallido con el contexto que ya se hubiera resuelto.
-  let telemetryContext: Pick<TelemetryTurn, 'sessionId' | 'candidateName' | 'roleTitle'> | null =
-    null;
+  let telemetryContext: Pick<
+    TelemetryTurn,
+    'sessionId' | 'candidateName' | 'roleTitle' | 'orgId'
+  > | null = null;
 
   try {
     const rawBody: unknown = await req.json().catch(() => {
@@ -121,6 +123,9 @@ export async function POST(req: NextRequest) {
       sessionId: request.sessionId ?? '',
       candidateName: request.candidateName || null,
       roleTitle: request.roleTitle || null,
+      // Sale de la autorización, no del cuerpo de la petición: si viniera del cliente, quien
+      // llama elegiría en qué organización aparece su turno.
+      orgId: access.orgId || null,
     };
 
     // ─── Plan de tiempos ───

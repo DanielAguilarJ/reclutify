@@ -106,6 +106,8 @@ export interface CoachSettings {
   customInstructions: string;
   // Session Defaults
   defaultSessionDuration: number;
+  /** Zona horaria IANA de la organización. Se guardaba en ningún sitio antes de existir esta clave. */
+  timezone: string;
   defaultClosingMode: 'presential' | 'remote' | 'both';
   autoNotifyOnInvestment: boolean;
   notificationSound: boolean;
@@ -170,6 +172,7 @@ const defaultSettings: CoachSettings = {
   salesPersistence: 2,
   customInstructions: '',
   defaultSessionDuration: 20,
+  timezone: 'America/Mexico_City',
   defaultClosingMode: 'both',
   autoNotifyOnInvestment: true,
   notificationSound: true,
@@ -248,6 +251,13 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               salesPersistence: row.sales_persistence ?? defaultSettings.salesPersistence,
               customInstructions: row.custom_instructions || '',
               defaultSessionDuration: row.default_session_duration ?? defaultSettings.defaultSessionDuration,
+              // Se comprueba el tipo en vez de hacer `as string`: `database.types.ts` se genera
+              // desde la base y todavía no conoce esta columna, así que aquí llega como
+              // `unknown`. Un cast compilaría y no comprobaría nada.
+              timezone:
+                typeof row.timezone === 'string' && row.timezone.length > 0
+                  ? row.timezone
+                  : defaultSettings.timezone,
               defaultClosingMode: narrowTo(row.default_closing_mode, CLOSING_MODES, defaultSettings.defaultClosingMode),
               autoNotifyOnInvestment: row.auto_notify_on_investment ?? true,
               notificationSound: row.notification_sound ?? true,
@@ -309,6 +319,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               sales_persistence: settings.salesPersistence,
               custom_instructions: settings.customInstructions,
               default_session_duration: settings.defaultSessionDuration,
+              timezone: settings.timezone,
               default_closing_mode: settings.defaultClosingMode,
               auto_notify_on_investment: settings.autoNotifyOnInvestment,
               notification_sound: settings.notificationSound,

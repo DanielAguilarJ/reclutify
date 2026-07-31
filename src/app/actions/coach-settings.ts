@@ -7,7 +7,14 @@ import { redactIntegrationSecrets } from '@/lib/coach/integration-secrets';
 
 // ─── Types ───
 
-interface CoachSettingsRow {
+/**
+ * Fila de `coach_settings`.
+ *
+ * Se exporta para que `coachSettingsStore` la use al leer el resultado de la server action
+ * en vez de inventarse un cast: un tipo local en el store se desincronizaría de la tabla en
+ * el primer campo nuevo.
+ */
+export interface CoachSettingsRow {
   org_id: string;
   assistant_name: string | null;
   conversation_tone: string | null;

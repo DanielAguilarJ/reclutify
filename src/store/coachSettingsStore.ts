@@ -1,10 +1,65 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createClient } from '@/utils/supabase/client';
+import type { CoachSettingsRow } from '@/app/actions/coach-settings';
 import {
   getCoachSettings as getCoachSettingsAction,
   saveCoachSettings as saveCoachSettingsAction,
 } from '@/app/actions/coach-settings-secure';
+
+
+/**
+ * Estrechamiento de los valores de unión que llegan de la base.
+ *
+ * POR QUÉ HACE FALTA
+ * ------------------
+ * `coach_settings.conversation_tone`, `session_language` y `default_closing_mode` son
+ * columnas de TEXTO LIBRE en Postgres, pero el store las declara como uniones cerradas
+ * (`'formal' | 'amigable' | 'entusiasta'`, etc.).
+ *
+ * Antes esa discrepancia estaba tapada: la fila llegaba de un `select('*')` sin tipo y los
+ * campos entraban por asignación implícita. Al tipar la fila correctamente el compilador la
+ * señaló, que es la señal de que el tipo anterior no comprobaba nada.
+ *
+ * Un valor inesperado —una migración a medias, una escritura manual en el panel de
+ * Supabase— cae al defecto en lugar de propagar una cadena que el resto del código trata
+ * como miembro válido de la unión. El síntoma que evita: un `switch` sobre el tono que no
+ * coincide con ninguna rama y deja el prompt del asesor sin instrucciones de estilo.
+ */
+function narrowTo<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+}
+
+/** Valores válidos de cada columna de unión. */
+const CONVERSATION_TONES = ['formal', 'amigable', 'entusiasta'] as const;
+const SESSION_LANGUAGES = ['es', 'en'] as const;
+const CLOSING_MODES = ['presential', 'remote', 'both'] as const;
+
+/**
+ * Normaliza el JSONB `integrations`, rellenando con los valores por defecto lo que falte.
+ *
+ * `as Integrations` a secas era una mentira: el JSONB puede venir vacío, a medias o con una
+ * integración que aún no existía cuando se guardó, y cada acceso posterior habría dado
+ * `undefined` en un campo declarado obligatorio.
+ */
+function normalizeIntegrations(raw: unknown, fallback: Integrations): Integrations {
+  if (!raw || typeof raw !== 'object') return fallback;
+
+  const source = raw as Partial<Integrations>;
+
+  return {
+    webhook: { ...fallback.webhook, ...source.webhook },
+    google_sheets: { ...fallback.google_sheets, ...source.google_sheets },
+    hubspot: { ...fallback.hubspot, ...source.hubspot },
+    notion: { ...fallback.notion, ...source.notion },
+  };
+}
 
 // ─── Types ───
 
@@ -175,41 +230,44 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
             return;
           }
 
-          if (data) {
+          // `row` acota el acceso a la fila sin repetir el cast en cada campo.
+          //
+          // Se declara como parcial de la fila y no como `Record<string, never>`, que era
+          // lo primero que escribí: `never` es asignable a todo, así que compilaba pero
+          // describía una fila cuyos campos no pueden tener valor. Un tipo que miente pasa
+          // la comprobación y no comprueba nada.
+          const row = data as Partial<CoachSettingsRow> & Record<string, unknown>;
+          const integrations = normalizeIntegrations(row.integrations, defaultSettings.integrations);
 
-            // `row` acota el acceso a la fila sin repetir el cast en cada campo.
-            const row = data as Record<string, never>;
-            const integrations = (row.integrations as Integrations) || defaultSettings.integrations;
-            set({
-              settings: {
-                assistantName: row.assistant_name || defaultSettings.assistantName,
-                conversationTone: row.conversation_tone || defaultSettings.conversationTone,
-                sessionLanguage: row.session_language || defaultSettings.sessionLanguage,
-                welcomeMessage: row.welcome_message || '',
-                salesPersistence: row.sales_persistence ?? defaultSettings.salesPersistence,
-                customInstructions: row.custom_instructions || '',
-                defaultSessionDuration: row.default_session_duration ?? defaultSettings.defaultSessionDuration,
-                defaultClosingMode: row.default_closing_mode || defaultSettings.defaultClosingMode,
-                autoNotifyOnInvestment: row.auto_notify_on_investment ?? true,
-                notificationSound: row.notification_sound ?? true,
-                emailOnClosing: row.email_on_closing ?? true,
-                emailOnNewLead: row.email_on_new_lead ?? true,
-                emailOnObjection: row.email_on_objection ?? false,
-                emailDailySummary: row.email_daily_summary ?? false,
-                additionalEmails: row.additional_emails || [],
-                publicWelcomeMessage: row.public_welcome_message || '',
-                showOrgName: row.show_org_name ?? true,
-                accentColor: row.accent_color || '#D3FB52',
-                integrations: {
-                  webhook: integrations.webhook || defaultSettings.integrations.webhook,
-                  google_sheets: integrations.google_sheets || defaultSettings.integrations.google_sheets,
-                  hubspot: integrations.hubspot || defaultSettings.integrations.hubspot,
-                  notion: integrations.notion || defaultSettings.integrations.notion,
-                },
+          set({
+            settings: {
+              assistantName: row.assistant_name || defaultSettings.assistantName,
+              conversationTone: narrowTo(row.conversation_tone, CONVERSATION_TONES, defaultSettings.conversationTone),
+              sessionLanguage: narrowTo(row.session_language, SESSION_LANGUAGES, defaultSettings.sessionLanguage),
+              welcomeMessage: row.welcome_message || '',
+              salesPersistence: row.sales_persistence ?? defaultSettings.salesPersistence,
+              customInstructions: row.custom_instructions || '',
+              defaultSessionDuration: row.default_session_duration ?? defaultSettings.defaultSessionDuration,
+              defaultClosingMode: narrowTo(row.default_closing_mode, CLOSING_MODES, defaultSettings.defaultClosingMode),
+              autoNotifyOnInvestment: row.auto_notify_on_investment ?? true,
+              notificationSound: row.notification_sound ?? true,
+              emailOnClosing: row.email_on_closing ?? true,
+              emailOnNewLead: row.email_on_new_lead ?? true,
+              emailOnObjection: row.email_on_objection ?? false,
+              emailDailySummary: row.email_daily_summary ?? false,
+              additionalEmails: row.additional_emails || [],
+              publicWelcomeMessage: row.public_welcome_message || '',
+              showOrgName: row.show_org_name ?? true,
+              accentColor: row.accent_color || '#D3FB52',
+              integrations: {
+                webhook: integrations.webhook || defaultSettings.integrations.webhook,
+                google_sheets: integrations.google_sheets || defaultSettings.integrations.google_sheets,
+                hubspot: integrations.hubspot || defaultSettings.integrations.hubspot,
+                notion: integrations.notion || defaultSettings.integrations.notion,
               },
-              loading: false,
-            });
-          }
+            },
+            loading: false,
+          });
         } catch (err) {
           set({ error: (err as Error).message, loading: false });
         }

@@ -24,6 +24,7 @@ export default function InfoSessionPage() {
     setClientDetails,
     createSession,
     startTimer,
+    stopTimer,
     reset,
   } = useInfoSessionStore();
 
@@ -42,6 +43,22 @@ export default function InfoSessionPage() {
       setPhase('details');
     }
   }, [course, phase, setPhase]);
+
+  // Detener el temporizador al salir de la pantalla.
+  //
+  // `startTimer()` se llamaba al crear la sesión y `stopTimer()` NO SE LLAMABA EN
+  // NINGÚN SITIO del proyecto: el `setInterval` del store seguía corriendo
+  // indefinidamente después de que el visitante abandonara la página, incrementando
+  // `timerSeconds` de una sesión que ya no existe. En una pestaña que navega por
+  // varios cursos se acumulaba un intervalo por sesión iniciada.
+  //
+  // El array de dependencias solo lleva `stopTimer`, que es una acción estable de
+  // zustand, así que el cleanup se ejecuta al desmontar y no en cada render.
+  useEffect(() => {
+    return () => {
+      stopTimer();
+    };
+  }, [stopTimer]);
 
   const handleDetailsSubmit = async (data: {
     clientName: string;

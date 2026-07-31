@@ -1237,6 +1237,16 @@ export default function InterviewRoom({
     }
 
     // Start timer
+    //
+    // La guarda no es defensa hipotética: `startInterview` la dispara un `onClick`, y
+    // un doble clic —o un re-render que vuelva a montar el botón— la invocaba dos
+    // veces. La segunda llamada SOBRESCRIBÍA `timerRef.current`, así que el primer
+    // `setInterval` quedaba corriendo sin referencia: nadie podía pararlo, ni
+    // `endInterview` ni el cleanup del desmontaje. El síntoma es un temporizador que
+    // avanza al doble de velocidad y una entrevista que entra en periodo de gracia a
+    // mitad de su duración real.
+    if (timerRef.current) clearInterval(timerRef.current);
+
     timerRef.current = setInterval(() => {
       setTimerSeconds((prev) => prev + 1);
     }, 1000);
@@ -1709,12 +1719,39 @@ export default function InterviewRoom({
   };
 
   // Cleanup
+  //
+  // QUÉ FALTABA AQUÍ
+  // ----------------
+  // Este cleanup limpiaba temporizadores, reconocimiento de voz, `AudioContext` y la
+  // URL de objeto del audio, pero NO detenía dos cosas:
+  //
+  //  1. `streamRef.current` — las pistas de cámara y micrófono.
+  //  2. `mediaRecorderRef.current` — la grabación en curso.
+  //
+  // Solo las detenía `endInterview()`. Es decir: si el componente se desmontaba por
+  // NAVEGACIÓN —el candidato pulsa atrás, cierra la pestaña de la entrevista, o React
+  // lo desmonta por un error de un ancestro— las pistas quedaban vivas. El síntoma
+  // visible es el LED de la cámara encendido después de salir de la entrevista, y el
+  // real es que seguimos capturando cámara y micrófono de alguien que ya se fue de la
+  // pantalla. Para una aplicación que graba entrevistas, eso no es una fuga de memoria:
+  // es un problema de privacidad.
+  //
+  // POR QUÉ AQUÍ SE DETIENE LA GRABACIÓN «EN DURO» Y EN `endInterview` NO
+  // ---------------------------------------------------------------------
+  // `endInterview` instala un `onstop` que sube el vídeo a R2 antes de avanzar de fase,
+  // así que ahí la grabadora tiene que terminar su ciclo. En el desmontaje no hay nadie
+  // a quien entregar el resultado —el componente ya no existe y el store se resetea—,
+  // así que lo correcto es cortar: se quita el `onstop` para no lanzar una subida
+  // huérfana y se detiene.
   useEffect(() => {
     return () => {
       interviewActiveRef.current = false;
       candidateTurnActiveRef.current = false;
       candidateTurnSubmissionPendingRef.current = false;
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
       if (candidateTurnSubmissionTimerRef.current)
         clearTimeout(candidateTurnSubmissionTimerRef.current);
@@ -1727,9 +1764,59 @@ export default function InterviewRoom({
           recognitionRef.current.onend = null;
           recognitionRef.current.onerror = null;
           recognitionRef.current.stop();
-        } catch (e) {}
+        } catch {
+          // `stop()` lanza si el reconocimiento ya estaba parado. Es el estado que
+          // queremos, así que no hay nada que hacer con el error.
+        }
       }
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
+
+      // El elemento de audio de Zara: si no se pausa, el turno en curso sigue
+      // sonando después de salir de la pantalla.
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+          // Vaciar `src` es lo que hace que el navegador suelte el buffer; solo
+          // pausar deja el audio decodificado en memoria.
+          audioRef.current.src = '';
+        } catch {
+          // Un elemento ya descartado por el navegador lanza aquí; da igual.
+        }
+        audioRef.current = null;
+      }
+
+      // Grabación: se corta sin subir, por el motivo explicado arriba.
+      if (mediaRecorderRef.current) {
+        try {
+          mediaRecorderRef.current.onstop = null;
+          mediaRecorderRef.current.ondataavailable = null;
+          if (mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
+        } catch {
+          // Idem: una grabadora ya inactiva lanza al pararla.
+        }
+        mediaRecorderRef.current = null;
+      }
+      // Los fragmentos grabados pueden ser decenas de megabytes de vídeo. Sin esto
+      // quedan retenidos hasta que el recolector alcance el componente entero.
+      recordedChunksRef.current = [];
+
+      // Cámara y micrófono. Es la corrección que importa.
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
+      // Compartición de pantalla del modo restringido. Vive en el store, así que se
+      // lee con `getState()`: capturarla como dependencia del efecto haría que el
+      // cleanup se ejecutara cada vez que cambia, deteniendo la captura a mitad de la
+      // entrevista.
+      const activeScreenStream = useInterviewStore.getState().screenStream;
+      if (activeScreenStream) {
+        activeScreenStream.getTracks().forEach((track) => track.stop());
+      }
+
       // Release AudioContext and any lingering TTS object URL on unmount.
       if (audioCtxRef.current) {
         audioCtxRef.current.close().catch(() => {});

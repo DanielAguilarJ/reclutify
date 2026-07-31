@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { createClient } from '@/utils/supabase/client';
+import {
+  getWebhookConfig as getWebhookConfigAction,
+  saveWebhookConfig as saveWebhookConfigAction,
+} from '@/app/actions/webhook-config';
 
 export interface WebhookLog {
   id: string;
@@ -45,43 +48,16 @@ export const useWebhookStore = create<WebhookState>()(
       })),
     clearLogs: () => set({ webhookLogs: [] }),
 
-    // ─── Cargar configuración de webhook desde Supabase ───
+    // ─── Cargar configuración de webhook ───
+    //
+    // Pasa por una server action que NO devuelve el secreto de firma: lo sustituye por un
+    // marcador. Antes era `select('*')` desde el navegador. Ver
+    // `src/app/actions/webhook-config.ts`.
     fetchWebhookConfig: async () => {
       set({ loading: true });
       try {
-        const supabase = createClient();
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          set({ loading: false });
-          return;
-        }
-
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('org_id')
-          .eq('user_id', user.id)
-          .single();
-
-        if (!profile?.org_id) {
-          set({ loading: false });
-          return;
-        }
-
-        const { data, error } = await supabase
-          .from('webhook_configs')
-          .select('*')
-          .eq('org_id', profile.org_id)
-          .single();
-
-        if (data && !error) {
-          set({
-            webhookUrl: data.webhook_url || '',
-            webhookSecret: data.webhook_secret || '',
-            loading: false,
-          });
-        } else {
-          set({ loading: false });
-        }
+        const config = await getWebhookConfigAction();
+        set({ webhookUrl: config.url, webhookSecret: config.secret, loading: false });
       } catch (err) {
         if (process.env.NODE_ENV === 'development') {
           console.error('Error cargando webhook config:', err);
@@ -90,32 +66,21 @@ export const useWebhookStore = create<WebhookState>()(
       }
     },
 
-    // ─── Guardar configuración de webhook en Supabase ───
+    // ─── Guardar configuración de webhook ───
+    //
+    // El secreto viaja como marcador si el usuario no lo cambió, y la action conserva el
+    // valor almacenado. Sin eso, guardar solo la URL sobrescribiría el secreto con la cadena
+    // del marcador y el receptor rechazaría todas las firmas siguientes: el empleador
+    // dejaría de recibir avisos sin saber por qué.
     syncWebhookConfig: async () => {
       try {
-        const supabase = createClient();
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
+        const result = await saveWebhookConfigAction({
+          url: get().webhookUrl,
+          secret: get().webhookSecret,
+        });
 
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('org_id')
-          .eq('user_id', user.id)
-          .single();
-
-        if (!profile?.org_id) return;
-
-        const { error } = await supabase
-          .from('webhook_configs')
-          .upsert({
-            org_id: profile.org_id,
-            webhook_url: get().webhookUrl,
-            webhook_secret: get().webhookSecret,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'org_id' });
-
-        if (error && process.env.NODE_ENV === 'development') {
-          console.error('Error guardando webhook config:', error);
+        if (!result.success && process.env.NODE_ENV === 'development') {
+          console.error('Error guardando webhook config:', result.error);
         }
       } catch (err) {
         if (process.env.NODE_ENV === 'development') {

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, UserCheck, GraduationCap, Loader2, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
 import { useTrainingAdminStore } from '@/store/trainingAdminStore';
 import type { CandidateResult } from '@/types';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface HireModalProps {
   candidate: CandidateResult;
@@ -13,6 +14,9 @@ interface HireModalProps {
 }
 
 export default function HireModal({ candidate, language, onClose }: HireModalProps) {
+  // Trampa de foco, cierre con Escape, `role="dialog"` y devolución del foco al cerrar.
+  // Ver `src/hooks/useModalDialog.ts`: este modal no tenía ninguna de las cuatro.
+  const { containerRef, dialogProps, onBackdropClick } = useModalDialog({ isOpen: true, onClose });
   const { programs, modules, fetchTrainingData } = useTrainingAdminStore();
   const [selectedProgramId, setSelectedProgramId] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -99,15 +103,17 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-        onClick={onClose}
+        onClick={onBackdropClick}
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
           transition={{ duration: 0.2 }}
+          ref={containerRef}
+          {...dialogProps}
+          aria-labelledby="hire-modal-title"
           className="bg-card rounded-2xl border border-border/50 shadow-xl shadow-black/10 w-full max-w-md p-6"
-          onClick={(e) => e.stopPropagation()}
         >
           {!success ? (
             <>
@@ -118,7 +124,7 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                     <UserCheck className="h-5 w-5 text-success" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-semibold text-foreground">
+                    <h2 id="hire-modal-title" className="text-lg font-semibold text-foreground">
                       {language === 'es' ? 'Contratar Candidato' : 'Hire Candidate'}
                     </h2>
                     <p className="text-xs text-muted">
@@ -126,8 +132,13 @@ export default function HireModal({ candidate, language, onClose }: HireModalPro
                     </p>
                   </div>
                 </div>
-                <button onClick={onClose} className="h-8 w-8 rounded-lg hover:bg-background flex items-center justify-center transition-colors">
-                  <X className="h-4 w-4 text-muted" />
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label={language === 'es' ? 'Cerrar' : 'Close'}
+                  className="h-8 w-8 rounded-lg hover:bg-background flex items-center justify-center transition-colors"
+                >
+                  <X className="h-4 w-4 text-muted" aria-hidden="true" />
                 </button>
               </div>
 

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Flag, X } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import { createClient } from '@/utils/supabase/client';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface Props {
   contentType: string;
@@ -11,6 +12,9 @@ interface Props {
 }
 
 export function ReportModal({ contentType, contentId, onClose }: Props) {
+  // Trampa de foco, cierre con Escape, `role="dialog"` y devolución del foco al cerrar.
+  // Ver `src/hooks/useModalDialog.ts`: este modal no tenía ninguna de las cuatro.
+  const { containerRef, dialogProps, onBackdropClick } = useModalDialog({ isOpen: true, onClose });
   const { language } = useAppStore();
   const [reason, setReason] = useState('');
   const [description, setDescription] = useState('');
@@ -40,10 +44,15 @@ export function ReportModal({ contentType, contentId, onClose }: Props) {
 
   if (submitted) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-        <div className="bg-card rounded-xl p-6 w-full max-w-sm text-center" onClick={e => e.stopPropagation()}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onBackdropClick}>
+        <div
+          ref={containerRef}
+          {...dialogProps}
+          aria-labelledby="report-modal-submitted"
+          className="bg-card rounded-xl p-6 w-full max-w-sm text-center"
+        >
           <div className="w-12 h-12 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-3"><Flag className="h-6 w-6 text-success" /></div>
-          <p className="text-sm font-medium text-foreground">{language === 'es' ? 'Reporte enviado' : 'Report submitted'}</p>
+          <p id="report-modal-submitted" className="text-sm font-medium text-foreground">{language === 'es' ? 'Reporte enviado' : 'Report submitted'}</p>
           <p className="text-xs text-muted mt-1">{language === 'es' ? 'Gracias por ayudar a mantener la comunidad segura' : 'Thank you for helping keep our community safe'}</p>
         </div>
       </div>
@@ -51,11 +60,25 @@ export function ReportModal({ contentType, contentId, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onBackdropClick}>
+      <div
+        ref={containerRef}
+        {...dialogProps}
+        aria-labelledby="report-modal-title"
+        className="bg-card rounded-xl p-6 w-full max-w-sm"
+      >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2"><Flag className="h-4 w-4 text-danger" />{language === 'es' ? 'Reportar' : 'Report'}</h3>
-          <button onClick={onClose} className="text-muted hover:text-foreground"><X className="h-4 w-4" /></button>
+          <h3 id="report-modal-title" className="text-sm font-semibold text-foreground flex items-center gap-2"><Flag className="h-4 w-4 text-danger" aria-hidden="true" />{language === 'es' ? 'Reportar' : 'Report'}</h3>
+          {/* Botón de solo icono: sin `aria-label` el lector de pantalla lo anuncia como
+              «botón» sin más, y no hay forma de saber que cierra el diálogo. */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={language === 'es' ? 'Cerrar' : 'Close'}
+            className="text-muted hover:text-foreground"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
         <div className="space-y-2 mb-4">
           {reasons.map((r) => (

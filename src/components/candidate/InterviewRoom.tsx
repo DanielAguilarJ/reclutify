@@ -2237,11 +2237,31 @@ export default function InterviewRoom({
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
+                    // El estado de la entrevista se comunicaba SOLO con color y
+                    // animación: un punto rojo que pulsa para «grabando», un círculo que
+                    // gira para «procesando». Para quien usa lector de pantalla eso no
+                    // existe, así que no había forma de saber si el micrófono estaba
+                    // abierto ni si el sistema estaba esperando — en una entrevista de
+                    // trabajo grabada.
+                    //
+                    // `role="status"` con `aria-live="polite"` hace que el lector anuncie
+                    // cada cambio de texto. `polite` y no `assertive` a propósito: los
+                    // estados cambian varias veces por turno y `assertive` interrumpiría
+                    // la lectura de la pregunta de Zara, que es lo que el candidato
+                    // necesita oír.
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
                     className="self-start flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-black/[0.04]"
                   >
                     {isTranscribing && !isProcessing && !isAiSpeaking ? (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+                        <div
+                          className="w-2 h-2 rounded-full bg-warning animate-pulse"
+                          // El punto es decorativo: el texto de al lado ya dice el estado,
+                          // y anunciarlo añadiría ruido sin información.
+                          aria-hidden="true"
+                        />
                         <span className="text-xs font-semibold text-warning uppercase tracking-wider">
                           {language === "es"
                             ? "Transcribiendo..."
@@ -2250,14 +2270,14 @@ export default function InterviewRoom({
                       </>
                     ) : isRecording ? (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-danger animate-pulse" />
+                        <div className="w-2 h-2 rounded-full bg-danger animate-pulse" aria-hidden="true" />
                         <span className="text-xs font-semibold text-danger uppercase tracking-wider">
                           {t.recordingPill}
                         </span>
                       </>
                     ) : isProcessing ? (
                       <>
-                        <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                        <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" aria-hidden="true" />
                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
                           {processingTooLong
                             ? language === "es"
@@ -2268,7 +2288,7 @@ export default function InterviewRoom({
                       </>
                     ) : (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                        <div className="w-2 h-2 rounded-full bg-primary animate-pulse" aria-hidden="true" />
                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
                           {t.waitingPill}
                         </span>

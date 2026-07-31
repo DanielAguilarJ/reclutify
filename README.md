@@ -210,8 +210,12 @@ src/
 │   ├── candidate-results/# Prueba de acceso del candidato
 │   ├── interview/        # zara-prompt · telemetry
 │   ├── interview-tickets/# Servicio y contratos del ticket
+│   ├── coach/            # Redacción de credenciales de integraciones
 │   ├── schemas/          # Esquemas Zod de entrada
+│   ├── services/         # interview · evaluation
 │   └── training/         # Centro de capacitación
+├── hooks/                # useMediaStream · useMediaRecorder · useTTS ·
+│                         # useSTT · useSupabaseRealtime · useModalDialog
 ├── store/                # Zustand
 ├── types/                # Tipos y ampliaciones del entorno
 ├── utils/supabase/       # Los cuatro clientes

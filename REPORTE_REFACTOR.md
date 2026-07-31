@@ -1,6 +1,6 @@
 # Reporte de auditoría y refactorización — Reclutify
 
-**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **21 commits**
+**Base:** `8c92f6e` · **Rama:** `refactor/security-audit-hardening` · **28 commits**
 
 **Verificación:** `npm run verify` en verde — `tsc --noEmit` sin errores, ESLint con
 0 errores sobre todo `src/`, 905 pruebas en 57 archivos, `next build` correcto.
@@ -340,6 +340,33 @@ urgencia— y tope de tasa. No se exige sesión, por el mismo motivo que en `/ap
 cuenta. El `type` de `info-notify` pasa de cadena libre a enum cerrado, porque se
 escribía tal cual en la base y elegía el asunto del correo.
 
+### 1.18 Credenciales de terceros enviadas al navegador — ALTA
+
+`coach_settings.integrations` guarda credenciales de sistemas de OTRAS personas: el
+JSON completo de una cuenta de servicio de Google con su clave privada PEM, el Private
+App Token de HubSpot, el token de Notion y el secreto de firma del webhook.
+`coachSettingsStore` las leía con `select('*')` DESDE EL NAVEGADOR, lo que las pone en la
+respuesta HTTP, en el montón de JavaScript y en la pestaña de red.
+
+Con RLS correcto solo las ve la organización dueña, así que no es una fuga entre
+clientes. Importa igual por tres razones: son credenciales de terceros, así que quien las
+capture —una extensión del navegador, un XSS— hace daño en el CRM del cliente y no en el
+nuestro; la tabla `coach_settings` **no tiene migración en este repositorio** (ver 6.3),
+así que su RLS no se puede afirmar, y un control que no se puede verificar no es un
+control; y la interfaz no las necesita, solo necesita saber si están configuradas.
+
+**Corregido:** la lectura pasa por una server action que sustituye cada secreto por el
+marcador `'__SAVED__'`; la escritura los recompone. Esa recomposición no es un adorno:
+como la interfaz recibe el marcador, al guardar volvería a subirlo, y sin recomponer el
+usuario sobrescribiría su clave real con la cadena del marcador y **destruiría su propia
+integración por pulsar «Guardar» sin tocar nada**.
+
+Se aplica la misma redacción a la action antigua, que ya no se usa: dejar un camino con
+fuga porque hoy nadie lo recorre es dejar la fuga.
+
+Una corrección al audit inicial: `partialize` solo persistía `notificationSound`, así que
+los secretos nunca estuvieron en `localStorage`.
+
 ---
 
 ## 2. Bugs funcionales corregidos
@@ -455,7 +482,67 @@ Escrita en esta ronda: solo comprobaba la forma decimal de las IPv4 mapeadas
 decir **la única notación que llega en la práctica**. Lo detectó la prueba
 `rechaza loopback en IPv6 y su forma mapeada de IPv4`. Corregido.
 
-### 2.19 Actualización silenciosa de cero filas
+### 2.19 Cámara y micrófono seguían capturando tras salir de la entrevista
+
+El cleanup del `useEffect` general de `InterviewRoom` limpiaba temporizadores,
+reconocimiento de voz, `AudioContext` y la URL de objeto del audio, pero **no detenía
+`streamRef` (las pistas de cámara y micrófono) ni `mediaRecorderRef`**. Solo lo hacía
+`endInterview()`.
+
+Si el componente se desmontaba por NAVEGACIÓN —botón atrás, cerrar la pestaña de la
+entrevista, un error boundary de un ancestro— las pistas quedaban vivas. El síntoma
+visible es el LED de la cámara encendido después de salir; el real es que se sigue
+capturando cámara y micrófono de alguien que ya se fue de la pantalla. Para una aplicación
+que graba entrevistas eso no es una fuga de memoria: es un problema de privacidad.
+
+Los fragmentos grabados —decenas de megabytes de vídeo— tampoco se vaciaban.
+
+### 2.20 Doble arranque de la entrevista duplicaba el temporizador
+
+`startInterview` creaba el `setInterval` sin limpiar el anterior. Un doble clic en el
+botón sobrescribía `timerRef.current`, así que el primer intervalo quedaba corriendo sin
+referencia y ni `endInterview` ni el cleanup podían alcanzarlo. El síntoma es un
+temporizador que avanza al doble de velocidad y una entrevista que entra en periodo de
+gracia a mitad de su duración real.
+
+### 2.21 El temporizador de la sesión informativa nunca se detenía
+
+`infoSessionStore.startTimer()` se llamaba al crear la sesión y **`stopTimer()` no se
+llamaba en ningún sitio del proyecto**. El `setInterval` seguía corriendo indefinidamente
+después de que el visitante abandonara la página, y `startTimer` tampoco limpiaba uno
+previo, así que una pestaña que recorriera varios cursos acumulaba un intervalo por sesión
+iniciada.
+
+### 2.22 Transcripción en el idioma equivocado
+
+`src/lib/stt.ts` fijaba `recognition.lang = 'en-US'` sin ningún parámetro, en un producto
+cuyo idioma por defecto es el español. **Todos los candidatos hispanohablantes se
+transcribían con el modelo acústico inglés.** No produce un error visible: produce una
+transcripción degradada, y esa transcripción es la entrada de `/api/evaluate`, así que la
+evaluación se calculaba sobre un texto peor de lo que debía.
+
+### 2.23 Canales de Realtime con nombre estático
+
+Los seis canales usaban nombres fijos (`'feed-realtime'`, `'notif-rt'`, ...). Dos
+instancias del mismo componente montadas a la vez —o el doble montaje del modo estricto de
+React en desarrollo— pedían el MISMO canal y la segunda suscripción no se establecía. El
+síntoma es una lista que deja de actualizarse en tiempo real, sin error.
+
+Corrección al audit inicial: las seis **sí** llamaban a `removeChannel` en su cleanup. Se
+comprobó una por una; la auditoría las dio por fugadas y no lo estaban.
+
+### 2.24 Fuga de memoria en la exportación de CV, segunda vez
+
+`revokeObjectURL` estaba en el camino feliz, así que un fallo a mitad de la generación
+retenía el blob del PDF hasta recargar la página.
+
+### 2.25 El estado de la entrevista no se anunciaba
+
+La sala comunicaba «grabando», «procesando» y «transcribiendo» solo con color y animación.
+Para quien usa lector de pantalla ese estado no existía, así que no había forma de saber
+si el micrófono estaba abierto durante una entrevista de trabajo grabada.
+
+### 2.26 Actualización silenciosa de cero filas
 
 `jobs.toggleRolePublished` devolvía `success: true` cuando el `roleId` no era de la
 organización, así que la interfaz informaba de un cambio que no ocurrió.
@@ -504,6 +591,16 @@ manejo de errores entrelazados. Nada se podía leer ni probar por separado.
 | `components/landing/` (11) | Las secciones de la portada |
 | `components/shared/SectionError.tsx` | Cuerpo de los error boundaries |
 | `app/actions/billing.ts` | Facturación leída en servidor |
+| `hooks/useMediaStream.ts` | Cámara y micrófono, con liberación garantizada |
+| `hooks/useMediaRecorder.ts` | Grabación; `stop()` devuelve el blob en una promesa |
+| `hooks/useTTS.ts` | Voz de Zara: cancelación, URL de objeto, respaldo nativo |
+| `hooks/useSTT.ts` | Transcripción con idioma real y vigilante de reinicio |
+| `hooks/useSupabaseRealtime.ts` | Suscripción con canal único y manejador estable |
+| `hooks/useModalDialog.ts` | Trampa de foco, Escape y devolución del foco |
+| `lib/services/interview.service.ts` | Acceso a datos de la entrevista |
+| `lib/services/evaluation.service.ts` | Puntuación ponderada, en funciones puras |
+| `lib/coach/integration-secrets.ts` | Redacción y recomposición de credenciales |
+| `app/actions/coach-settings-secure.ts` | Lectura y escritura sin exponer secretos |
 
 `/api/chat` queda en 297 líneas de orquestación legible.
 
@@ -558,6 +655,11 @@ tenía ninguna.
 | `__tests__/api/outbound-url.test.ts` (22) | Los 4 caminos de evasión de SSRF: literal en rango no enrutable, dominio público que resuelve a loopback o a metadatos, puerto y esquema, nombres reservados. Y que el mensaje **no** dice el motivo |
 | `__tests__/api/schemas.test.ts` (25) | Cuerpo mínimo con los defectos anteriores; `POST {}` es 400 y no 500; topes de historial, mensaje, descripción y CV; `filename` ya no se acepta; lista blanca de vídeo; campos desconocidos descartados |
 | `__tests__/api/chat-telemetry.test.ts` (reescrito) | Sin respaldo a la clave anon; sin clave de servicio no se registra y **no lanza**; un aviso por proceso; el resumen no contiene datos personales |
+| `__tests__/hooks/media.test.tsx` (20) | La aserción central es `track.stop()` tras `unmount()`, en tres formas: desmontaje directo, desmontaje sin llamar a `stop()`, y cambio de dispositivo a mitad. Negociación del tipo MIME y vaciado de los fragmentos |
+| `__tests__/hooks/voice.test.tsx` (18) | Las dos carreras reales de la sala: que `speak()` cancele la locución anterior y descarte una respuesta tardía, y que el reconocimiento se reinicie solo si se sigue queriendo escuchar. Y que `useSTT` use `es-ES` |
+| `__tests__/hooks/modal-dialog.test.tsx` (10) | Las cuatro propiedades de teclado que faltaban en los seis modales, una por fallo de uso concreto |
+| `__tests__/coach-integration-secrets.test.ts` (12) | Que ningún fragmento de credencial sobreviva a la serialización, y que guardar sin tocar nada **no** destruya la integración |
+| `__tests__/services/evaluation.test.ts` (16) | Los umbrales EN el límite; que un peso alto pese más; criterio sin puntuación como 0; peso 0 fuera del divisor; y que `applyWeightedScore` no mute su entrada |
 
 Dos defectos reales aparecieron **al escribir las pruebas** (2.18 y el `looseObject` de
 la sección siguiente), que es la mejor señal de que las pruebas valían la pena.
@@ -663,16 +765,19 @@ correcto es primero esas pruebas, después la máquina de estados.
 Se corrigió lo que sí era acotable en el archivo: los `any` de `SpeechRecognition`, y
 el envío de credenciales.
 
-### 6.7 Fugas de recursos en `InterviewRoom` sin corregir
+### 6.7 Los hooks nuevos aún no se han sustituido dentro de `InterviewRoom`
 
-El cleanup del `useEffect` general no detiene `streamRef` (las pistas de cámara y
-micrófono) ni `mediaRecorderRef`: solo lo hace `endInterview()`. Si el componente se
-desmonta por navegación sin pasar por ahí, las pistas quedan activas y el LED de la
-cámara encendido. `startInterview` tampoco limpia un `timerRef` previo antes de crear
-otro.
+**Las fugas de recursos SÍ están corregidas** (ver 2.19, 2.20 y 2.21): el cleanup detiene
+cámara, micrófono y grabadora, y el temporizador ya no se duplica.
 
-Van con 6.6: tocar el ciclo de vida de ese componente sin la máquina de estados y sin
-pruebas es cambiar una fuga por una condición de carrera.
+Lo que queda es que `InterviewRoom` siga gestionando TTS, STT y la grabación con sus refs
+propios en vez de con `useTTS`, `useSTT`, `useMediaStream` y `useMediaRecorder`, que ya
+existen y están probados. Sustituirlos es exactamente el mismo trabajo que 6.6 —reescribir
+el ciclo de vida del componente crítico— así que va con él y no antes.
+
+Los hooks se escribieron primero a propósito: son la parte que se puede probar en
+aislamiento, y tener 38 pruebas verdes sobre el comportamiento correcto es lo que hará
+seguro el reemplazo cuando se haga.
 
 ### 6.8 Fetch en cliente que debería ser Server Component
 
@@ -680,13 +785,17 @@ pruebas es cambiar una fuga por una condición de carrera.
 veces**, la misma información), `/admin/group-interview`, `/informes`. Afecta al LCP
 del panel. Es refactor de páginas, no de seguridad.
 
-### 6.9 Accesibilidad
+### 6.9 Accesibilidad: cuatro modales hechos, dos pendientes
 
-Seis modales sin `role="dialog"`, `aria-modal`, trampa de foco ni cierre con Escape
-(`HireModal`, `CompareModal`, `ReportModal`, `JobDetailModal`, el menú móvil de la
-landing, el panel de notificaciones). En la sala de entrevista, los cambios de estado
-(«grabando», «procesando») no se anuncian por falta de `aria-live`. Los error
-boundaries nuevos sí llevan `role="alert"`.
+`HireModal`, `CompareModal`, `ReportModal` y `JobDetailModal` ya tienen `role="dialog"`,
+`aria-modal`, trampa de foco, cierre con Escape, devolución del foco al disparador y
+`aria-label` en los botones de solo icono. La sala de entrevista ya anuncia sus estados con
+`role="status"` y `aria-live="polite"`.
+
+Quedan dos superficies que no son modales propiamente dichos y necesitan otro tratamiento:
+el menú móvil de la landing y el panel de notificaciones. Ambos son desplegables ancorados
+a un botón, así que el patrón correcto no es `role="dialog"` sino `aria-expanded` más
+`role="menu"`, y el cierre con Escape sin bloquear el desplazamiento de la página.
 
 También quedan 26 `<img>` nativos —sin lazy loading ni formato moderno— y ausencia de
 `prefers-reduced-motion` en las animaciones CSS de `globals.css`.
@@ -698,22 +807,30 @@ migrar `motion.*` a `m.*` en los 29, porque sin `strict` la envoltura no reduce 
 mecánico pero toca todas las animaciones del producto, y el ahorro (~30 KB) no
 justifica ese radio en la misma ronda que los cambios de seguridad.
 
-### 6.11 Stores Zustand sin selectores y con acceso directo a Supabase
+### 6.11 Stores Zustand sin selectores, y seis con acceso directo a Supabase
 
-Ningún store expone selectores granulares, así que los componentes se re-renderizan con
-cualquier cambio del store. Y siete stores consultan Supabase directamente desde el
-navegador; el más preocupante es `coachSettingsStore`, que carga al cliente las claves
-de API de HubSpot, Notion y Google Sheets de la organización. Con RLS correcto solo las
-ve su propia organización, pero **la tabla `coach_settings` es una de las siete sin
-migración** (6.3), así que no se puede afirmar. Debería leerse en servidor y no viajar
-nunca al navegador.
+**El caso de `coachSettingsStore` está corregido** (ver 1.18): las credenciales de
+terceros ya no salen del servidor.
+
+Queda que ningún store exponga selectores granulares, así que los componentes se
+re-renderizan con cualquier cambio del store; y que seis sigan consultando Supabase
+directamente desde el navegador (`adminStore`, `ticketStore`, `webhookStore`, `coachStore`,
+`trainingAdminStore`, `infoSessionStore`). El de mayor riesgo restante es `webhookStore`,
+que carga `webhook_secret` al cliente — menos grave que el caso anterior porque es un
+secreto NUESTRO y no de un tercero, y porque `/api/webhooks/candidate-completed` ya no lo
+acepta del cuerpo, pero debería seguir el mismo patrón de redacción.
 
 ### 6.12 Cobertura aún nula en varios módulos
 
-`/api/evaluate`, `/api/tts`, `/api/send-email`, `/api/upload-video`,
-`/api/test-integration`, casi todas las server actions, los stores e `InterviewRoom`.
-El objetivo de 70 % en `actions/` no se alcanzó: se priorizó cubrir los controles de
-seguridad nuevos y el middleware, que es donde un fallo concede acceso en silencio.
+`/api/tts`, `/api/send-email`, `/api/upload-video`, `/api/test-integration`, casi todas
+las server actions, los stores e `InterviewRoom`. El recálculo de la evaluación sí está
+cubierto ahora (16 pruebas), que era la lógica de negocio con más consecuencias sin probar.
+
+El objetivo de 70 % en `actions/` no se alcanzó. Se priorizó, por este orden: los controles
+de seguridad nuevos, el middleware —donde un fallo concede acceso en silencio—, el ciclo de
+vida de los recursos del navegador, y la puntuación del candidato. Las server actions
+quedan detrás porque su riesgo principal era la autorización, y esa se corrigió en el código
+con comprobaciones explícitas en vez de confiar en RLS.
 
 ---
 
@@ -721,20 +838,22 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 
 | | |
 |---|---|
-| Commits | 21, atómicos |
-| Archivos cambiados | 108 (44 nuevos, 62 modificados, 2 eliminados) |
-| Líneas | +11 779 / −3 775 |
+| Commits | 28, atómicos |
+| Archivos cambiados | 133 (59 nuevos, 72 modificados, 2 eliminados) |
+| Líneas | +15 641 / −3 863 |
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
-| Vulnerabilidades corregidas | 17 (9 críticas, 6 altas, 2 medias) |
-| Bugs funcionales corregidos | 19 |
-| Pruebas | 798 → **905** (+107); 52 → 57 archivos |
+| Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
+| Bugs funcionales corregidos | 26 |
+| Pruebas | 798 → **981** (+183); 52 → 62 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Quedan 101 avisos |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
 | `/api/chat` | 939 → 297 líneas |
 | `LandingClient.tsx` | 1068 → 42 líneas (+ 11 módulos) |
 | Error boundaries | 1 → 8 |
+| Hooks reutilizables nuevos | 5 (medios, voz, realtime, diálogo) |
+| Modales con teclado accesible | 0 → 4 |
 | Variables en `.env.example` | 14 → 34 |
 | Dependencias | −1 (`@clerk/nextjs`), +1 (`server-only`, antes transitiva) |
 
@@ -743,7 +862,7 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 ```
 npm run typecheck        →  0 errores
 npm run lint             →  0 errores, 101 avisos (documentados)
-npm run test:run         →  905 pruebas, 57 archivos, todas en verde
+npm run test:run         →  981 pruebas, 62 archivos, todas en verde
 npm run check:endpoints  →  toda ruta declara un control
 npm run build            →  compilación correcta, 69 páginas
 ```

@@ -97,11 +97,33 @@ que había quedado fuera.
 - ESLint sobre todo `src/`: se retiraron las 22 rutas ignoradas y se corrigieron los 42
   errores que ocultaban.
 
+### Accesibilidad
+
+- **Cuatro modales operables con teclado.** `HireModal`, `CompareModal`, `ReportModal` y
+  `JobDetailModal` no tenían `role="dialog"`, `aria-modal`, trampa de foco ni cierre con
+  Escape: al abrirlos el foco se quedaba detrás, tabulando por la página que tapaban, y al
+  cerrarlos caía al principio del documento en vez de volver al botón.
+- **La sala de entrevista anuncia su estado.** «Grabando», «procesando» y «transcribiendo»
+  se comunicaban solo con color y animación, así que para quien usa lector de pantalla no
+  había forma de saber si el micrófono estaba abierto durante una entrevista grabada.
+
+### Recursos del navegador
+
+- **La cámara y el micrófono ya se liberan al desmontar.** Solo lo hacía `endInterview()`,
+  así que salir de la entrevista por navegación dejaba las pistas capturando y el LED
+  encendido.
+- **El temporizador ya no se duplica** con un doble clic en «empezar», ni sigue corriendo
+  tras abandonar una sesión informativa (`stopTimer` no se llamaba en ningún sitio).
+- **Cinco hooks reutilizables**: `useMediaStream`, `useMediaRecorder`, `useTTS`, `useSTT` y
+  `useSupabaseRealtime`, con el ciclo de vida garantizado y 38 pruebas.
+
 ### Pruebas
 
-De 800 a **905** en 57 archivos. Cobertura nueva del middleware (33), de la
+De 798 a **981** en 62 archivos. Cobertura nueva del middleware (33), de la
 autorización de `/api/chat` (15), del limitador de tasa (10), de la guardia anti-SSRF
-(22) y de los esquemas de entrada (25).
+(22), de los esquemas de entrada (25), de los hooks de medios y voz (38), del diálogo
+accesible (10), de la redacción de credenciales (12) y del cálculo de la puntuación del
+candidato (16).
 
 Dos defectos reales aparecieron al escribir las pruebas: la guardia anti-SSRF no
 detectaba las IPv4 mapeadas en forma hexadecimal —la única notación que produce

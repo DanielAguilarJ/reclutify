@@ -9,6 +9,10 @@ import {
   sendRecruiterInterviewNotification,
 } from '@/lib/api/recruiter-notification';
 import { evaluateRequestSchema, type InterviewTopicInput } from '@/lib/schemas/interview';
+// El recálculo de la puntuación vive en el servicio: es la parte con más consecuencias del
+// producto —decide si alguien aparece como «Strong Hire» ante quien contrata— y dentro de
+// la ruta no se podía probar sin simular OpenRouter.
+import { applyWeightedScore, type RawEvaluation } from '@/lib/services/evaluation.service';
 import { INTERVIEW_EVALUATION_MODEL } from '@/lib/ai-model';
 
 /**
@@ -133,57 +137,6 @@ function renderTranscript(
       return `[topic: ${currentTopic}] ${speaker}: ${content}`;
     })
     .join('\n\n');
-}
-
-/** Evaluación tal como la devuelve el modelo, antes de recalcular la puntuación. */
-interface RawEvaluation {
-  candidateName?: string;
-  overallScore?: number;
-  recommendation?: string;
-  topicScores?: Record<string, number>;
-  [key: string]: unknown;
-}
-
-/**
- * Recalcula `overallScore` y `recommendation` en el SERVIDOR.
- *
- * El modelo también los produce, pero no se le hace caso: la media ponderada es
- * aritmética y un modelo de lenguaje la aproxima. Es la puntuación con la que se
- * decide una contratación, así que la calcula código determinista a partir de las
- * puntuaciones por criterio y de los pesos que fijó el reclutador.
- */
-function applyWeightedScore(
-  evaluation: RawEvaluation,
-  topics: InterviewTopicInput[],
-): RawEvaluation {
-  const topicScores = evaluation.topicScores;
-
-  if (!topicScores || typeof topicScores !== 'object' || topics.length === 0) {
-    return evaluation;
-  }
-
-  let weightedSum = 0;
-  let totalWeight = 0;
-
-  for (const topic of topics) {
-    const rubric = ensureRubric(topic);
-    const rawScore = topicScores[topic.label];
-    const score = typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : 0;
-
-    weightedSum += score * rubric.weight;
-    totalWeight += rubric.weight;
-  }
-
-  if (totalWeight <= 0) return evaluation;
-
-  const overallScore = Math.min(100, Math.max(0, Math.round((weightedSum / totalWeight) * 10)));
-
-  return {
-    ...evaluation,
-    overallScore,
-    recommendation:
-      overallScore >= 80 ? 'Strong Hire' : overallScore >= 60 ? 'Hire' : 'Pass',
-  };
 }
 
 export async function POST(req: NextRequest) {

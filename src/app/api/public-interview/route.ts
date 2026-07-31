@@ -1,5 +1,4 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { randomUUID } from 'node:crypto';
 
 import { ApiError, handleApiError } from '@/lib/api/errors';
 import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
@@ -7,7 +6,11 @@ import {
   publicInterviewRegisterSchema,
   publicInterviewTokenQuerySchema,
 } from '@/lib/schemas/api';
-import { createAdminClient } from '@/utils/supabase/admin';
+import {
+  createPublicCandidateResult,
+  loadInterviewOrganization,
+  loadInterviewRoleByPublicToken,
+} from '@/lib/services/interview.service';
 
 /**
  * Entrevista por enlace público de la vacante.
@@ -75,56 +78,26 @@ export async function GET(req: NextRequest) {
     // adivinar `public_token` a fuerza bruta.
     await enforceRateLimit(req, RATE_LIMITS.PUBLIC_REGISTER, null);
 
-    // Clave de servicio: la lectura por `public_token` tiene que saltarse RLS
-    // porque la credencial es el propio token, no una sesión.
-    const admin = createAdminClient();
+    // La resolución vive en el servicio: esta misma consulta estaba duplicada en el `GET`
+    // y en el `POST` de este archivo, con listas de columnas DISTINTAS, así que la pantalla
+    // del candidato mostraba menos datos después de registrarse que antes.
+    const lookup = await loadInterviewRoleByPublicToken(query.token);
 
-    const { data: role, error } = await admin
-      .from('roles')
-      .select(
-        'id, title, description, location, salary, job_type, interview_duration, interview_mode, topics, org_id',
-      )
-      .eq('public_token', query.token)
-      .maybeSingle();
-
-    if (error) {
-      throw ApiError.misconfigured('Could not resolve the interview link', error);
+    if (lookup.status === 'error') {
+      throw ApiError.misconfigured(lookup.message);
     }
 
-    // Token inexistente y fila ilegible comparten respuesta: distinguirlos
-    // convertiría la ruta en un confirmador de enlaces válidos.
-    if (!role) throw ApiError.notFound('Invalid or expired link');
+    // Token inexistente y fila ilegible comparten respuesta: distinguirlos convertiría la
+    // ruta en un confirmador de enlaces válidos.
+    if (lookup.status === 'not-found') throw ApiError.notFound('Invalid or expired link');
 
-    let orgName = '';
-    let orgPlanTier = 'starter';
-
-    if (role.org_id) {
-      const { data: org } = await admin
-        .from('organizations')
-        .select('name, plan_tier')
-        .eq('id', role.org_id)
-        .maybeSingle();
-
-      if (org) {
-        orgName = org.name ?? '';
-        orgPlanTier = org.plan_tier ?? 'starter';
-      }
-    }
+    const { role } = lookup;
+    const org = await loadInterviewOrganization(role.orgId);
 
     return NextResponse.json({
-      role: {
-        id: role.id,
-        title: role.title,
-        description: role.description,
-        location: role.location,
-        salary: role.salary,
-        jobType: role.job_type,
-        interviewDuration: role.interview_duration ?? 30,
-        interviewMode: role.interview_mode || 'restricted',
-        topics: Array.isArray(role.topics) ? role.topics : [],
-        orgId: role.org_id,
-      },
-      org: { name: orgName, planTier: orgPlanTier },
+      // El servicio ya normalizó la forma, así que la respuesta es su contrato tal cual.
+      role: { ...role, orgId: role.orgId },
+      org,
     });
   } catch (error) {
     return handleApiError(error, '[public-interview:GET]');
@@ -143,52 +116,37 @@ export async function POST(req: NextRequest) {
 
     const body = publicInterviewRegisterSchema.parse(rawBody);
 
-    const admin = createAdminClient();
+    const lookup = await loadInterviewRoleByPublicToken(body.token);
 
-    const { data: role, error: roleError } = await admin
-      .from('roles')
-      .select('id, title, org_id, interview_duration, interview_mode, topics')
-      .eq('public_token', body.token)
-      .maybeSingle();
-
-    if (roleError) {
-      throw ApiError.misconfigured('Could not resolve the interview link', roleError);
+    if (lookup.status === 'error') {
+      throw ApiError.misconfigured(lookup.message);
     }
 
-    if (!role) throw ApiError.notFound('Invalid link');
+    if (lookup.status === 'not-found') throw ApiError.notFound('Invalid link');
 
-    // `randomUUID` en vez de `Date.now()` + `Math.random()`: este identificador es
-    // el que el cliente usa después para escribir su propia entrevista, así que no
-    // debe ser adivinable.
-    const resultId = `cr-${randomUUID()}`;
+    const { role } = lookup;
 
-    const { error: insertError } = await admin.from('candidate_results').insert({
-      id: resultId,
-      org_id: role.org_id,
-      candidate_name: body.candidateName,
-      candidate_email: body.candidateEmail,
-      candidate_phone: body.candidatePhone,
-      candidate_linkedin: body.linkedinUrl,
-      role_id: role.id,
-      role_title: role.title,
-      date: Date.now(),
-      status: 'in-progress',
-      duration: 0,
-      transcript: [],
-      source: 'public_link',
+    const created = await createPublicCandidateResult({
+      role,
+      candidateName: body.candidateName,
+      candidateEmail: body.candidateEmail,
+      candidatePhone: body.candidatePhone,
+      linkedinUrl: body.linkedinUrl,
     });
 
-    if (insertError) {
-      throw ApiError.misconfigured('Failed to register candidate', insertError);
+    if (created.status === 'error') {
+      throw ApiError.misconfigured(created.message);
     }
+
+    const resultId = created.resultId;
 
     return NextResponse.json({
       resultId,
       roleId: role.id,
       roleTitle: role.title,
-      interviewDuration: role.interview_duration ?? 30,
-      interviewMode: role.interview_mode || 'restricted',
-      topics: Array.isArray(role.topics) ? role.topics : [],
+      interviewDuration: role.interviewDuration,
+      interviewMode: role.interviewMode,
+      topics: role.topics,
     });
   } catch (error) {
     return handleApiError(error, '[public-interview:POST]');

@@ -119,27 +119,27 @@ export async function setupCandidateProfile(
     return { success: false, error: 'Este username ya está en uso. Intenta con otro.' };
   }
 
-  // ─── 4. Crear/actualizar user_profiles (routing) ───
   const fullName = parsed.data.full_name;
 
-  const { error: profileError } = await supabase
-    .from('user_profiles')
-    .upsert([{
-      user_id: user.id,
-      full_name: fullName,
-      role: 'member',
-      user_type: 'candidate',
-      onboarding_completed: true,
-    }], { onConflict: 'user_id' });
-
-  if (profileError) {
-    return {
-      success: false,
-      error: `Error al crear tu perfil: ${profileError.message}`,
-    };
-  }
-
-  // ─── 5. Crear/actualizar profiles (social) ───
+  // ─── 4. Crear/actualizar profiles (social) ───
+  //
+  // EL ORDEN IMPORTA, Y ANTES ESTABA AL REVÉS.
+  //
+  // `user_profiles` iba primero y ya escribía `onboarding_completed: true`. Si esta segunda
+  // escritura fallaba —una colisión de `username` que se colara entre la comprobación y el
+  // `upsert`, un tiempo de espera agotado— la cuenta quedaba marcada como completada SIN perfil
+  // social. Y el middleware decide con ese campo: al verlo en `true` dejaba de redirigir a
+  // `/onboarding`, así que la persona entraba al producto sin perfil, y nada le indicaba que
+  // tenía que volver.
+  //
+  // El flujo de empleador sí compensaba —borra la organización si falla el perfil— y este no.
+  //
+  // Ahora la marca de completado es la ÚLTIMA escritura. Es preferible a compensar con borrados:
+  // no hay transacción entre dos `upsert` desde el cliente, así que la compensación puede fallar
+  // ella misma. Dejar el indicador para el final significa que un fallo a mitad deja la cuenta
+  // exactamente donde estaba, y como las dos escrituras son `upsert`, reintentar es idempotente.
+  //
+  // `profiles` solo referencia `auth.users`, así que no necesita que `user_profiles` exista.
   const { error: socialError } = await supabase
     .from('profiles')
     .upsert([{
@@ -156,6 +156,24 @@ export async function setupCandidateProfile(
     return {
       success: false,
       error: `Error al crear tu perfil social: ${socialError.message}`,
+    };
+  }
+
+  // ─── 5. Crear/actualizar user_profiles (routing) y marcar el alta como completada ───
+  const { error: profileError } = await supabase
+    .from('user_profiles')
+    .upsert([{
+      user_id: user.id,
+      full_name: fullName,
+      role: 'member',
+      user_type: 'candidate',
+      onboarding_completed: true,
+    }], { onConflict: 'user_id' });
+
+  if (profileError) {
+    return {
+      success: false,
+      error: `Error al crear tu perfil: ${profileError.message}`,
     };
   }
 

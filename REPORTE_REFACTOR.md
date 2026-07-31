@@ -235,6 +235,8 @@ las entrevistas en curso, y una entrevista interrumpida a mitad no se recupera.
 | `/api/parse-course-document` | nada | sesión org + tope |
 | `/api/parse-resume` | nada | tope (ver 6.1) |
 | `/api/public-interview` | nada | Zod + tope (público por diseño) |
+| `/api/info-chat` | nada | Zod + tope (público por diseño) |
+| `/api/info-notify` | validación parcial | Zod + tope (público por diseño) |
 
 ### 1.10 Inyección de filtro PostgREST — ALTA
 
@@ -319,6 +321,24 @@ principio a fin; Clerk no autenticaba nada. El coste que importa no es el bundle
 que hace que una revisión de seguridad mire el sitio equivocado.
 
 **Corregido:** eliminado con sus rutas y la entrada `/__clerk/(.*)` del `matcher`.
+
+### 1.17 Las dos rutas del asesor virtual sin acotar — ALTA
+
+`/api/info-chat` (495 líneas) llama a un modelo con `max_tokens: 500` y razonamiento
+activado —de las llamadas más caras del proyecto— sin validación de entrada y sin tope
+de tasa. `/api/info-notify` inserta en `coach_notifications` y envía correo con Resend,
+también sin tope.
+
+Estas dos aparecieron **al final**, volviendo a ejecutar la matriz de protección de
+endpoints en lugar de confiar en la pasada anterior. Es la razón de que la matriz esté
+en el repositorio como comprobación reproducible y no como una revisión puntual.
+
+**Corregido:** Zod con topes de longitud —todo el cuerpo se interpola en el prompt: el
+curso, sus objetivos, sus planes con precios, los testimonios y los ganchos de
+urgencia— y tope de tasa. No se exige sesión, por el mismo motivo que en `/api/tts`
+(ver 6.1): la página `/informes/[courseId]` es pública y sus visitantes no tienen
+cuenta. El `type` de `info-notify` pasa de cadena libre a enum cerrado, porque se
+escribía tal cual en la base y elegía el asunto del correo.
 
 ---
 
@@ -524,8 +544,11 @@ visible; ignorar el directorio hacía invisibles también los errores de verdad.
 
 ## 5. Tests agregados
 
-De **800 en 52 archivos** a **905 en 57**. 105 pruebas nuevas sobre código que no
+De **798 en 52 archivos** a **905 en 57**. 107 pruebas nuevas sobre código que no
 tenía ninguna.
+
+> La línea base es 798, no 800: la comprobó una revisión independiente al final. Las
+> dos de diferencia son pruebas que añadí al reescribir `chat-telemetry.test.ts`.
 
 | Archivo | Qué fija |
 |---|---|
@@ -702,11 +725,11 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 | Archivos cambiados | 101 (42 nuevos, 57 modificados, 2 eliminados) |
 | Líneas | +10 277 / −3 677 |
 | Migraciones nuevas | 2 |
-| Rutas API endurecidas | 13 |
-| Vulnerabilidades corregidas | 16 (9 críticas, 5 altas, 2 medias) |
+| Rutas API endurecidas | 15 |
+| Vulnerabilidades corregidas | 17 (9 críticas, 6 altas, 2 medias) |
 | Bugs funcionales corregidos | 19 |
-| Pruebas | 800 → **905** (+105); 52 → 57 archivos |
-| Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas) |
+| Pruebas | 798 → **905** (+107); 52 → 57 archivos |
+| Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Quedan 101 avisos |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
 | `/api/chat` | 939 → 297 líneas |
@@ -719,7 +742,7 @@ seguridad nuevos y el middleware, que es donde un fallo concede acceso en silenc
 
 ```
 npm run typecheck   →  0 errores
-npm run lint        →  0 errores, 99 avisos (documentados)
+npm run lint        →  0 errores, 101 avisos (documentados)
 npm run test:run    →  905 pruebas, 57 archivos, todas en verde
 npm run build       →  compilación correcta, 69 páginas
 ```
@@ -734,5 +757,5 @@ npm run build       →  compilación correcta, 69 páginas
    toda la cartera fueron legibles con la clave anon.
 3. **Comprobar los flujos de candidato** en un entorno de prueba: los tres caminos de
    entrada ahora envían credenciales que antes no enviaban.
-4. **Revisar los avisos de ESLint** (99). Ninguno bloquea, y son la lista de trabajo
+4. **Revisar los avisos de ESLint** (101). Ninguno bloquea, y son la lista de trabajo
    de 6.6 y 6.9.

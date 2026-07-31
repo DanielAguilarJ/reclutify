@@ -221,6 +221,21 @@ const nextConfig: NextConfig = {
         hostname: '*.supabase.co',
         pathname: '/storage/v1/object/public/**',
       },
+      // Avatares de las cuentas que entran con Google. `/login` usa
+      // `signInWithOAuth({ provider: 'google' })`, que rellena `avatar_url` con una URL de
+      // este host.
+      //
+      // Sin declararlo, un `next/image` sobre uno de esos avatares lanza «hostname is not
+      // configured» y tira la página — y solo para los usuarios que entraron con Google, que
+      // es el tipo de fallo que no aparece en desarrollo.
+      {
+        protocol: 'https',
+        hostname: 'lh3.googleusercontent.com',
+      },
+      {
+        protocol: 'https',
+        hostname: 'avatars.githubusercontent.com',
+      },
     ],
     // Formatos modernos para las imágenes que sí pasan por el optimizador.
     formats: ['image/avif', 'image/webp'],

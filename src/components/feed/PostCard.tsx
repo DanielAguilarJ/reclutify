@@ -10,6 +10,7 @@ import { useToast } from '@/components/ui/Toast';
 import { useAppStore } from '@/store/appStore';
 import { formatRelativeTime } from '@/lib/formatTime';
 import { MoreHorizontal, Pencil, Trash2, X } from 'lucide-react';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface PostCardProps {
   post: Post;
@@ -68,13 +69,12 @@ export function PostCard({ post, currentUser }: PostCardProps) {
         <div className="flex items-start gap-3 mb-3">
           <a href={post.author ? `/profile/${post.author.username}` : '#'}
             className="shrink-0 w-12 h-12 rounded-full overflow-hidden bg-surface">
-            {post.author?.avatar_url ? (
-              <img src={post.author.avatar_url} alt={post.author.full_name} className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-lg font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                {(post.author?.full_name || '?').charAt(0)}
-              </div>
-            )}
+            <Avatar
+              src={post.author?.avatar_url}
+              name={post.author?.full_name || '?'}
+              size={48}
+              decorative
+            />
           </a>
           <div className="flex-1 min-w-0">
             <a href={post.author ? `/profile/${post.author.username}` : '#'}

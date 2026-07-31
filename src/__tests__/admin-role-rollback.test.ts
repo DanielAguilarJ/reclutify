@@ -45,11 +45,11 @@ function makeRole(id: string, title = `Puesto ${id}`): Role {
   return {
     id,
     title,
-    interviewDuration: 30,
-    interviewMode: 'balanced',
     topics: [],
     createdAt: Date.now(),
-  } as Role;
+    interviewDuration: 30,
+    interviewMode: 'restricted',
+  };
 }
 
 async function freshStore(initial: Role[]) {

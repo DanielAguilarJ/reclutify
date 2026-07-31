@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { z } from "zod";
+
 import type { Role, CandidateResult, InterviewMode } from "@/types";
 import { accessProofRequestFields } from "@/lib/candidate-results/access-proof-contracts";
 import { useInterviewStore } from "@/store/interviewStore";
@@ -216,6 +218,17 @@ const SYNC_QUEUE_KEY = "reclutify_sync_queue";
 const SYNC_QUEUE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 días
 const SYNC_QUEUE_MAX_ITEMS = 200; // cota dura para evitar crecimiento indefinido
 
+/**
+ * Intentos antes de descartar una entrada.
+ *
+ * El campo `attempts` ya se incrementaba y se guardaba, pero NO SE LEÍA PARA NADA. La única
+ * evicción era por antigüedad (14 días) o por la cota de 200, así que una entrada que falla
+ * siempre —un rol borrado, un candidato que el servidor rechaza con 4xx— se reintentaba en cada
+ * carga del panel durante dos semanas. La reintención tiene sentido contra fallos de red, que son
+ * transitorios; contra un 4xx es una petición inútil repetida indefinidamente.
+ */
+const SYNC_QUEUE_MAX_ATTEMPTS = 8;
+
 interface SyncQueueItem {
   id: string; // id de la entrada en la cola (no el id del candidato)
   kind:
@@ -232,11 +245,61 @@ interface SyncQueueItem {
   lastError?: string;
 }
 
+/**
+ * Validación de lo que sale de `localStorage`.
+ *
+ * Antes era `JSON.parse(raw) as SyncQueueItem[]`, un `as` sin comprobar nada. `localStorage` es
+ * almacenamiento del cliente: lo escribe una versión anterior del código, lo edita quien quiera
+ * abrir las herramientas de desarrollo, y sobrevive a los despliegues. Un JSON válido con forma
+ * distinta pasaba el `as` sin ruido y luego `item.kind` no casaba con ninguna rama conocida, así
+ * que caía en el `else` —`candidate_upsert_needs_org`— y se enviaba basura al endpoint.
+ *
+ * Las entradas que no validan se descartan al leer, que es el único momento en que se puede
+ * distinguir «dato corrupto» de «dato que el servidor rechaza».
+ */
+const syncQueueItemSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum([
+    "candidate_update",
+    "candidate_upsert_with_org",
+    "candidate_upsert_needs_org",
+  ]),
+  candidateId: z.string(),
+  payload: z.unknown(),
+  createdAt: z.number().finite(),
+  attempts: z.number().int().nonnegative(),
+  lastError: z.string().optional(),
+});
+
 function readSyncQueue(): SyncQueueItem[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(SYNC_QUEUE_KEY);
-    return raw ? (JSON.parse(raw) as SyncQueueItem[]) : [];
+    if (!raw) return [];
+
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      console.warn(
+        "[AdminStore] la cola de sincronización no era un array — se descarta",
+      );
+      return [];
+    }
+
+    const valid: SyncQueueItem[] = [];
+    let discarded = 0;
+    for (const entry of parsed) {
+      const item = syncQueueItemSchema.safeParse(entry);
+      if (item.success) valid.push(item.data as SyncQueueItem);
+      else discarded += 1;
+    }
+
+    if (discarded > 0) {
+      console.warn(
+        `[AdminStore] se descartaron ${discarded} entrada(s) de la cola con forma inesperada`,
+      );
+    }
+
+    return valid;
   } catch (err) {
     console.error(
       "[AdminStore] No se pudo leer la cola de sincronización:",
@@ -257,6 +320,52 @@ function writeSyncQueue(queue: SyncQueueItem[]) {
     );
   }
 }
+
+/**
+ * Escribe el resultado de un reintento SIN pisar lo que se encoló mientras corría.
+ *
+ * `retrySyncQueue` leía la cola al empezar, recorría las entradas con un `await` por cada una, y
+ * al final hacía `writeSyncQueue(remaining)`. Cualquier `pushToSyncQueue` que ocurriera durante
+ * esos `await` —y ocurre: `addCandidate` encola justo cuando agota sus tres reintentos, que es
+ * cuando la red va mal, que es cuando el reintento está corriendo— quedaba sobrescrito.
+ *
+ * La cola cuya única razón de existir es no perder datos del candidato los perdía.
+ *
+ * Se vuelve a leer antes de escribir y se conservan las entradas que no estaban en la instantánea
+ * procesada. Las que sí estaban ya están decididas: sincronizadas, descartadas o en `remaining`.
+ *
+ * @param processedIds Ids de la instantánea que este reintento procesó.
+ * @param remaining Entradas que fallaron y siguen mereciendo otro intento.
+ * @returns Longitud final de la cola, para `pendingSyncCount`.
+ */
+function commitSyncQueueAfterRetry(
+  processedIds: ReadonlySet<string>,
+  remaining: readonly SyncQueueItem[],
+): number {
+  const addedDuringRetry = readSyncQueue().filter(
+    (item) => !processedIds.has(item.id),
+  );
+
+  if (addedDuringRetry.length > 0) {
+    console.warn(
+      `[AdminStore] retrySyncQueue: se conservan ${addedDuringRetry.length} entrada(s) encoladas durante el reintento`,
+    );
+  }
+
+  const next = [...remaining, ...addedDuringRetry];
+  writeSyncQueue(next);
+  return next.length;
+}
+
+/**
+ * Reintento en vuelo, para que dos llamadas no se solapen.
+ *
+ * `fetchFromSupabase` dispara `retrySyncQueue` al terminar, así que dos navegaciones seguidas al
+ * panel lanzaban dos recorridos concurrentes sobre la misma cola: ambos reenviaban las mismas
+ * entradas y el segundo pisaba el resultado del primero. Vive fuera del store porque es un
+ * detalle del módulo, no estado que la interfaz deba ver.
+ */
+let retryInFlight: Promise<void> | null = null;
 
 function pushToSyncQueue(
   item: Omit<SyncQueueItem, "id" | "createdAt" | "attempts">,
@@ -576,11 +685,47 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
 
   // ─── Reintentar cola de sincronización fallida ───
   retrySyncQueue: async () => {
+    // Si ya hay un reintento corriendo se espera a ese en lugar de lanzar otro: la cola es
+    // compartida y dos recorridos concurrentes se pisan el resultado.
+    if (retryInFlight) {
+      await retryInFlight;
+      return;
+    }
+
+    let releaseInFlight: () => void = () => {};
+    retryInFlight = new Promise<void>((resolve) => {
+      releaseInFlight = resolve;
+    });
+
+    try {
+      await runSyncQueueRetry(set, get);
+    } finally {
+      releaseInFlight();
+      retryInFlight = null;
+    }
+  },
+}));
+
+/**
+ * Cuerpo del reintento de la cola.
+ *
+ * Está fuera del `create()` para que la acción se quede solo con el control de concurrencia y se
+ * lea de un vistazo que no hay ningún camino que se salte el `finally`.
+ */
+async function runSyncQueueRetry(
+  set: (partial: Partial<AdminState>) => void,
+  get: () => AdminState,
+): Promise<void> {
     let queue = readSyncQueue();
     if (queue.length === 0) {
       set({ pendingSyncCount: 0 });
       return;
     }
+
+    // Ids de TODO lo leído, incluidas las entradas que se descarten a continuación: son las que
+    // este recorrido da por decididas. Lo que aparezca en la cola y no esté aquí se encoló
+    // mientras corría el reintento y hay que conservarlo.
+    const processedIds = new Set(queue.map((item) => item.id));
 
     // Drop stale entries — unlikely to still be relevant, and keeps the queue bounded.
     const now = Date.now();
@@ -664,19 +809,24 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
           `[AdminStore] retrySyncQueue: item ${item.id} failed again:`,
           message,
         );
-        remaining.push({
-          ...item,
-          attempts: item.attempts + 1,
-          lastError: message,
-        });
+        const attempts = item.attempts + 1;
+
+        if (attempts >= SYNC_QUEUE_MAX_ATTEMPTS) {
+          // Ocho fallos seguidos no son un problema de red. Se descarta con el motivo a la vista,
+          // en lugar de reintentarlo en cada carga del panel durante catorce días.
+          console.error(
+            `[AdminStore] retrySyncQueue: item ${item.id} descartado tras ${attempts} intentos. Último error: ${message}`,
+          );
+          continue;
+        }
+
+        remaining.push({ ...item, attempts, lastError: message });
       }
     }
 
-    writeSyncQueue(remaining);
-    set({ pendingSyncCount: remaining.length });
+    set({ pendingSyncCount: commitSyncQueueAfterRetry(processedIds, remaining) });
     // NOTE: no need to re-fetch from Supabase here — the local `candidates`/`roles`
     // state already reflects these writes via the optimistic updates that queued
     // them in the first place. This also avoids a retrySyncQueue <-> fetchFromSupabase
     // call cycle (fetchFromSupabase triggers an automatic retrySyncQueue on load).
-  },
-}));
+}

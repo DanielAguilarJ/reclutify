@@ -18,7 +18,16 @@ interface AdminState {
   error: string | null;
 
   // Acciones de roles
-  addRole: (role: Role) => Promise<void>;
+  /**
+   * Crea un puesto. Devuelve `false` si no llegó a la base.
+   *
+   * Devolvía `void`, y eso tenía consecuencias más allá del propio store: `create-role` lo espera
+   * y a continuación construye el enlace público y crea un ticket por candidato. Si el puesto no
+   * se persistió, esos tickets apuntan a un id que no existe y la pantalla dice «¡Puesto Creado!».
+   * La reversión local evita mostrar un puesto fantasma, pero no basta: quien llama necesita
+   * saberlo para no seguir construyendo cosas encima.
+   */
+  addRole: (role: Role) => Promise<boolean>;
   updateRole: (id: string, updates: Partial<Role>) => Promise<void>;
   removeRole: (id: string) => Promise<void>;
 
@@ -518,7 +527,7 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
   },
 
   // ─── Agregar rol: Supabase + store local ───
-  addRole: async (role: Role) => {
+  addRole: async (role: Role): Promise<boolean> => {
     // Actualizar estado local inmediatamente (optimistic update)
     set((state: AdminState) => ({
       roles: [role, ...state.roles],
@@ -541,6 +550,7 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
             roles: state.roles.filter((r) => r.id !== role.id),
             error: ROLE_SYNC_ERROR,
           }));
+          return false;
         }
       } catch (err) {
         console.error("[AdminStore] Error sincronizando rol:", err);
@@ -548,8 +558,14 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
           roles: state.roles.filter((r) => r.id !== role.id),
           error: ROLE_SYNC_ERROR,
         }));
+        return false;
       }
     }
+
+    // Sin `orgId` no hay a dónde escribir. Se devuelve `true` porque el puesto sí quedó en el
+    // estado local y ese es el comportamiento que ya tenía: el flujo sin organización resuelta es
+    // el de una sesión a medio cargar, no un fallo de escritura.
+    return true;
   },
 
   // ─── Actualizar rol: Supabase + store local ───

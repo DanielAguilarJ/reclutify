@@ -1183,7 +1183,7 @@ export default function CreateRolePage() {
     const publicToken = generatePublicRoleToken();
     
     // Esperar a que el role se guarde en Supabase antes de crear tickets
-    await addRole({
+    const roleSaved = await addRole({
       id: newRoleId,
       title: jobTitle,
       description: jobDescription || undefined,
@@ -1196,6 +1196,21 @@ export default function CreateRolePage() {
       createdAt: Date.now(),
       publicToken,
     });
+
+    // Si el puesto no llegó a la base, no se sigue construyendo encima.
+    //
+    // Lo que venía después era: publicar el enlace, crear un ticket por candidato contra
+    // `newRoleId` y enviar los correos. Con el puesto sin persistir, esos tickets apuntan a un id
+    // que no existe y los candidatos reciben una invitación muerta, mientras la pantalla dice
+    // «¡Puesto Creado!». El store ya deshace su parte; esto evita el resto.
+    if (!roleSaved) {
+      alert(
+        language === 'es'
+          ? 'No se pudo guardar el puesto, así que no se han creado los enlaces ni enviado los correos. Revisa la conexión e inténtalo de nuevo.'
+          : 'The role could not be saved, so no links were created and no emails were sent. Check your connection and try again.',
+      );
+      return;
+    }
 
     // Guardar enlace público para mostrar en UI
     const publicLink = `${window.location.origin}/interview/public/${publicToken}`;

@@ -152,6 +152,10 @@ export default function CoachSettingsPage() {
         setProfileError(profileResult.error);
       }
 
+      // `saveSettings` limpia `isDirty` por su cuenta cuando le va bien, así que el aviso de
+      // «cambios sin guardar» ya no salta aunque el perfil haya fallado — y es lo correcto: lo que
+      // queda pendiente en ese caso es el nombre de la organización, que necesita otro rol, no un
+      // cambio que se pueda volver a guardar.
       setSaveStatus(settingsOk && profileResult.success ? 'success' : 'error');
     } catch (error) {
       console.error('[coach-settings] save failed:', error);

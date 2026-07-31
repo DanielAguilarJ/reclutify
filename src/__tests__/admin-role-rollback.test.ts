@@ -76,13 +76,24 @@ describe('reversión de escrituras optimistas de puestos', () => {
     });
 
     it('lo retira y avisa cuando la escritura falla', async () => {
-      // Sin esto, `create-role` seguía creando tickets contra un puesto que no existe en la base.
       writeFails = true;
       const store = await freshStore([]);
       await store.getState().addRole(makeRole('r1'));
 
       expect(store.getState().roles).toEqual([]);
       expect(store.getState().error).toBeTruthy();
+    });
+
+    it('DEVUELVE el resultado, para que quien llama no siga construyendo encima', async () => {
+      // Devolvía `void`, y eso tenía consecuencias fuera del store: `create-role` lo espera y a
+      // continuación publica el enlace, crea un ticket por candidato contra ese id y envía los
+      // correos. Con el puesto sin persistir, los candidatos recibían una invitación muerta
+      // mientras la pantalla decía «¡Puesto Creado!». La reversión local no basta para eso.
+      const store = await freshStore([]);
+      await expect(store.getState().addRole(makeRole('ok'))).resolves.toBe(true);
+
+      writeFails = true;
+      await expect(store.getState().addRole(makeRole('falla'))).resolves.toBe(false);
     });
 
     it('la reversión no arrastra otros puestos', async () => {

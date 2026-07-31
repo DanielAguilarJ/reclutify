@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { useDebouncedPersist } from '@/hooks/useDebouncedPersist';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import {
   ArrowLeft,
   Upload,
@@ -543,6 +544,12 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         setTitle(data.program.title || '');
         setDescription(data.program.description || '');
         setWelcomeMessage(data.program.welcomeMessage || '');
+        // Lo que acaba de llegar del servidor es la referencia de «guardado».
+        savedProgramFields.current = {
+          title: data.program.title || '',
+          description: data.program.description || '',
+          welcomeMessage: data.program.welcomeMessage || '',
+        };
         setAiPersonality(data.program.aiPersonality || 'friendly_mentor');
         setContentLanguage(
           resolveTrainingContentLanguage(data.program.contentLanguage)
@@ -1210,6 +1217,22 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     useDebouncedPersist<string | number>(persistModuleField);
 
   /**
+   * Copia de los campos de programa tal como están guardados.
+   *
+   * Los de módulo NO entran: se guardan solos con retardo y el hook emite lo pendiente al
+   * desmontar, así que ya están protegidos. Los de programa solo se escriben al pulsar Guardar, y
+   * son los que se perdían sin aviso.
+   */
+  const savedProgramFields = useRef({ title: '', description: '', welcomeMessage: '' });
+
+  useUnsavedChangesWarning(
+    !isReadOnly &&
+      (title !== savedProgramFields.current.title ||
+        description !== savedProgramFields.current.description ||
+        welcomeMessage !== savedProgramFields.current.welcomeMessage),
+  );
+
+  /**
    * Aplica el cambio de un campo de módulo: al instante en pantalla, con retardo en el servidor.
    *
    * ANTES ESTO ROMPÍA EL TECLEO
@@ -1267,6 +1290,9 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       });
 
       if (success) {
+        // Se marca como guardado ya, sin esperar a `loadProgramDetails`: entre la respuesta y la
+        // recarga el aviso seguiría diciendo que hay cambios pendientes cuando ya no los hay.
+        savedProgramFields.current = { title, description, welcomeMessage };
         showToast('success', language === 'es' ? 'Programa guardado exitosamente' : 'Program saved successfully');
         loadProgramDetails();
       } else {

@@ -1,6 +1,7 @@
 'use client';
 
 import { getCoachProfile, updateCoachProfile } from '@/app/actions/coach-profile';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 
 import { useState, useEffect } from 'react';
 import {
@@ -62,6 +63,7 @@ export default function CoachSettingsPage() {
     inviteMember,
     removeMember,
     cancelInvitation,
+    isDirty,
   } = useCoachSettingsStore();
 
   const { language, setLanguage, theme, toggleTheme } = useAppStore();
@@ -129,6 +131,10 @@ export default function CoachSettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  // Aviso al recargar o cerrar con cambios pendientes. `isDirty` lo lleva el propio store, que ya
+  // sabe qué se ha tocado desde la última carga.
+  useUnsavedChangesWarning(isDirty);
 
   const handleSave = async () => {
     setSaveStatus('saving');

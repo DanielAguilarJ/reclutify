@@ -9,6 +9,7 @@ import { useTicketStore } from '@/store/ticketStore';
 import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
 import { hasCompleteRubric, isCriticalTopic } from '@/lib/interview/rubric';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import { generatePublicRoleToken } from '@/lib/invites/token';
 import type { Role, Topic, TopicRubric, InterviewMode } from '@/types';
 import Link from 'next/link';
@@ -966,6 +967,13 @@ export default function CreateRolePage() {
    */
   const savingRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Aviso al recargar o cerrar la pestaña con trabajo sin guardar. Este formulario puede llevar
+  // varios criterios con sus rúbricas y una lista de candidatos: son minutos de escritura que
+  // hasta ahora se perdían sin una palabra.
+  useUnsavedChangesWarning(
+    !success && (jobTitle.trim().length > 0 || topics.length > 0 || candidateEmails.trim().length > 0),
+  );
   const [bulkProgress, setBulkProgress] = useState({ sent: 0, total: 0 });
 
   // ─── Generate rubric with AI ───

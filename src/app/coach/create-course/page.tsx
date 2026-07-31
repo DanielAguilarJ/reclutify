@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sparkles, X, Plus, Loader2, GraduationCap, BookOpen,
@@ -426,6 +428,17 @@ export default function CreateCoursePage() {
   };
 
   const canSave = name.trim().length > 0;
+
+  // Aviso al recargar o cerrar la pestaña. Este formulario junta objetivos, módulos, planes,
+  // testimonios y objeciones: es el más largo del producto.
+  useUnsavedChangesWarning(
+    !success &&
+      (name.trim().length > 0 ||
+        description.trim().length > 0 ||
+        objectives.length > 0 ||
+        modules.length > 0 ||
+        plans.length > 0),
+  );
 
   return (
     <div>

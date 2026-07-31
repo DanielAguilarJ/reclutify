@@ -149,6 +149,15 @@ interface CoachSettingsState {
   orgId: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * `true` si hay cambios locales sin guardar.
+   *
+   * Lo usa el aviso de «no cierres con trabajo pendiente». Se lleva en el store y no en la página
+   * porque los cambios entran por `updateSettings` y `updateIntegration`, que son del store: una
+   * copia en la página tendría que interceptar las dos y quedaría desincronizada en cuanto
+   * apareciera una tercera.
+   */
+  isDirty: boolean;
 
   // Actions
   setOrgId: (orgId: string) => void;
@@ -201,6 +210,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
       orgId: null,
       loading: false,
       error: null,
+      isDirty: false,
 
       setOrgId: (orgId) => set({ orgId }),
 
@@ -229,7 +239,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
 
           if (!data) {
             // Organización sin configuración todavía: valores por defecto.
-            set({ settings: { ...defaultSettings }, loading: false });
+            set({ settings: { ...defaultSettings }, loading: false, isDirty: false });
             return;
           }
 
@@ -277,6 +287,8 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               },
             },
             loading: false,
+            // Lo que se acaba de traer del servidor es, por definición, lo guardado.
+            isDirty: false,
           });
         } catch (err) {
           set({ error: (err as Error).message, loading: false });
@@ -286,11 +298,13 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
       updateSettings: (updates) => {
         set((state) => ({
           settings: { ...state.settings, ...updates },
+          isDirty: true,
         }));
       },
 
       updateIntegration: (key, data) => {
         set((state) => ({
+          isDirty: true,
           settings: {
             ...state.settings,
             integrations: {
@@ -339,6 +353,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
             return false;
           }
 
+          set({ isDirty: false });
           return true;
         } catch (err) {
           set({ error: (err as Error).message });

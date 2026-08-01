@@ -956,17 +956,59 @@ completo.
 
 ### 6.3 Siete tablas en producción sin migración en el repositorio
 
-`courses`, `coach_settings`, `coach_notifications`, `course_modules`, `course_plans`,
-`info_sessions` e `info_session_telemetry` se usan extensamente en el código pero
-**ninguna migración las crea**. Un despliegue limpio desde el repositorio no las crea,
-así que el módulo de informes y del asesor está roto en un entorno nuevo. Y sus
-políticas RLS son desconocidas: no se puede afirmar que existan.
+**Cerrada.** Se obtuvo acceso de solo consulta al proyecto de Supabase de producción vía MCP y
+se verificó el esquema real contra el del repositorio.
 
-Es la deuda de mayor riesgo que queda. Requiere volcar el esquema real de producción y
-versionarlo, que exige acceso al proyecto de Supabase.
+El diagnóstico original era incorrecto en un punto importante: `courses`, `coach_settings`,
+`coach_notifications`, `course_modules`, `course_plans` e `info_sessions` **sí existían** en
+producción, con RLS activo y con políticas correctas (`org_members_manage_*` para el CRUD del
+asesor, `public_read_active_*` para el catálogo público). Se habían creado por una vía distinta
+al repositorio —probablemente SQL ejecutado directamente en algún momento anterior a este
+trabajo— así que el historial de migraciones de Supabase no las registraba con el nombre del
+archivo correspondiente, y una comparación por nombre de migración las marcaba como ausentes. Una
+comparación por columna real corrigió el diagnóstico.
 
-**Mitigación aplicada:** las tres funciones de `courses` que no comprobaban nada ahora
-lo hacen en el código, así que no dependen de RLS.
+Lo que sí faltaba de verdad, confirmado por ausencia real de la tabla en
+`information_schema.tables`, era el módulo social completo:
+
+| Tabla | Contenido |
+|---|---|
+| `notifications` | Avisos del feed (conexión, reacción, comentario, seguidor) |
+| `endorsements` | Aprobación de habilidades entre perfiles |
+| `saved_jobs` / `job_applications` | Vacantes guardadas y seguimiento de aplicaciones |
+| `follows` | Seguimiento unidireccional entre perfiles |
+| `hashtags` / `post_hashtags` | Etiquetas del feed |
+| `groups` / `group_members` / `group_posts` | Comunidades |
+| `user_blocks` / `reports` / `poll_votes` | Bloqueo, reportes, encuestas en publicaciones |
+| `api_rate_limits` | Contador de `consume_rate_limit`, ver 2.9 del round original |
+
+**Se crearon las 14, con dos correcciones respecto al SQL original del repositorio:**
+
+- `hashtags`/`post_hashtags` se crearon **sin** las políticas de escritura abiertas que
+  `20260513_hashtags.sql` tenía (`hashtags_insert`/`hashtags_update`/`post_hashtags_insert` con
+  `WITH CHECK (true)`, ver 2.39). Solo lectura para clientes; la escritura la hace el disparador
+  `SECURITY DEFINER`.
+- `notifications` se creó **sin** `notif_insert`, que en el archivo original no llevaba `TO`, así
+  que aplicaba a `anon` (ver el hallazgo equivalente ya corregido en el archivo del repo).
+
+Un efecto colateral que no estaba previsto: las seis funciones `SECURITY DEFINER` nuevas (los
+disparadores de notificación, hashtags y contadores) quedaron ejecutables directamente vía
+`/rest/v1/rpc/<nombre>` por `anon` y `authenticated` — el linter de seguridad de Supabase lo
+marcó como `WARN` inmediatamente después de crearlas. Ninguna se invoca por RPC desde el código
+(se disparan solo como efecto de un `INSERT`/`UPDATE`), así que se revocó `EXECUTE` de las seis.
+Sin esa revocación, cualquier cuenta podría haber llamado `notify_post_reaction()` directamente
+con argumentos arbitrarios, insertando notificaciones falsas sin pasar por la tabla que las
+dispara de verdad.
+
+También se cerró en producción la vulnerabilidad de `interview_telemetry` documentada en 2.31: la
+política `USING (true)` para `authenticated` seguía activa a pesar de que la migración
+`202608020002` del repositorio la elimina — nunca se había desplegado. Se confirmó en vivo: 624
+filas de 55 candidatos distintos expuestas antes de la corrección.
+
+Estado final verificado con `get_advisors(security)`: cero hallazgos nuevos introducidos por este
+trabajo. Los tres que quedan (`organizations` INSERT abierto, `is_training_admin` expuesto,
+protección de contraseñas filtradas desactivada) son preexistentes y ya estaban documentados en
+2.7 y en este mismo reporte antes de esta sesión.
 
 ### 6.4 `'unsafe-inline'` en `script-src`
 

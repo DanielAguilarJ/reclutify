@@ -8,6 +8,8 @@ import { useAppStore } from '@/store/appStore';
 import { useTicketStore } from '@/store/ticketStore';
 import { useRoles } from '@/hooks/useRoles';
 import { dictionaries } from '@/lib/i18n';
+import { hasCompleteRubric, isCriticalTopic } from '@/lib/interview/rubric';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import { generatePublicRoleToken } from '@/lib/invites/token';
 import type { Role, Topic, TopicRubric, InterviewMode } from '@/types';
 import Link from 'next/link';
@@ -949,11 +951,47 @@ export default function CreateRolePage() {
 
   // Bulk email sending state
   const [bulkSending, setBulkSending] = useState(false);
+
+  /**
+   * Guarda de reentrada del guardado.
+   *
+   * El botón solo se deshabilitaba con `bulkSending`, que únicamente se activa si hay correos que
+   * enviar. Sin candidatos en la lista no había ninguna barrera entre el clic y el `setSuccess`
+   * que retira el botón, así que un segundo clic durante el `await addRole(...)` creaba OTRO
+   * puesto: `role-${Date.now()}` da un id distinto en el milisegundo siguiente, con su propio
+   * token público, y reenviaba los correos a los candidatos.
+   *
+   * Es un `ref` y no solo estado porque dos clics rápidos pueden ejecutarse antes de que React
+   * vuelva a renderizar, y entonces los dos leerían el estado viejo. El estado se mantiene además
+   * para que el botón lo refleje.
+   */
+  const savingRef = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Aviso al recargar o cerrar la pestaña con trabajo sin guardar. Este formulario puede llevar
+  // varios criterios con sus rúbricas y una lista de candidatos: son minutos de escritura que
+  // hasta ahora se perdían sin una palabra.
+  useUnsavedChangesWarning(
+    !success && (jobTitle.trim().length > 0 || topics.length > 0 || candidateEmails.trim().length > 0),
+  );
   const [bulkProgress, setBulkProgress] = useState({ sent: 0, total: 0 });
 
   // ─── Generate rubric with AI ───
   const handleGenerateRubric = async () => {
     if (!jobTitle.trim()) return;
+
+    // Generar REEMPLAZA todos los temas, incluidos los pesos y descriptores que el reclutador
+    // haya escrito a mano. Antes lo hacía sin avisar: cambiar la descripción del puesto y volver
+    // a pulsar el botón borraba el trabajo de rellenar una rúbrica, que son varios minutos.
+    if (topics.length > 0) {
+      const proceed = confirm(
+        language === 'es'
+          ? `Esto reemplazará los ${topics.length} criterio(s) actuales y sus rúbricas.\n\n¿Continuar?`
+          : `This will replace the current ${topics.length} criteria and their rubrics.\n\nContinue?`,
+      );
+      if (!proceed) return;
+    }
+
     setLoading(true);
     try {
       const response = await fetch('/api/generate-rubric', {
@@ -981,13 +1019,25 @@ export default function CreateRolePage() {
       }
     } catch (error) {
       console.error('Failed to generate rubric:', error);
-      setTopics([
-        { label: language === 'es' ? 'Habilidades Técnicas' : 'Technical Skills' },
-        { label: language === 'es' ? 'Resolución de Problemas' : 'Problem Solving' },
-        { label: language === 'es' ? 'Comunicación y Colaboración' : 'Communication & Collaboration' },
-        { label: language === 'es' ? 'Liderazgo e Iniciativa' : 'Leadership & Initiative' },
-        { label: language === 'es' ? 'Afinidad Cultural' : 'Cultural Fit' },
-      ]);
+      // El respaldo solo se siembra si NO había nada. Antes se aplicaba siempre, así que un
+      // tiempo de espera agotado sustituía los criterios del reclutador por cinco genéricos:
+      // el camino de error era destructivo, y el usuario no había pedido borrar nada.
+      setTopics((prev) =>
+        prev.length > 0
+          ? prev
+          : [
+              { label: language === 'es' ? 'Habilidades Técnicas' : 'Technical Skills' },
+              { label: language === 'es' ? 'Resolución de Problemas' : 'Problem Solving' },
+              { label: language === 'es' ? 'Comunicación y Colaboración' : 'Communication & Collaboration' },
+              { label: language === 'es' ? 'Liderazgo e Iniciativa' : 'Leadership & Initiative' },
+              { label: language === 'es' ? 'Afinidad Cultural' : 'Cultural Fit' },
+            ],
+      );
+      alert(
+        language === 'es'
+          ? 'No se pudo generar la rúbrica. Revisa la conexión e inténtalo de nuevo.'
+          : 'Could not generate the rubric. Check your connection and try again.',
+      );
     } finally {
       setLoading(false);
     }
@@ -1013,14 +1063,34 @@ export default function CreateRolePage() {
       });
       const data = await response.json();
       if (data.topics && Array.isArray(data.topics)) {
-        const enriched: TopicDraft[] = data.topics.map((t: { label: string; rubric?: TopicRubric }) => ({
-          label: t.label,
-          rubric: t.rubric,
-        }));
-        setTopics(enriched);
+        const incoming = data.topics as Array<{ label: string; rubric?: TopicRubric }>;
+        const byLabel = new Map(incoming.map((t) => [t.label, t.rubric]));
+
+        // ENRIQUECER RELLENA HUECOS; NO REEMPLAZA.
+        //
+        // Antes hacía `setTopics(enriched)`, así que pulsarlo porque a UN criterio le faltaba la
+        // rúbrica machacaba las de todos los demás, incluidas las escritas a mano. El nombre del
+        // botón promete completar, no sustituir.
+        //
+        // Un criterio con rúbrica completa se conserva tal cual. Para regenerar de cero está
+        // «Generar Rúbrica con IA», que ahora pide confirmación.
+        setTopics((prev) =>
+          prev.map((existing, index) => {
+            if (hasCompleteRubric(existing.rubric)) return existing;
+
+            // Se busca por etiqueta y, si el modelo la reescribió, se cae al mismo índice.
+            const rubric = byLabel.get(existing.label) ?? incoming[index]?.rubric;
+            return rubric ? { ...existing, rubric } : existing;
+          }),
+        );
       }
     } catch (error) {
       console.error('Failed to enrich topics:', error);
+      alert(
+        language === 'es'
+          ? 'No se pudo enriquecer los criterios. Tus rúbricas actuales no se han modificado.'
+          : 'Could not enrich the criteria. Your current rubrics were left untouched.',
+      );
     } finally {
       setEnriching(false);
     }
@@ -1059,15 +1129,12 @@ export default function CreateRolePage() {
   // ─── Save role ───
   const handleSaveRole = async () => {
     if (!jobTitle.trim() || topics.length === 0) return;
+    if (savingRef.current) return;
 
     // ─── Validation: Check critical topics have rubric content ───
-    const criticalWithoutRubric = topics.filter(t => {
-      const weight = t.rubric?.weight ?? 5;
-      if (weight < 8) return false; // Only block for critical (≥8)
-      // Check if rubric exists AND has non-empty descriptors
-      if (!t.rubric) return true;
-      return !t.rubric.excellent?.trim() || !t.rubric.acceptable?.trim() || !t.rubric.poor?.trim();
-    });
+    const criticalWithoutRubric = topics.filter(
+      (t) => isCriticalTopic(t.rubric) && !hasCompleteRubric(t.rubric),
+    );
 
     if (criticalWithoutRubric.length > 0) {
       const names = criticalWithoutRubric.map(t => `"${t.label}"`).join(', ');
@@ -1080,10 +1147,8 @@ export default function CreateRolePage() {
     }
 
     // Warning for non-critical topics without rubric (don't block, just warn)
-    const nonCriticalWithoutRubric = topics.filter(t => {
-      if (!t.rubric) return true;
-      return !t.rubric.excellent?.trim() || !t.rubric.acceptable?.trim() || !t.rubric.poor?.trim();
-    });
+    // Los críticos ya cortaron la ejecución arriba, así que aquí solo quedan los no críticos.
+    const nonCriticalWithoutRubric = topics.filter((t) => !hasCompleteRubric(t.rubric));
 
     if (nonCriticalWithoutRubric.length > 0) {
       const names = nonCriticalWithoutRubric.map(t => `"${t.label}"`).join(', ');
@@ -1095,6 +1160,12 @@ export default function CreateRolePage() {
       if (!proceed) return;
     }
 
+    // Se marca DESPUÉS de las validaciones: `alert`/`confirm` bloquean el hilo, y si el usuario
+    // cancela el diálogo el botón tiene que volver a quedar disponible.
+    savingRef.current = true;
+    setIsSaving(true);
+
+    try {
     const roleTopics: Topic[] = topics.map((t, i) => ({
       id: `t-${Date.now()}-${i}`,
       label: t.label,
@@ -1112,7 +1183,7 @@ export default function CreateRolePage() {
     const publicToken = generatePublicRoleToken();
     
     // Esperar a que el role se guarde en Supabase antes de crear tickets
-    await addRole({
+    const roleSaved = await addRole({
       id: newRoleId,
       title: jobTitle,
       description: jobDescription || undefined,
@@ -1125,6 +1196,21 @@ export default function CreateRolePage() {
       createdAt: Date.now(),
       publicToken,
     });
+
+    // Si el puesto no llegó a la base, no se sigue construyendo encima.
+    //
+    // Lo que venía después era: publicar el enlace, crear un ticket por candidato contra
+    // `newRoleId` y enviar los correos. Con el puesto sin persistir, esos tickets apuntan a un id
+    // que no existe y los candidatos reciben una invitación muerta, mientras la pantalla dice
+    // «¡Puesto Creado!». El store ya deshace su parte; esto evita el resto.
+    if (!roleSaved) {
+      alert(
+        language === 'es'
+          ? 'No se pudo guardar el puesto, así que no se han creado los enlaces ni enviado los correos. Revisa la conexión e inténtalo de nuevo.'
+          : 'The role could not be saved, so no links were created and no emails were sent. Check your connection and try again.',
+      );
+      return;
+    }
 
     // Guardar enlace público para mostrar en UI
     const publicLink = `${window.location.origin}/interview/public/${publicToken}`;
@@ -1140,7 +1226,7 @@ export default function CreateRolePage() {
       setBulkSending(true);
       setBulkProgress({ sent: 0, total: candidatesList.length });
       
-      let failedEmails: string[] = [];
+      const failedEmails: string[] = [];
 
       for (let i = 0; i < candidatesList.length; i++) {
         const email = candidatesList[i];
@@ -1149,8 +1235,18 @@ export default function CreateRolePage() {
         // 1. Crear ticket (igual que tickets page)
         const ticket = addTicket(candidateName, newRoleId, generationLanguage);
         
-        // 2. Sincronizar con Supabase
-        await syncAddTicket(ticket);
+        // 2. Sincronizar con Supabase.
+        //
+        // Si la fila no llega a escribirse, el enlace que lleva el correo devuelve un 404: el
+        // candidato recibe una invitación a una entrevista que no existe. Antes el resultado se
+        // ignoraba y el correo salía igual, así que el fallo lo descubría el candidato.
+        const sync = await syncAddTicket(ticket);
+        if (!sync.ok) {
+          failedEmails.push(email);
+          console.error(`No se persistió el ticket de ${email} (${sync.reason}) — no se envía el correo`);
+          setBulkProgress({ sent: i + 1, total: candidatesList.length });
+          continue;
+        }
         
         // 3. Construir la URL de la entrevista: solo el token.
         //    Antes se adjuntaba `?d=` con el ticket y el puesto —criterios de
@@ -1205,6 +1301,10 @@ export default function CreateRolePage() {
     }
 
     setSuccess(true);
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
     setTimeout(() => {
       setJobTitle('');
       setJobDescription('');
@@ -1221,7 +1321,6 @@ export default function CreateRolePage() {
     }, 5000);
   };
 
-  const hasTopicsWithRubric = topics.some(t => t.rubric);
   const hasTopicsWithoutRubric = topics.some(t => !t.rubric);
 
   return (
@@ -1640,11 +1739,13 @@ export default function CreateRolePage() {
                       ) : (
                         <button
                           onClick={handleSaveRole}
-                          disabled={!jobTitle.trim() || topics.length === 0 || bulkSending}
+                          disabled={!jobTitle.trim() || topics.length === 0 || bulkSending || isSaving}
                           className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium text-sm text-foreground bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                         >
                           <Plus className="h-4 w-4" />
-                          {language === 'es' ? 'Crear Puesto Activo' : 'Create Active Role'}
+                          {isSaving
+                            ? (language === 'es' ? 'Creando...' : 'Creating...')
+                            : (language === 'es' ? 'Crear Puesto Activo' : 'Create Active Role')}
                         </button>
                       )}
                     </div>

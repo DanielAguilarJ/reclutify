@@ -40,9 +40,75 @@ export async function getCoachCourses(): Promise<ActionResult> {
 }
 
 /**
+ * Resuelve la organización del usuario autenticado.
+ *
+ * Devuelve `null` si no hay sesión o la cuenta no tiene organización. Se usa como
+ * puerta de las tres funciones de escritura de abajo, que antes no comprobaban
+ * NADA.
+ */
+async function requireOwnOrgId(): Promise<string | null> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('org_id')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  return profile?.org_id ?? null;
+}
+
+/**
+ * Comprueba que un curso pertenece a la organización del usuario autenticado.
+ *
+ * POR QUÉ HACE FALTA
+ * ------------------
+ * `toggleCourseActive` y `deleteCourse` filtraban SOLO por `courseId`, sin llamar
+ * a `getUser()` ni comprobar la organización. La única defensa era RLS, y la tabla
+ * `courses` NO TIENE MIGRACIÓN en este repositorio (ver `REPORTE_REFACTOR.md`), así
+ * que sus políticas son desconocidas y no se puede afirmar que existan. Una acción
+ * destructiva no debe depender de una política que no está en el control de
+ * versiones.
+ *
+ * La comprobación se hace en el servidor y con la organización resuelta desde el
+ * perfil del propio usuario, nunca desde el argumento.
+ */
+async function assertCourseInOwnOrg(courseId: string): Promise<ActionResult | null> {
+  const orgId = await requireOwnOrgId();
+  if (!orgId) return { success: false, error: 'No autenticado' };
+
+  const supabase = await createClient();
+
+  const { data: course, error } = await supabase
+    .from('courses')
+    .select('id, org_id')
+    .eq('id', courseId)
+    .maybeSingle();
+
+  if (error) return { success: false, error: 'No se pudo validar el curso' };
+
+  // Mismo mensaje para «no existe» y «es de otra organización»: distinguirlos
+  // permitiría enumerar los cursos de otras empresas por su identificador.
+  if (!course || course.org_id !== orgId) {
+    return { success: false, error: 'Curso no encontrado' };
+  }
+
+  return null;
+}
+
+/**
  * Obtiene un curso específico con todos sus datos.
+ *
+ * Exige sesión y pertenencia: es la vista de edición del asesor, no el catálogo
+ * público. Para el catálogo existen `getPublicCourse` y `getPublicCourses`, que
+ * filtran por `is_active` a propósito.
  */
 export async function getCourseById(courseId: string): Promise<ActionResult> {
+  const denied = await assertCourseInOwnOrg(courseId);
+  if (denied) return denied;
+
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -61,16 +127,21 @@ export async function getCourseById(courseId: string): Promise<ActionResult> {
 
 /**
  * Activa o desactiva un curso.
+ *
+ * Antes no exigía sesión: cualquiera podía desactivar el curso de cualquier
+ * empresa —y con él su página pública de informes— con solo su identificador.
  */
 export async function toggleCourseActive(courseId: string): Promise<ActionResult> {
+  const denied = await assertCourseInOwnOrg(courseId);
+  if (denied) return denied;
+
   const supabase = await createClient();
 
-  // Get current state
   const { data: course } = await supabase
     .from('courses')
     .select('is_active')
     .eq('id', courseId)
-    .single();
+    .maybeSingle();
 
   if (!course) return { success: false, error: 'Curso no encontrado' };
 
@@ -88,8 +159,15 @@ export async function toggleCourseActive(courseId: string): Promise<ActionResult
 
 /**
  * Elimina un curso y todos sus datos relacionados.
+ *
+ * Antes no exigía sesión. Es la operación más destructiva del módulo del asesor
+ * —borra en cascada módulos, planes y el histórico de sesiones— y era invocable
+ * por cualquiera con el identificador del curso.
  */
 export async function deleteCourse(courseId: string): Promise<ActionResult> {
+  const denied = await assertCourseInOwnOrg(courseId);
+  if (denied) return denied;
+
   const supabase = await createClient();
 
   const { error } = await supabase

@@ -20,8 +20,6 @@ export default function robots(): MetadataRoute.Robots {
           '/my-jobs/',
           '/write/',
           '/groups/',
-          '/sign-in/',
-          '/sign-up/',
         ],
       },
       {

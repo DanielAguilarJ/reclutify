@@ -1,58 +1,171 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
-export async function POST(req: NextRequest) {
-  try {
-    const { transcript, topics, candidateName, language, roleTitle, roleDescription } = await req.json();
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { requireInterviewAccess } from '@/lib/api/interview-access';
+import { chatCompletion, type OpenRouterMessage } from '@/lib/api/openrouter';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import {
+  resolveOrgNotificationRecipient,
+  sendRecruiterInterviewNotification,
+} from '@/lib/api/recruiter-notification';
+import { evaluateRequestSchema, type InterviewTopicInput } from '@/lib/schemas/interview';
+// El recálculo de la puntuación vive en el servicio: es la parte con más consecuencias del
+// producto —decide si alguien aparece como «Strong Hire» ante quien contrata— y dentro de
+// la ruta no se podía probar sin simular OpenRouter.
+import { applyWeightedScore, type RawEvaluation } from '@/lib/services/evaluation.service';
+import { INTERVIEW_EVALUATION_MODEL } from '@/lib/ai-model';
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'OpenRouter API key not configured' },
-        { status: 500 }
-      );
-    }
+/**
+ * POST /api/evaluate — evaluación final del candidato a partir de la transcripción.
+ *
+ * QUÉ ESTABA MAL
+ * --------------
+ * 1. **SSRF con exfiltración.** Al terminar, la ruta avisaba al reclutador así:
+ *
+ *        const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || '...';
+ *        await fetch(`${origin}/api/notifications`, { method: 'POST', body: JSON.stringify({...}) });
+ *
+ *    `Origin` la controla quien llama. Con `Origin: https://atacante.example` el
+ *    servidor enviaba a ese host el nombre del candidato, su puntuación y la
+ *    recomendación de contratación. Ahora se llama a la función en el mismo
+ *    proceso: no hay petición HTTP que desviar.
+ *
+ * 2. **Sin autorización.** Cualquiera podía inventar una transcripción y obtener
+ *    una evaluación con cargo al saldo de OpenRouter. Peor: `/admin/pipeline`
+ *    guarda el resultado, así que era el primer paso para inyectar evaluaciones
+ *    falsas.
+ *
+ * 3. **`POST {}` reventaba con 500.** `topics.map(...)` sin comprobar que
+ *    `topics` fuera un array.
+ *
+ * 4. **Destinatario incrustado.** El aviso iba a `'recruiter@reclutify.com'`, una
+ *    dirección del proveedor, no del cliente. Ahora se resuelve el `owner` de la
+ *    organización que la credencial acredita.
+ *
+ * QUÉ SE CONSERVA
+ * ---------------
+ * El prompt, el esquema JSON de salida, el recálculo de la puntuación ponderada
+ * en el servidor y los umbrales de recomendación son los mismos. Este cambio es
+ * de seguridad y robustez, no de criterio de evaluación.
+ */
 
-    // ─── Helper: ensure every topic has a rubric (fallback if missing/empty) ───
-    const ensureRubric = (t: { label: string; rubric?: { weight?: number; excellent?: string; acceptable?: string; poor?: string } }) => {
-      const r = t.rubric;
-      const weight = r?.weight ?? 5;
-      const excellent = (r?.excellent && r.excellent.trim()) || `Dominio sobresaliente en ${t.label}`;
-      const acceptable = (r?.acceptable && r.acceptable.trim()) || `Conocimiento funcional en ${t.label}`;
-      const poor = (r?.poor && r.poor.trim()) || `Carencias notables en ${t.label}`;
-      return { weight, excellent, acceptable, poor };
-    };
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
-    // Build weighted rubric context — ALWAYS include rubric (with fallback)
-    const rubricContext = `\n\nWEIGHTED EVALUATION RUBRIC:
-Use the following criteria to score each topic. The weight indicates importance — higher weight = more impact on overallScore.
+/** Rúbrica normalizada de un criterio. */
+interface NormalizedRubric {
+  weight: number;
+  excellent: string;
+  acceptable: string;
+  poor: string;
+}
 
-${topics.map((t: { label: string; rubric?: { weight: number; excellent: string; acceptable: string; poor: string } }) => {
-      const rubric = ensureRubric(t);
-      return `📋 "${t.label}" (weight: ${rubric.weight}/10)
+/**
+ * Completa la rúbrica de un criterio con valores por defecto.
+ *
+ * Misma lógica que tenía la ruta: un criterio sin rúbrica sigue siendo evaluable
+ * con descriptores genéricos, en vez de quedar fuera de la evaluación.
+ */
+function ensureRubric(topic: InterviewTopicInput): NormalizedRubric {
+  const rubric = topic.rubric;
+
+  return {
+    weight: rubric?.weight ?? 5,
+    excellent: rubric?.excellent?.trim() || `Dominio sobresaliente en ${topic.label}`,
+    acceptable: rubric?.acceptable?.trim() || `Conocimiento funcional en ${topic.label}`,
+    poor: rubric?.poor?.trim() || `Carencias notables en ${topic.label}`,
+  };
+}
+
+/** Bloque de rúbrica ponderada que se inyecta en el prompt. */
+function buildRubricContext(topics: InterviewTopicInput[]): string {
+  const criteria = topics
+    .map((topic) => {
+      const rubric = ensureRubric(topic);
+      return `📋 "${topic.label}" (weight: ${rubric.weight}/10)
    • Excellent (9-10): ${rubric.excellent}
    • Acceptable (6-8): ${rubric.acceptable}
    • Poor (0-5): ${rubric.poor}`;
-    }).join('\n\n')}
+    })
+    .join('\n\n');
+
+  return `\n\nWEIGHTED EVALUATION RUBRIC:
+Use the following criteria to score each topic. The weight indicates importance — higher weight = more impact on overallScore.
+
+${criteria}
 
 SCORING RULES:
 - Score each topic 0-10 based on the criteria above
 - Calculate overallScore as a WEIGHTED AVERAGE: sum(score × weight) / sum(weights) × 10
 - A topic with weight 9 counts 3x more than one with weight 3
 - recommendation thresholds: >=80 = "Strong Hire", >=60 = "Hire", <60 = "Pass"`;
+}
 
-    const topicList = topics.map((t: { label: string }) => t.label).join(', ');
-    const hasRubrics = topics.some((t: { rubric?: unknown }) => t.rubric);
+/**
+ * Renderiza la transcripción como conversación legible, etiquetando cada turno
+ * con el tema al que pertenece.
+ *
+ * Se conserva tal cual de la versión anterior: pasar el JSON crudo gastaba tokens
+ * en marcas de tiempo y cargas de sentimiento, y obligaba al modelo a
+ * reconstruir la estructura de turnos que aquí se le da hecha.
+ */
+function renderTranscript(
+  transcript: { role?: string; content?: string }[],
+  topicLabels: string[],
+): string {
+  const transitionRegex =
+    /pasemos al siguiente tema|let's move on to the next topic|let's move on to|avancemos al siguiente tema|ahora hablemos sobre|pasemos ahora a|with that we've covered|with that we have covered/i;
 
-    const systemPrompt = `You are an expert HR Evaluator. Analyze the following interview transcript for candidate "${candidateName}".
+  let topicCursor = 0;
+
+  return transcript
+    .map((entry) => {
+      const speaker = entry.role === 'assistant' ? 'ZARA' : 'CANDIDATE';
+      const rawContent = entry.content ?? '';
+      const content = rawContent.replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
+      const currentTopic = topicLabels[topicCursor] || 'general';
+
+      // El cursor avanza DESPUÉS de registrar el turno: el mensaje que anuncia la
+      // transición pertenece al tema que se está cerrando.
+      if (
+        entry.role === 'assistant' &&
+        (rawContent.includes('[NEXT_TOPIC]') || transitionRegex.test(rawContent))
+      ) {
+        topicCursor = Math.min(Math.max(0, topicLabels.length - 1), topicCursor + 1);
+      }
+
+      return `[topic: ${currentTopic}] ${speaker}: ${content}`;
+    })
+    .join('\n\n');
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
+
+    const body = evaluateRequestSchema.parse(rawBody);
+
+    const access = await requireInterviewAccess(rawBody, body.roleId);
+
+    // Una evaluación por entrevista es lo normal, con hasta 3 reintentos del
+    // cliente (`InterviewComplete`). El tope por hora corta el bucle sin
+    // estorbar al reclutador que reevalúa varios candidatos seguidos.
+    await enforceRateLimit(req, RATE_LIMITS.AI_EVALUATE, access.userId ?? access.orgId);
+
+    const topicLabels = body.topics.map((topic) => topic.label);
+
+    const systemPrompt = `You are an expert HR Evaluator. Analyze the following interview transcript for candidate "${body.candidateName}".
 Your objective is to honestly and critically evaluate if the candidate is suitable for the role:
-**Role Title:** ${roleTitle || 'Candidate'}
-**Role Description:** ${roleDescription || ''}
+**Role Title:** ${body.roleTitle || 'Candidate'}
+**Role Description:** ${body.roleDescription}
 
-The interview covered these topics: ${topicList}.${rubricContext}
+The interview covered these topics: ${topicLabels.join(', ')}.${buildRubricContext(body.topics)}
 
 Output a strict JSON object evaluating the candidate with this exact schema:
 {
-  "candidateName": "${candidateName}",
+  "candidateName": "${body.candidateName}",
   "overallScore": <number 0-100>,
   "recommendation": "<one of: Strong Hire | Hire | Pass>",
   "pros": ["<strength 1>", "<strength 2>", "<strength 3>"],
@@ -72,7 +185,7 @@ FIELD INSTRUCTIONS:
 - "executiveSummary": Write 3-4 sentences as a professional HR briefing. Be specific about the candidate.
 - "interviewHighlights": Pick 2-3 of the most notable responses (best AND worst). Include the actual quote or close paraphrase from the transcript. Each must reference a specific topic.
 - "hiringRisks": List 0-2 concrete risks if this candidate is hired. Base these on gaps observed in the transcript, NOT speculation. If no risks, return empty array.
-- "onboardingTips": List 2-3 specific onboarding suggestions based on the candidate's weaker areas. E.g. "Provide training on X" or "Assign gradually increasing responsibilities in Y".
+- "onboardingTips": List 2-3 specific onboarding suggestions based on the candidate's weaker areas.
 - "biasFlags": IMPORTANT — Review your own evaluation for potential bias. Check if any of your scoring or commentary could be influenced by:
   • Linguistic patterns (accent indicators, non-native speech patterns in text)
   • Gender assumptions from name or pronouns
@@ -82,137 +195,66 @@ FIELD INSTRUCTIONS:
   If you detect potential bias in YOUR evaluation, add a flag: { "type": "linguistic_bias|gender_bias|cultural_bias|age_bias", "description": "explanation of the potential bias", "severity": "low|medium|high" }
   If no bias is detected, return an empty array [].
 
-Be brutally honest, fair, and objective. Base your evaluation solely on demonstrated knowledge in the transcript and how strictly it aligns with the role description${hasRubrics ? ' and the weighted rubric criteria above' : ''}.
+Be brutally honest, fair, and objective. Base your evaluation solely on demonstrated knowledge in the transcript and how strictly it aligns with the role description${body.topics.some((topic) => topic.rubric) ? ' and the weighted rubric criteria above' : ''}.
 Return ONLY the JSON object, no markdown formatting.
-CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummary, interviewHighlights quotes, hiringRisks, onboardingTips, biasFlags description) MUST be written in ${language === 'es' ? 'Spanish (Español)' : 'English'}. The JSON keys must remain exactly as specified in English.`;
+CRITICAL MANDATE: The output JSON values (especially pros, cons, executiveSummary, interviewHighlights quotes, hiringRisks, onboardingTips, biasFlags description) MUST be written in ${body.language === 'es' ? 'Spanish (Español)' : 'English'}. The JSON keys must remain exactly as specified in English.`;
 
-    // Bug 21 fix: format the transcript as a readable conversation rather
-    // than raw JSON. Raw JSON wastes tokens on timestamps/sentiment payloads
-    // and forces the evaluator model to reconstruct turn structure that we
-    // can just hand it directly. We also tag each entry with the topic it
-    // belongs to (best-effort) so topic-level scoring is grounded.
-    type TranscriptEntry = { role?: string; content?: string; timestamp?: number; sentiment?: unknown };
-    const transcriptArr: TranscriptEntry[] = Array.isArray(transcript) ? transcript : [];
-    const topicLabels: string[] = (topics || []).map((t: { label: string }) => t.label);
+    const messages: OpenRouterMessage[] = [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: `Below is the full interview transcript. Each turn is tagged with the topic it was discussed under.
 
-    // Walk the transcript and track which topic each assistant message likely
-    // covers. We use [NEXT_TOPIC] markers (if present in the raw content) or
-    // the explicit Spanish/English transition phrases the system emits.
-    let topicCursor = 0;
-    const transitionRegex = /pasemos al siguiente tema|let's move on to the next topic|let's move on to|avancemos al siguiente tema|ahora hablemos sobre|pasemos ahora a|with that we've covered|with that we have covered/i;
-    const renderedConversation = transcriptArr.map((entry) => {
-      const role = entry.role === 'assistant' ? 'ZARA' : 'CANDIDATE';
-      const content = (entry.content || '').toString().replace(/\[NEXT_TOPIC\]|\[END_INTERVIEW\]/g, '').trim();
-      const currentTopic = topicLabels[topicCursor] || 'general';
-      // Advance the cursor AFTER recording this message, when transition detected
-      if (entry.role === 'assistant' && (entry.content?.includes('[NEXT_TOPIC]') || transitionRegex.test(entry.content || ''))) {
-        topicCursor = Math.min(topicLabels.length - 1, topicCursor + 1);
-      }
-      return `[topic: ${currentTopic}] ${role}: ${content}`;
-    }).join('\n\n');
+${renderTranscript(body.transcript, topicLabels) || '(empty transcript)'}
 
-    const userMessage = `Below is the full interview transcript. Each turn is tagged with the topic it was discussed under.
-
-${renderedConversation || '(empty transcript)'}
-
-Now produce the evaluation JSON exactly as specified in the system message. Use ONLY evidence from the transcript above. Match topicScores keys to the topic labels exactly.`;
-
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://reclutify.com',
-        'X-Title': 'Reclutify AI Interviewer',
+Now produce the evaluation JSON exactly as specified in the system message. Use ONLY evidence from the transcript above. Match topicScores keys to the topic labels exactly.`,
       },
-      body: JSON.stringify({
-        model: 'x-ai/grok-4.20',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage }
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-      }),
+    ];
+
+    const completion = await chatCompletion({
+      model: INTERVIEW_EVALUATION_MODEL,
+      messages,
+      temperature: 0.2,
+      jsonMode: true,
+      timeoutMs: 45_000,
+      title: 'Reclutify AI Interviewer',
+      // Si el candidato cierra la pestaña, no hay a quién entregar el resultado:
+      // se aborta la llamada en vez de pagarla completa.
+      signal: req.signal,
     });
 
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error('OpenRouter evaluation error:', errorData);
-      return NextResponse.json(
-        { error: 'Failed to evaluate candidate' },
-        { status: 500 }
-      );
+    const parsed = completion.parseJson<RawEvaluation>();
+
+    if (!parsed) {
+      throw ApiError.upstream('The evaluation service returned an unreadable response');
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '';
+    const evaluation = applyWeightedScore(parsed, body.topics);
 
-    // Parse the JSON from the response
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return NextResponse.json(
-        { error: 'Failed to parse evaluation JSON' },
-        { status: 500 }
-      );
-    }
+    // ─── Aviso al reclutador ───
+    // Accesorio por definición: la evaluación ya está calculada. Un fallo aquí no
+    // puede propagarse a la respuesta del candidato, así que se registra y sigue.
+    const recipient = await resolveOrgNotificationRecipient(access.orgId);
 
-    const evaluation = JSON.parse(jsonMatch[0]);
-
-    // ─── Server-side weighted score recalculation ───
-    // The AI provides topicScores; we recalculate overallScore with exact weighted average
-    if (evaluation.topicScores && typeof evaluation.topicScores === 'object') {
-      let weightedSum = 0;
-      let totalWeight = 0;
-
-      for (const t of topics as { label: string; rubric?: { weight?: number } }[]) {
-        const rubric = ensureRubric(t);
-        const score = evaluation.topicScores[t.label] ?? 0;
-        weightedSum += score * rubric.weight;
-        totalWeight += rubric.weight;
-      }
-
-      if (totalWeight > 0) {
-        // Weighted average on 0-10 scale, then multiply by 10 for 0-100
-        const weightedScore = Math.round((weightedSum / totalWeight) * 10);
-        evaluation.overallScore = Math.min(100, Math.max(0, weightedScore));
-
-        // Recalculate recommendation based on weighted score
-        if (evaluation.overallScore >= 80) {
-          evaluation.recommendation = 'Strong Hire';
-        } else if (evaluation.overallScore >= 60) {
-          evaluation.recommendation = 'Hire';
-        } else {
-          evaluation.recommendation = 'Pass';
-        }
-      }
-    }
-
-    // Priority 5: Envío de correo automáticamente al reclutador (Notificación)
-    try {
-      const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-      await fetch(`${origin}/api/notifications`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          emailTo: 'recruiter@reclutify.com', 
-          candidateName: evaluation.candidateName,
-          roleTitle: roleTitle || 'Vacante',
-          score: evaluation.overallScore,
-          recommendation: evaluation.recommendation,
-          reportUrl: `${origin}/admin/pipeline`
-        })
+    if (recipient) {
+      const notification = await sendRecruiterInterviewNotification({
+        emailTo: recipient,
+        candidateName: typeof evaluation.candidateName === 'string' ? evaluation.candidateName : body.candidateName,
+        roleTitle: body.roleTitle || 'Vacante',
+        score: typeof evaluation.overallScore === 'number' ? evaluation.overallScore : null,
+        recommendation: typeof evaluation.recommendation === 'string' ? evaluation.recommendation : '',
+        reportPath: '/admin/pipeline',
       });
-    } catch(e) {
-      console.warn("Fallo silencioso en notificación:", e);
+
+      if (!notification.sent) {
+        console.warn(`[evaluate] recruiter notification skipped: ${notification.reason}`);
+      }
+    } else {
+      console.warn(`[evaluate] no notification recipient for org=${access.orgId}`);
     }
 
     return NextResponse.json({ evaluation });
   } catch (error) {
-    console.error('Evaluate API error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return handleApiError(error, '[evaluate]');
   }
 }

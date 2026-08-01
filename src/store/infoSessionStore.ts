@@ -315,7 +315,17 @@ export const useInfoSessionStore = create<InfoSessionState>((set, get) => ({
   setIsLoading: (loading) => set({ isLoading: loading }),
 
   // ─── Timer ───
+  //
+  // `startTimer` limpia el intervalo anterior antes de crear el nuevo.
+  //
+  // Sin esa guarda, dos llamadas dejaban el primer `setInterval` corriendo sin
+  // referencia: `set({ timerInterval: interval })` sobrescribía la única forma de
+  // pararlo, así que ni `stopTimer` ni nada podían alcanzarlo. El síntoma es un
+  // temporizador que avanza al doble de velocidad.
   startTimer: () => {
+    const { timerInterval: existing } = get();
+    if (existing) clearInterval(existing);
+
     const interval = setInterval(() => {
       set((state) => ({ timerSeconds: state.timerSeconds + 1 }));
     }, 1000);

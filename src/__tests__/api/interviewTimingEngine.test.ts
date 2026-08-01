@@ -314,6 +314,141 @@ describe('InterviewTimingEngine', () => {
   });
 
   // ══════════════════════════════════════════════════════════════
+  // SECTION 8b: El tope efectivo TIENE que poder forzar el avance
+  // ══════════════════════════════════════════════════════════════
+
+  describe('effectiveHardLimit fuerza el avance de tema', () => {
+    /**
+     * Reproduce la decisión REAL de `src/app/api/chat/route.ts`:
+     *
+     *     const maxQuestionsHardLimit = Math.max(1, pacing.effectiveHardLimit);
+     *     const mustAdvanceNow = turn.questionsInCurrentTopic >= maxQuestionsHardLimit;
+     *
+     * Se replica aquí porque el fallo no estaba en ninguno de los dos lados por separado: el
+     * motor devolvía un número coherente consigo mismo y la ruta hacía una comparación
+     * razonable. Estaba en que ese número NUNCA satisfacía la comparación.
+     */
+    function mustAdvance(pacing: { effectiveHardLimit: number }, asked: number): boolean {
+      return asked >= Math.max(1, pacing.effectiveHardLimit);
+    }
+
+    it('REGRESIÓN: con urgencia crítica el tema avanza, no se queda clavado', () => {
+      // Era el fallo más grave del motor. `effectiveHardLimit` se calculaba con un suelo de
+      // `asked + 1`, así que `asked >= limit` era insatisfacible y la entrevista se quedaba
+      // CLAVADA en un tema justo cuando se quedaba sin tiempo. Los temas restantes acababan con
+      // cero evidencia, y como la evaluación puntúa por tema, el candidato quedaba juzgado
+      // sobre una rúbrica que la entrevista nunca cubrió.
+      const plan = computeInterviewPlan(30, makeTopics(5));
+      const budget = plan.topics[1].questionBudget;
+
+      // 95 % del tiempo consumido, todavía en el tema 1, con el presupuesto ya agotado.
+      const pacing = computeRealTimePacing(1710, 1, budget, plan);
+
+      expect(pacing.urgency).toBe('critical');
+      expect(pacing.effectiveHardLimit).toBeLessThanOrEqual(budget);
+      expect(mustAdvance(pacing, budget)).toBe(true);
+    });
+
+    it('y el tope NO escala siguiendo a las preguntas ya hechas', () => {
+      // El síntoma exacto: el tope subía 5, 6, 7… a medida que el modelo insistía.
+      const plan = computeInterviewPlan(30, makeTopics(5));
+      const limits = [3, 4, 5, 6, 7, 12].map(
+        (asked) => computeRealTimePacing(1710, 1, asked, plan).effectiveHardLimit,
+      );
+
+      // Todos idénticos: el tope es función de la urgencia, no de lo ya preguntado.
+      expect(new Set(limits).size).toBe(1);
+    });
+
+    it('el tema avanza también con urgencia normal (no había regresión aquí)', () => {
+      const plan = computeInterviewPlan(30, makeTopics(5));
+      const budget = plan.topics[2].questionBudget;
+      const pacing = computeRealTimePacing(900, 2, budget, plan);
+
+      expect(mustAdvance(pacing, budget)).toBe(true);
+    });
+
+    it('INVARIANTE: en todo el espacio de estados el avance llega a dispararse', () => {
+      // Barrido exhaustivo. Para cada duración, número de temas, tema actual y momento del
+      // reloj, tiene que existir una cantidad de preguntas que fuerce el avance. Si para alguna
+      // combinación no existe, esa entrevista puede quedarse encerrada en un tema.
+      const unreachable: string[] = [];
+
+      for (const minutes of [10, 15, 30, 45, 60, 90]) {
+        for (const numTopics of [1, 3, 5, 8, 12]) {
+          const plan = computeInterviewPlan(minutes, makeTopics(numTopics));
+          for (let topicIndex = 0; topicIndex < numTopics; topicIndex++) {
+            for (const pct of [0.1, 0.5, 0.8, 0.95, 1.3]) {
+              const elapsed = Math.round(minutes * 60 * pct);
+              // 30 es holgadamente mayor que cualquier presupuesto posible (el tope duro del
+              // motor es 14), así que si con 30 preguntas no avanza, no avanza nunca.
+              const canAdvance = Array.from({ length: 30 }, (_, i) => i + 1).some((asked) =>
+                mustAdvance(computeRealTimePacing(elapsed, topicIndex, asked, plan), asked),
+              );
+              if (!canAdvance) {
+                unreachable.push(`${minutes}min/${numTopics}temas/tema${topicIndex}/${pct}`);
+              }
+            }
+          }
+        }
+      }
+
+      expect(unreachable).toEqual([]);
+    });
+
+    it('el suelo es 1: ningún tema se queda sin ninguna pregunta', () => {
+      const combos: number[] = [];
+      for (const minutes of [10, 30, 60]) {
+        for (const numTopics of [1, 5, 10]) {
+          const plan = computeInterviewPlan(minutes, makeTopics(numTopics));
+          for (let topicIndex = 0; topicIndex < numTopics; topicIndex++) {
+            for (const pct of [0.1, 0.5, 0.95, 1.5]) {
+              combos.push(
+                computeRealTimePacing(Math.round(minutes * 60 * pct), topicIndex, 0, plan)
+                  .effectiveHardLimit,
+              );
+            }
+          }
+        }
+      }
+
+      expect(Math.min(...combos)).toBeGreaterThanOrEqual(1);
+    });
+
+    it('el periodo de gracia sigue conservando el presupuesto íntegro', () => {
+      // La corrección no debe tocar el atajo de gracia: ahí el tiempo dejó de mandar a
+      // propósito, para poder cubrir los temas que faltan sin prisa.
+      const plan = computeInterviewPlan(30, makeTopics(5));
+      const budget = plan.topics[1].questionBudget;
+      const pacing = computeRealTimePacing(2400, 1, budget, plan, { isGracePeriod: true });
+
+      expect(pacing.effectiveHardLimit).toBe(budget);
+      expect(pacing.urgency).toBe('normal');
+    });
+
+    it('con urgencia crítica no se ofrecen preguntas extra', () => {
+      // Con más de diez temas, `progressDelta` puede pasar de 1 estando al 90 % del tiempo. La
+      // rama de «vas adelantado» iba antes que la de urgencia crítica, así que el modelo podía
+      // recibir «puedes hacer preguntas extra para explorar en profundidad» con el 95 % del
+      // tiempo consumido.
+      const plan = computeInterviewPlan(30, makeTopics(12));
+      const pacing = computeRealTimePacing(1710, 11, 0, plan);
+
+      expect(pacing.urgency).toBe('critical');
+      expect(pacing.suggestAddQuestions).toBe(0);
+      expect(pacing.message).toContain('CRITICAL');
+    });
+
+    it('la holgura del adelantado no supera el presupuesto en más de 1', () => {
+      const plan = computeInterviewPlan(60, makeTopics(5));
+      const budget = plan.topics[3].questionBudget;
+      const pacing = computeRealTimePacing(360, 3, 0, plan);
+
+      expect(pacing.effectiveHardLimit).toBeLessThanOrEqual(budget + 1);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
   // SECTION 9: Edge Cases
   // ══════════════════════════════════════════════════════════════
 

@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import * as mammoth from 'mammoth';
 
 import { DEFAULT_AI_MODEL } from '@/lib/ai-model';
+import { getOptionalApiUser } from '@/lib/api/auth';
+import { handleApiError } from '@/lib/api/errors';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
 import { extractPdfText } from '@/lib/pdf-text';
 
 // pdf-parse uses Node-only deps (file IO, native PDF parsing). Force the Node
@@ -12,8 +15,28 @@ export const maxDuration = 30;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
+/**
+ * POST /api/parse-resume — extrae el CV estructurado de un PDF o DOCX.
+ *
+ * POR QUÉ NO EXIGE SESIÓN
+ * -----------------------
+ * La llama `DetailsForm`, que el candidato rellena ANTES de entrar a la sala, en
+ * los flujos de ticket y de enlace público donde no hay cuenta. Exigir sesión
+ * dejaría a los candidatos sin poder subir su CV, que es el flujo principal.
+ *
+ * En su lugar el control es el tope de tasa más los límites que la ruta ya tenía
+ * (10 MB por fichero, tipos permitidos, mínimo de texto legible). No hay recurso
+ * que proteger: la ruta no lee ni escribe en la base y solo devuelve al llamante
+ * el contenido del fichero que él mismo subió.
+ */
 export async function POST(request: Request) {
   try {
+    // La sesión es opcional y solo elige el identificador de cuota: un candidato
+    // autenticado no comparte tope con el resto de su red corporativa.
+    const user = await getOptionalApiUser();
+
+    await enforceRateLimit(request, RATE_LIMITS.FILE_PARSE, user?.id);
+
     const formData = await request.formData();
     const file = formData.get('file') as File;
     
@@ -227,15 +250,6 @@ ${text}`;
 
     return NextResponse.json({ success: true, data: safeData, rawText: text });
   } catch (error) {
-    const err = error as Error;
-    console.error('[parse-resume] failure:', {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
-    });
-    return NextResponse.json(
-      { error: 'Internal error parsing CV. Please try a different file.' },
-      { status: 500 }
-    );
+    return handleApiError(error, '[parse-resume]');
   }
 }

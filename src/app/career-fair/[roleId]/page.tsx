@@ -75,7 +75,18 @@ export default async function RoleDetailPage({ params }: PageProps) {
       : undefined,
     employmentType: job.job_type || undefined,
     url: `${baseUrl}/career-fair/${job.id}`,
-    validThrough: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+    // `Date.now()` durante el render produce un valor distinto en cada
+    // renderizado, lo que invalida la caché de la página y, en un componente
+    // cliente, provoca discrepancia de hidratación. Se ancla a la fecha de
+    // publicación de la vacante, que además es lo semánticamente correcto: la
+    // oferta caduca 90 días después de publicarse, no 90 días después de que
+    // alguien la mire.
+    // Sin `published_at` se omite el campo en lugar de inventar una fecha con
+    // `Date.now()`: `validThrough` es opcional en el esquema de JobPosting, y un
+    // valor calculado en el render cambiaría el HTML en cada petición.
+    validThrough: job.published_at
+      ? new Date(new Date(job.published_at).getTime() + 90 * 24 * 60 * 60 * 1000).toISOString()
+      : undefined,
     baseSalary: job.salary ? {
       '@type': 'MonetaryAmount',
       currency: 'USD',

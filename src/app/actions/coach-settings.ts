@@ -1,11 +1,20 @@
 'use server';
 
+import { escapeHtml } from '@/lib/api/email';
 import { createClient } from '@/utils/supabase/server';
 import { Resend } from 'resend';
+import { redactIntegrationSecrets } from '@/lib/coach/integration-secrets';
 
 // ─── Types ───
 
-interface CoachSettingsRow {
+/**
+ * Fila de `coach_settings`.
+ *
+ * Se exporta para que `coachSettingsStore` la use al leer el resultado de la server action
+ * en vez de inventarse un cast: un tipo local en el store se desincronizaría de la tabla en
+ * el primer campo nuevo.
+ */
+export interface CoachSettingsRow {
   org_id: string;
   assistant_name: string | null;
   conversation_tone: string | null;
@@ -109,7 +118,20 @@ export async function getCoachSettings(orgId: string): Promise<GetSettingsResult
       return { success: false, error: error.message };
     }
 
-    return { success: true, data: data as CoachSettingsRow };
+    // Los secretos de integraciones NO salen del servidor, aunque quien llame sea el
+    // dueño de la organización. Son credenciales de sistemas de TERCEROS (Google, HubSpot,
+    // Notion) y la interfaz solo necesita saber si están configuradas.
+    //
+    // Esta acción ya no la usa el store —pasó a `coach-settings-secure.ts`— pero sigue
+    // exportada, así que se redacta igual: dejar un camino con fuga solo porque hoy nadie
+    // lo recorre es dejar la fuga.
+    return {
+      success: true,
+      data: {
+        ...(data as CoachSettingsRow),
+        integrations: redactIntegrationSecrets((data as CoachSettingsRow).integrations),
+      } as CoachSettingsRow,
+    };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
@@ -206,20 +228,39 @@ export async function sendTeamInvitationEmail(
       return { success: false, error: 'No autenticado.' };
     }
 
-    // Get inviter's name
+    // Get inviter's name AND verify they can invite on behalf of an organization.
+    //
+    // Antes solo se comprobaba que hubiera sesión. Cualquier cuenta autenticada
+    // —incluida una de candidato— podía hacer que la infraestructura de Reclutify
+    // enviara un correo de invitación con la marca de la empresa a la dirección
+    // que quisiera y con el `orgName` que quisiera. Es un relé de correo con
+    // sesión, el mismo problema que tenía `/api/send-email`.
     const { data: inviterProfile } = await supabase
       .from('user_profiles')
-      .select('full_name')
+      .select('full_name, org_id, role')
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
 
-    const inviterName = inviterProfile?.full_name || 'Un miembro del equipo';
+    if (!inviterProfile?.org_id || !['owner', 'admin'].includes(inviterProfile.role ?? '')) {
+      return { success: false, error: 'No tienes permiso para invitar miembros.' };
+    }
+
+    const inviterName = inviterProfile.full_name || 'Un miembro del equipo';
+
+    // `inviterName` y `orgName` se interpolan en el HTML del correo. Sin escapar,
+    // un nombre con `<` cierra la etiqueta e inyecta marcado en un mensaje firmado
+    // desde el dominio de la empresa: no es XSS en el navegador, pero permite
+    // falsificar el contenido visible del correo (añadir un botón, cambiar el
+    // texto legal, insertar otro enlace).
+    const safeInviterName = escapeHtml(inviterName);
+    const safeOrgName = escapeHtml(orgName);
 
     const resend = new Resend(resendApiKey);
 
     const { error: emailError } = await resend.emails.send({
       from: 'Reclutify <noreply@reclutify.com>',
       to: [email],
+      // El asunto NO es HTML, así que va el valor original; el cuerpo sí lo es.
       subject: `${inviterName} te ha invitado a unirte a ${orgName} en Reclutify`,
       html: `
         <!DOCTYPE html>
@@ -309,7 +350,7 @@ export async function sendTeamInvitationEmail(
                 <h1>Reclutify</h1>
               </div>
               <h2>Te han invitado a un equipo</h2>
-              <p><strong>${inviterName}</strong> te ha invitado a unirte al equipo de <strong>${orgName}</strong> en Reclutify.</p>
+              <p><strong>${safeInviterName}</strong> te ha invitado a unirte al equipo de <strong>${safeOrgName}</strong> en Reclutify.</p>
               
               <div class="highlight">
                 <p>Al aceptar, podrás colaborar en la gestión de cursos, leads y sesiones de coaching con IA.</p>

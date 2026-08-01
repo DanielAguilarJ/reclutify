@@ -6,6 +6,7 @@ import { Home, Briefcase, Users, MessageSquare, Bell, Search, Menu, X } from 'lu
 import { useAppStore } from '@/store/appStore';
 import { NotificationBell } from './NotificationBell';
 import { GlobalSearchBar } from './GlobalSearchBar';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface CandidateTopNavProps {
   user: { id: string; email?: string };
@@ -63,15 +64,15 @@ export function CandidateTopNav({ user, profile, unreadMessages = 0 }: Candidate
             <Search className="h-5 w-5" />
           </button>
           <NotificationBell userId={user.id} />
+          {/* El enlace no tiene texto visible, así que su nombre accesible lo da
+              `aria-label`: sin él el lector de pantalla anuncia solo «enlace». */}
           {profile && (
-            <Link href={`/profile/${profile.username}`} className="w-8 h-8 rounded-full overflow-hidden border-2 border-border hover:border-primary transition-colors">
-              {profile.avatar_url ? (
-                <img src={profile.avatar_url} alt={profile.full_name} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full bg-primary/10 flex items-center justify-center text-primary text-xs font-bold">
-                  {profile.full_name?.charAt(0)?.toUpperCase() || 'U'}
-                </div>
-              )}
+            <Link
+              href={`/profile/${profile.username}`}
+              aria-label={`Ver el perfil de ${profile.full_name}`}
+              className="rounded-full border-2 border-border hover:border-primary transition-colors"
+            >
+              <Avatar src={profile.avatar_url} name={profile.full_name || 'U'} size={32} decorative />
             </Link>
           )}
           <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="md:hidden p-2 rounded-lg text-muted hover:text-foreground hover:bg-muted/10">

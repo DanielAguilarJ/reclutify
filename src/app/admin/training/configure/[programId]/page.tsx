@@ -1,8 +1,11 @@
 'use client';
 
-import { use, useEffect, useState, useRef } from 'react';
+import { use, useCallback, useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+
+import { useDebouncedPersist } from '@/hooks/useDebouncedPersist';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import {
   ArrowLeft,
   Upload,
@@ -51,6 +54,27 @@ import { DEFAULT_OCR_PAGE_LIMIT } from '@/lib/training/client-ocr';
 // componente: no arrastra nada al bundle y evita que este botón nuevo sea el
 // único de la aplicación sin foco visible.
 import { focusRing } from '@/components/training/ui';
+
+/**
+ * Mensaje legible de una excepción capturada.
+ *
+ * POR QUÉ EXISTE
+ * --------------
+ * Este archivo tenía ocho `catch (err: any)` y luego hacía `err.message`. Con
+ * `any` el compilador no comprueba nada, y `err` NO es necesariamente un `Error`:
+ * un `throw 'texto'` o un rechazo de promesa con un objeto plano producen un
+ * `err.message` que es `undefined`, y el usuario ve el texto por defecto en lugar
+ * de la causa real.
+ *
+ * Con `unknown` el compilador obliga a estrechar el tipo, y esta función es el
+ * único sitio donde se hace.
+ */
+function errorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err) return err;
+  return fallback;
+}
+
 
 /**
  * Bucket privado de documentos de capacitación.
@@ -520,6 +544,12 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         setTitle(data.program.title || '');
         setDescription(data.program.description || '');
         setWelcomeMessage(data.program.welcomeMessage || '');
+        // Lo que acaba de llegar del servidor es la referencia de «guardado».
+        savedProgramFields.current = {
+          title: data.program.title || '',
+          description: data.program.description || '',
+          welcomeMessage: data.program.welcomeMessage || '',
+        };
         setAiPersonality(data.program.aiPersonality || 'friendly_mentor');
         setContentLanguage(
           resolveTrainingContentLanguage(data.program.contentLanguage)
@@ -530,8 +560,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       
       // Cargar documentos desde biblioteca (asociados y disponibles)
       await loadLibraryDocuments();
-    } catch (err: any) {
-      setError(err.message || 'Error loading program details');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Error loading program details'));
       showToast('error', language === 'es' ? 'Error al cargar detalles' : 'Error loading details');
     } finally {
       setLoading(false);
@@ -545,7 +575,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       const data = await res.json();
       setDocuments(data.attached || []);
       setAvailableDocuments(data.available || []);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to load program documents:', err);
     }
   };
@@ -568,9 +598,14 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
   // sin texto de OCR».
   useEffect(() => () => ocrAbortRef.current?.abort(), []);
 
-  const showToast = (type: 'success' | 'warning' | 'error', message: string) => {
-    setToast({ type, message });
-  };
+  // Memoizado porque `persistModuleField` depende de él: sin esto, su `useCallback` cambiaba de
+  // identidad en cada renderizado y arrastraba a todo lo que lo tuviera como dependencia.
+  const showToast = useCallback(
+    (type: 'success' | 'warning' | 'error', message: string) => {
+      setToast({ type, message });
+    },
+    [],
+  );
 
   // Drag & drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -928,9 +963,14 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
         }),
       });
 
-      const processBody = await processRes
-        .json()
-        .catch(() => ({} as Record<string, any>));
+      // `unknown` en vez de `any`: los tres accesos de abajo ya comprueban el tipo
+      // con `typeof ... === 'string'`, así que el compilador no pierde nada y sí
+      // gana la garantía de que nadie lea un campo sin comprobarlo.
+      const processBody: {
+        success?: unknown;
+        failure?: { message?: unknown } | null;
+        error?: unknown;
+      } = await processRes.json().catch(() => ({}));
 
       if (!processRes.ok || processBody?.success !== true) {
         // `failure.message` ya viene traducido y sin causa técnica; el `error`
@@ -946,7 +986,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       patchUploadState(key, { status: 'done', reason: undefined });
       return true;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Fallo de red o de parseo: el archivo queda pendiente para reintentar.
       console.error('[training/configure] Upload flow failed', err);
       patchUploadState(key, {
@@ -1039,8 +1079,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       await loadLibraryDocuments();
       showToast('success', language === 'es' ? 'Documento asociado correctamente' : 'Document associated successfully');
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     }
   };
 
@@ -1107,8 +1147,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
           showToast('success', language === 'es' ? 'Módulos generados con éxito' : 'Modules generated successfully');
         }
       }
-    } catch (err: any) {
-      showToast('error', err.message || (language === 'es' ? 'Error al generar módulos' : 'Error generating modules'));
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, language === 'es' ? 'Error al generar módulos' : 'Error generating modules'));
     } finally {
       setGeneratingModules(false);
     }
@@ -1145,12 +1185,82 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
     }
   };
 
-  const handleUpdateModuleFields = async (moduleId: string, fields: Partial<TrainingModule>) => {
+  /**
+   * Escribe el campo en el servidor. Lo invoca el hook cuando el usuario deja de teclear.
+   *
+   * La clave que recibe es `${moduleId}:${campo}`; el `moduleId` es un UUID sin dos puntos, así
+   * que basta partir por el primero.
+   */
+  const persistModuleField = useCallback(
+    (key: string, value: string | number) => {
+      const separator = key.indexOf(':');
+      const moduleId = key.slice(0, separator);
+      const field = key.slice(separator + 1);
+
+      void updateModule(programId, moduleId, {
+        [field]: value,
+      } as Partial<TrainingModule>).then((success) => {
+        if (!success) {
+          showToast(
+            'error',
+            language === 'es'
+              ? 'No se pudo guardar el cambio del módulo'
+              : 'Could not save the module change',
+          );
+        }
+      });
+    },
+    [programId, updateModule, showToast, language],
+  );
+
+  const { schedule: scheduleModuleField, flush: flushModuleField } =
+    useDebouncedPersist<string | number>(persistModuleField);
+
+  /**
+   * Copia de los campos de programa tal como están guardados.
+   *
+   * Los de módulo NO entran: se guardan solos con retardo y el hook emite lo pendiente al
+   * desmontar, así que ya están protegidos. Los de programa solo se escriben al pulsar Guardar, y
+   * son los que se perdían sin aviso.
+   */
+  const savedProgramFields = useRef({ title: '', description: '', welcomeMessage: '' });
+
+  useUnsavedChangesWarning(
+    !isReadOnly &&
+      (title !== savedProgramFields.current.title ||
+        description !== savedProgramFields.current.description ||
+        welcomeMessage !== savedProgramFields.current.welcomeMessage),
+  );
+
+  /**
+   * Aplica el cambio de un campo de módulo: al instante en pantalla, con retardo en el servidor.
+   *
+   * ANTES ESTO ROMPÍA EL TECLEO
+   * ---------------------------
+   * La versión anterior hacía `await updateModule(...)` y solo entonces `setModules`. Con un input
+   * controlado por `value={mod.title}`, entre la pulsación y la respuesta de la red el input
+   * volvía al valor anterior, así que escribir era a saltos y se perdían caracteres. Si el `PATCH`
+   * fallaba, la letra no aparecía nunca.
+   *
+   * Además llamaba al servidor en CADA pulsación, sin cancelar las anteriores: la petición de
+   * «Módulo de intro» podía llegar después que la de «Módulo de introducción» y dejar el texto a
+   * medias en la base de datos.
+   *
+   * Ahora el estado local se actualiza primero —el input responde— y el guardado se agrupa por
+   * campo. `useDebouncedPersist` emite lo pendiente al desmontar, así que navegar sin esperar no
+   * pierde la última edición.
+   */
+  const handleUpdateModuleField = (
+    moduleId: string,
+    field: 'title' | 'description' | 'durationEstimate',
+    value: string | number,
+  ) => {
     if (isReadOnly) return;
-    const success = await updateModule(programId, moduleId, fields);
-    if (success) {
-      setModules((prev) => prev.map(m => m.id === moduleId ? { ...m, ...fields } : m));
-    }
+
+    setModules((prev) =>
+      prev.map((m) => (m.id === moduleId ? { ...m, [field]: value } : m)),
+    );
+    scheduleModuleField(`${moduleId}:${field}`, value);
   };
 
   const handleRemoveModule = async (moduleId: string) => {
@@ -1180,13 +1290,16 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       });
 
       if (success) {
+        // Se marca como guardado ya, sin esperar a `loadProgramDetails`: entre la respuesta y la
+        // recarga el aviso seguiría diciendo que hay cambios pendientes cuando ya no los hay.
+        savedProgramFields.current = { title, description, welcomeMessage };
         showToast('success', language === 'es' ? 'Programa guardado exitosamente' : 'Program saved successfully');
         loadProgramDetails();
       } else {
         throw new Error('Sincronización fallida');
       }
-    } catch (err: any) {
-      showToast('error', err.message || (language === 'es' ? 'Error al guardar' : 'Error saving'));
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, language === 'es' ? 'Error al guardar' : 'Error saving'));
     } finally {
       setSaving(false);
     }
@@ -1211,8 +1324,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
 
       showToast('success', language === 'es' ? 'Programa publicado exitosamente' : 'Program published successfully');
       loadProgramDetails();
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     } finally {
       setPublishing(false);
     }
@@ -1234,8 +1347,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
       const body = await res.json();
       showToast('success', language === 'es' ? 'Nueva versión borrador creada' : 'New draft version created');
       router.push(`/admin/training/configure/${body.programId}`);
-    } catch (err: any) {
-      showToast('error', err.message || 'Error');
+    } catch (err: unknown) {
+      showToast('error', errorMessage(err, 'Error'));
     } finally {
       setVersioning(false);
     }
@@ -2029,7 +2142,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                           type="text"
                           value={mod.title}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { title: e.target.value })}
+                          onChange={(e) => handleUpdateModuleField(mod.id, 'title', e.target.value)}
+                          onBlur={() => flushModuleField(`${mod.id}:title`)}
                           className="w-full px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
                         />
                       </div>
@@ -2040,7 +2154,8 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                         <textarea
                           value={mod.description || ''}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { description: e.target.value })}
+                          onChange={(e) => handleUpdateModuleField(mod.id, 'description', e.target.value)}
+                          onBlur={() => flushModuleField(`${mod.id}:description`)}
                           rows={2}
                           className="w-full px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none disabled:opacity-60"
                         />
@@ -2054,7 +2169,16 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                           min={1}
                           value={mod.durationEstimate}
                           disabled={isReadOnly}
-                          onChange={(e) => handleUpdateModuleFields(mod.id, { durationEstimate: Math.max(1, Number(e.target.value)) })}
+                          onChange={(e) => {
+                            // `Math.max(1, Number(v))` no basta: `Number('-')` y `Number('1e')`
+                            // son `NaN`, y `Math.max(1, NaN)` es `NaN`, que acababa guardado en la
+                            // base de datos. Con `type="number"` esos valores intermedios ocurren
+                            // al teclear un negativo o notación científica, y al pegar texto.
+                            const parsed = Number(e.target.value);
+                            if (!Number.isFinite(parsed)) return;
+                            handleUpdateModuleField(mod.id, 'durationEstimate', Math.max(1, Math.round(parsed)));
+                          }}
+                          onBlur={() => flushModuleField(`${mod.id}:durationEstimate`)}
                           className="w-32 px-3 py-2 rounded-lg border border-border/50 bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
                         />
                       </div>
@@ -2065,7 +2189,7 @@ export default function ConfigureProgramPage(props: { params: Promise<{ programI
                             {language === 'es' ? 'Secciones' : 'Sections'} ({mod.content.sections.length})
                           </label>
                           <div className="space-y-1">
-                            {mod.content.sections.map((section: any, idx: number) => (
+                            {mod.content.sections.map((section: { title?: string }, idx: number) => (
                               <div key={idx} className="text-xs text-muted bg-card p-2 rounded-lg border border-border/50">
                                 <span className="font-medium text-foreground">{idx + 1}.</span> {section.title}
                               </div>

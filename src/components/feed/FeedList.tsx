@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { useFeedStore } from '@/store/feedStore';
 import { getFeedPosts } from '@/app/actions/feed';
 import { PostCard } from './PostCard';
@@ -18,21 +18,37 @@ export function FeedList({ currentUser }: FeedListProps) {
   const language = useAppStore((s) => s.language);
   const t = (en: string, es: string) => language === 'es' ? es : en;
   const observerRef = useRef<HTMLDivElement>(null);
-  const initialLoad = useRef(false);
+  /**
+   * Marca si la carga inicial ya terminó.
+   *
+   * Era un `useRef` que se leía durante el render para decidir si mostrar el
+   * esqueleto. Un ref no dispara re-render al cambiar, así que el componente podía
+   * seguir mostrando el esqueleto después de que la carga terminara hasta que otro
+   * cambio de estado lo repintara por casualidad. Como estado sí gobierna el
+   * render.
+   *
+   * El guardado contra la doble ejecución del efecto en modo estricto se mantiene
+   * con un ref aparte, que es su uso correcto: coordinar un efecto, no decidir lo
+   * que se pinta.
+   */
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const loadStartedRef = useRef(false);
 
   // Initial load
   useEffect(() => {
-    if (initialLoad.current) return;
-    initialLoad.current = true;
+    if (loadStartedRef.current) return;
+    loadStartedRef.current = true;
     setLoading(true);
     getFeedPosts(null)
       .then((result) => {
         setPosts(result.posts, result.hasMore, result.nextCursor);
-        setLoading(false);
       })
       .catch(() => {
         showToast('error', t('Failed to load feed', 'Error al cargar el feed'));
+      })
+      .finally(() => {
         setLoading(false);
+        setHasLoadedOnce(true);
       });
   }, [setPosts, setLoading]);
 
@@ -67,7 +83,7 @@ export function FeedList({ currentUser }: FeedListProps) {
     return () => observer.disconnect();
   }, [hasMore, loading, loadMore]);
 
-  if (!initialLoad.current || (loading && posts.length === 0)) {
+  if (!hasLoadedOnce || (loading && posts.length === 0)) {
     return (
       <div className="space-y-4">
         {[1, 2, 3].map((i) => (

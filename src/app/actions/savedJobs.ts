@@ -24,7 +24,7 @@ export async function getSavedJobs() {
   if (!user) return { jobs: [] };
   const { data } = await supabase.from('saved_jobs').select('role_id, created_at').eq('user_id', user.id).order('created_at', { ascending: false });
   if (!data || data.length === 0) return { jobs: [] };
-  const roleIds = data.map((s: any) => s.role_id);
+  const roleIds = data.map((s) => s.role_id);
   const { data: roles } = await supabase.from('roles').select('id, title, location, salary, job_type, created_at').in('id', roleIds);
   return { jobs: roles || [] };
 }

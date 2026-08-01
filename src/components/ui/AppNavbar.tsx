@@ -6,6 +6,7 @@ import Logo from './Logo';
 import ThemeToggle from './ThemeToggle';
 import LanguageToggle from './LanguageToggle';
 import { useAppStore } from '@/store/appStore';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface NavUser {
   username: string;
@@ -70,15 +71,9 @@ export default function AppNavbar({ user, activeRoute }: AppNavbarProps) {
                 href={`/profile/${user.username}`}
                 className="hidden md:flex items-center gap-2 pl-2 hover:opacity-80 transition-opacity"
               >
-                <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-20 border border-border">
-                  {user.avatar_url ? (
-                    <img src={user.avatar_url} alt={user.full_name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                      {user.full_name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                </div>
+                {/* El nombre aparece junto al avatar en los dos sitios, así que es
+                    decorativo: repetirlo haría que el lector lo dijera dos veces. */}
+                <Avatar src={user.avatar_url} name={user.full_name} size={32} decorative className="border border-border" />
               </a>
             )}
 
@@ -124,15 +119,9 @@ export default function AppNavbar({ user, activeRoute }: AppNavbarProps) {
                 onClick={() => setMobileOpen(false)}
                 className="flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-muted hover:bg-surface hover:text-foreground transition-all mt-2 border-t border-border pt-4"
               >
-                <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-20 border border-border">
-                  {user.avatar_url ? (
-                    <img src={user.avatar_url} alt={user.full_name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                      {user.full_name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                </div>
+                {/* El nombre aparece junto al avatar en los dos sitios, así que es
+                    decorativo: repetirlo haría que el lector lo dijera dos veces. */}
+                <Avatar src={user.avatar_url} name={user.full_name} size={32} decorative className="border border-border" />
                 <span>{language === 'es' ? 'Mi Perfil' : 'My Profile'}</span>
               </a>
             )}

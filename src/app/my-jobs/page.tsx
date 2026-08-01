@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Bookmark,
   Briefcase,
@@ -46,11 +46,17 @@ export default function MyJobsPage() {
   const [loading, setLoading] = useState(true);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  // NOTA: el efecto que llama a `loadData` está declarado más abajo, después de la
+  // función, por el motivo que explica el comentario siguiente.
+  //
+  // `loadData` se declara ANTES del efecto que lo usa.
+  //
+  // Estaba definido después con `const`, así que el efecto lo referenciaba en la
+  // zona muerta temporal de la declaración. Funcionaba solo porque el efecto se
+  // ejecuta tras el primer render, cuando la asignación ya ocurrió; es una
+  // dependencia del orden de ejecución que se rompe en cuanto el efecto pase a ser
+  // síncrono. `useCallback` además lo hace estable como dependencia.
+  const loadData = useCallback(async () => {
     setLoading(true);
     const supabase = createClient();
     const {
@@ -140,7 +146,13 @@ export default function MyJobsPage() {
     }
 
     setLoading(false);
-  };
+  }, []);
+
+  // Carga inicial. Va después de `loadData` para no referenciarlo antes de su
+  // declaración.
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleUnsave = async (savedJobId: string, roleId: string) => {
     setRemovingId(savedJobId);

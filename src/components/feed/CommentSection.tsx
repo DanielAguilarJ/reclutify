@@ -8,6 +8,7 @@ import { useAppStore } from '@/store/appStore';
 import { formatRelativeTime } from '@/lib/formatTime';
 import { MoreHorizontal, Pencil, Trash2, CornerDownRight } from 'lucide-react';
 import type { PostComment, PostAuthor } from '@/types/feed';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface CommentSectionProps {
   postId: string;
@@ -114,15 +115,12 @@ export function CommentSection({ postId, currentUser }: CommentSectionProps) {
 
             return (
               <div key={comment.id} className="flex gap-2.5">
-                <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden bg-surface">
-                  {comment.author?.avatar_url ? (
-                    <img src={comment.author.avatar_url} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                      {(comment.author?.full_name || '?').charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                </div>
+                <Avatar
+                  src={comment.author?.avatar_url}
+                  name={comment.author?.full_name || '?'}
+                  size={32}
+                  decorative
+                />
                 <div className="flex-1 min-w-0">
                   {editingId === comment.id ? (
                     <div className="space-y-2">
@@ -218,15 +216,9 @@ export function CommentSection({ postId, currentUser }: CommentSectionProps) {
 
       {/* Comment input */}
       <div className="flex gap-2.5">
-        <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden bg-surface">
-          {currentUser.avatar_url ? (
-            <img src={currentUser.avatar_url} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-xs font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-              {currentUser.full_name.charAt(0).toUpperCase()}
-            </div>
-          )}
-        </div>
+        {/* El avatar del propio usuario en el compositor: decorativo, no aporta nada al
+            lector de pantalla saber cómo es tu propia foto. */}
+        <Avatar src={currentUser.avatar_url} name={currentUser.full_name} size={32} decorative />
         <div className="flex-1 flex gap-2">
           <textarea
             ref={textareaRef}

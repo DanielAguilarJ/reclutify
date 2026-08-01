@@ -1,5 +1,8 @@
 'use client';
 
+import { getCoachProfile, updateCoachProfile } from '@/app/actions/coach-profile';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
+
 import { useState, useEffect } from 'react';
 import {
   User,
@@ -60,15 +63,25 @@ export default function CoachSettingsPage() {
     inviteMember,
     removeMember,
     cancelInvitation,
+    isDirty,
   } = useCoachSettingsStore();
 
   const { language, setLanguage, theme, toggleTheme } = useAppStore();
 
   // Local profile state (not persisted in coach_settings, but in org/user profile)
+  // ESTOS CAMPOS ERAN DECORATIVOS.
+  //
+  // Vivían en `useState` local, no se cargaban del servidor y `handleSave` no los miraba: el
+  // usuario los rellenaba, guardaba, recargaba y estaban vacíos. No era un fallo de guardado —no
+  // existía ningún camino que llevara esos datos a la base—, y `coach_settings` no tiene columnas
+  // para ellos, así que la corrección tuvo que ser una acción de servidor aparte.
   const [orgName, setOrgName] = useState('');
   const [coachName, setCoachName] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
-  const [timezone, setTimezone] = useState('America/Mexico_City');
+  // El correo de la CUENTA. No se edita aquí: cambiarlo es cambiar de credencial y lo gestiona la
+  // autenticación con confirmación por correo. Se muestra para que la pantalla informe de algo
+  // cierto en lugar de ofrecer un campo que se descarta.
+  const [accountEmail, setAccountEmail] = useState('');
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   // Team invite form
   const [inviteEmail, setInviteEmail] = useState('');
@@ -102,15 +115,61 @@ export default function CoachSettingsPage() {
     }
   }, [setOrgId, fetchSettings, fetchTeam]);
 
+  // Se cargan los valores guardados. Antes los campos salían en blanco siempre, así que ni
+  // informaban ni guardaban.
+  useEffect(() => {
+    let cancelled = false;
+
+    void getCoachProfile().then((profile) => {
+      if (cancelled || !profile) return;
+      setOrgName(profile.orgName);
+      setCoachName(profile.coachName);
+      setAccountEmail(profile.accountEmail);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Aviso al recargar o cerrar con cambios pendientes. `isDirty` lo lleva el propio store, que ya
+  // sabe qué se ha tocado desde la última carga.
+  useUnsavedChangesWarning(isDirty);
+
   const handleSave = async () => {
     setSaveStatus('saving');
-    const success = await saveSettings();
-    setSaveStatus(success ? 'success' : 'error');
-    setTimeout(() => setSaveStatus('idle'), 2500);
+    setProfileError(null);
+
+    // `try/finally` porque sin él una excepción inesperada dejaba el botón en «Guardando…» para
+    // siempre: `setSaveStatus` no se volvía a ejecutar nunca.
+    try {
+      const [settingsOk, profileResult] = await Promise.all([
+        saveSettings(),
+        updateCoachProfile({ orgName, coachName }),
+      ]);
+
+      if (!profileResult.success && profileResult.error) {
+        setProfileError(profileResult.error);
+      }
+
+      // `saveSettings` limpia `isDirty` por su cuenta cuando le va bien, así que el aviso de
+      // «cambios sin guardar» ya no salta aunque el perfil haya fallado — y es lo correcto: lo que
+      // queda pendiente en ese caso es el nombre de la organización, que necesita otro rol, no un
+      // cambio que se pueda volver a guardar.
+      setSaveStatus(settingsOk && profileResult.success ? 'success' : 'error');
+    } catch (error) {
+      console.error('[coach-settings] save failed:', error);
+      setSaveStatus('error');
+    } finally {
+      setTimeout(() => setSaveStatus('idle'), 2500);
+    }
   };
 
   const handleAddEmail = () => {
     const trimmed = newEmail.trim().toLowerCase();
+    // Se validaba solo que no estuviera vacío, así que «hola» o «123» se guardaban como destino
+    // de notificaciones y el aviso no llegaba a ninguna parte.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) return;
     if (trimmed && !settings.additionalEmails.includes(trimmed)) {
       updateSettings({ additionalEmails: [...settings.additionalEmails, trimmed] });
       setNewEmail('');
@@ -125,10 +184,18 @@ export default function CoachSettingsPage() {
 
   const handleInvite = async () => {
     if (!inviteEmail.trim()) return;
+
     setInviting(true);
-    await inviteMember(inviteEmail.trim(), inviteRole);
-    setInviteEmail('');
-    setInviting(false);
+    // Sin `finally`, un error de `inviteMember` dejaba el botón deshabilitado para siempre y no
+    // había forma de reintentar sin recargar la página.
+    try {
+      await inviteMember(inviteEmail.trim(), inviteRole);
+      setInviteEmail('');
+    } catch (error) {
+      console.error('[coach-settings] invite failed:', error);
+    } finally {
+      setInviting(false);
+    }
   };
 
   const handleRemoveMember = async (userId: string) => {
@@ -191,6 +258,19 @@ export default function CoachSettingsPage() {
             <h2 className="text-base font-medium text-foreground">Perfil y Organización</h2>
           </div>
           <div className="p-5 space-y-4">
+            {/*
+              El resultado del guardado del perfil se pinta aquí. Guardarlo en estado y no
+              mostrarlo dejaría al usuario sin saber, por ejemplo, que su nombre sí se guardó pero
+              el de la organización necesita rol de administración.
+            */}
+            {profileError && (
+              <p
+                role="status"
+                className="text-xs text-warning bg-warning/10 border border-warning/20 rounded-xl px-3 py-2"
+              >
+                {profileError}
+              </p>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-muted mb-1.5">
@@ -218,15 +298,23 @@ export default function CoachSettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-muted mb-1.5">
-                  Email de contacto
+                  Email de la cuenta
                 </label>
+                {/*
+                  En solo lectura A PROPÓSITO. Antes era un campo editable que se descartaba al
+                  guardar. Este correo es la credencial de acceso: cambiarlo lo gestiona la
+                  autenticación con confirmación por correo, no un formulario de ajustes.
+                */}
                 <input
                   type="email"
-                  value={contactEmail}
-                  onChange={(e) => setContactEmail(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  placeholder="coach@ejemplo.com"
+                  value={accountEmail}
+                  readOnly
+                  aria-describedby="account-email-hint"
+                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background/60 text-muted text-sm cursor-not-allowed focus:outline-none"
                 />
+                <p id="account-email-hint" className="text-xs text-muted mt-1">
+                  Se cambia desde el acceso a la cuenta, no aquí.
+                </p>
               </div>
             </div>
           </div>
@@ -270,8 +358,8 @@ export default function CoachSettingsPage() {
                   Zona horaria
                 </label>
                 <select
-                  value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
+                  value={settings.timezone}
+                  onChange={(e) => updateSettings({ timezone: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                 >
                   <option value="America/Mexico_City">Ciudad de México (GMT-6)</option>
@@ -430,7 +518,12 @@ export default function CoachSettingsPage() {
                   value={settings.defaultSessionDuration}
                   onChange={(e) =>
                     updateSettings({
-                      defaultSessionDuration: Math.max(5, Math.min(120, Number(e.target.value))),
+                      // `Number('abc')` es `NaN`, y `Math.max(5, Math.min(120, NaN))` es `NaN`,
+                    // que acababa guardado. Ocurre al pegar texto en el campo.
+                    defaultSessionDuration: Math.max(
+                      5,
+                      Math.min(120, Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 20),
+                    ),
                     })
                   }
                   className="w-full px-4 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -1099,7 +1192,7 @@ export default function CoachSettingsPage() {
           <button
             type="button"
             onClick={handleSave}
-            disabled={saveStatus === 'saving'}
+            disabled={saveStatus === 'saving' || saveStatus === 'success'}
             className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all ${
               saveStatus === 'success'
                 ? 'bg-green-500 text-white hover:bg-green-600'

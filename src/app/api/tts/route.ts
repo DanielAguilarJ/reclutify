@@ -1,114 +1,103 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
-export async function POST(req: Request) {
+import { getOptionalApiUser } from '@/lib/api/auth';
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { speechSynthesis } from '@/lib/api/openrouter';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import { TTS_MODEL } from '@/lib/ai-model';
+import { ttsRequestSchema } from '@/lib/schemas/interview';
+
+/**
+ * POST /api/tts — síntesis de voz de los mensajes de Zara.
+ *
+ * POR QUÉ ESTA RUTA NO EXIGE SESIÓN (Y SÍ TOPE DE TASA)
+ * -----------------------------------------------------
+ * Es una decisión razonada, no un descuido heredado. La ruta la usan tres
+ * pantallas, y dos de ellas atienden a personas SIN cuenta:
+ *
+ *  - `InterviewRoom`, en los flujos de ticket y de enlace público, donde el
+ *    candidato nunca se registra.
+ *  - `useAiVoice`, que da voz al asesor virtual de `/informes/[courseId]`, una
+ *    página pública para posibles clientes.
+ *
+ * Exigir sesión dejaría muda la entrevista en el flujo principal del producto.
+ *
+ * Podría exigirse la credencial de entrevista (`requireInterviewAccess`), como se
+ * hace en `/api/chat`, pero el asesor virtual no tiene ninguna: no hay `roleId`
+ * ni ticket en ese flujo. Sería un control que rompe una de las tres pantallas.
+ *
+ * Y a diferencia de `/api/chat` o `/api/evaluate`, **aquí no hay recurso que
+ * proteger**: la ruta no lee ni escribe en la base de datos, no recibe
+ * identificadores y no devuelve datos de nadie. Convierte un texto que el
+ * llamante ya tiene en audio. El único riesgo real es el COSTE, y el control
+ * correcto para el coste es el tope de tasa más un tope de longitud, que es
+ * exactamente lo que se añade:
+ *
+ *  - `MAX_TTS_TEXT_LENGTH` (4 000 caracteres) acota el coste por llamada. Antes
+ *    no había ninguno: el endpoint sintetizaba textos de cualquier tamaño, es
+ *    decir, servía de sintetizador de audiolibros a cuenta del saldo ajeno.
+ *  - `RATE_LIMITS.AI_TTS` acota el número de llamadas por usuario o IP.
+ *
+ * QUÉ MÁS SE CORRIGE
+ * ------------------
+ *  - **Cinco `console.log` con el contenido**: la ruta registraba los primeros
+ *    80 caracteres de cada texto sintetizado. En una entrevista eso es el
+ *    contenido de la conversación en los logs del servidor, indefinidamente.
+ *  - **Fuga del mensaje de excepción**: el `catch` final devolvía
+ *    `{ error: err.message }`, que en un fallo de `fetch` incluye la URL y el
+ *    host del proveedor.
+ *  - **Sin cancelación**: no se propagaba `request.signal`, así que si el
+ *    candidato pasaba de turno o cerraba la pestaña, la síntesis se pagaba igual.
+ */
+
+export const runtime = 'nodejs';
+
+/**
+ * Voces por idioma.
+ *
+ * Configurables por entorno, como antes. Se mantienen los nombres
+ * `NEXT_PUBLIC_*` por compatibilidad con los despliegues existentes aunque su
+ * único consumidor sea el servidor: renombrarlos obligaría a reconfigurar cada
+ * entorno para no ganar nada funcional.
+ */
+function resolveVoice(language: 'en' | 'es'): string {
+  return language === 'es'
+    ? process.env.NEXT_PUBLIC_VOICE_ES?.trim() || 'es-MX-Valeria:MAI-Voice-2'
+    : process.env.NEXT_PUBLIC_VOICE_EN?.trim() || 'en-US-Harper:MAI-Voice-2';
+}
+
+export async function POST(req: NextRequest) {
   try {
-    const { text, language } = await req.json();
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
 
-    if (!text || typeof text !== 'string') {
-      return NextResponse.json({ error: 'Missing text' }, { status: 400 });
-    }
+    const body = ttsRequestSchema.parse(rawBody);
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      console.error('[TTS] OPENROUTER_API_KEY is not configured');
-      return NextResponse.json(
-        { error: 'TTS service not configured' },
-        { status: 500 }
-      );
-    }
+    // La sesión es opcional y solo sirve para elegir el identificador de cuota:
+    // un candidato autenticado no comparte tope con el resto de su oficina.
+    const user = await getOptionalApiUser();
 
-    console.log('\n====== TTS API ======');
-    console.log('[TTS] Text:', text.substring(0, 80) + (text.length > 80 ? '...' : ''));
-    console.log('[TTS] Language:', language);
+    await enforceRateLimit(req, RATE_LIMITS.AI_TTS, user?.id);
 
-    // Microsoft MAI-Voice-2 (Azure AI Speech) voice mapping.
-    // NOTE: 'openai/gpt-audio-mini' is NOT a valid model for OpenRouter's
-    // /api/v1/audio/speech endpoint (it only supports Chat Completions/Realtime),
-    // which is why it previously returned 502 Bad Gateway from upstream.
-    // Verified via GET https://openrouter.ai/api/v1/models?output_modalities=speech
-    // — only 8 models actually support this TTS endpoint, and mai-voice-2 is the
-    // one with dedicated, high-fidelity, natural-sounding female voices for both
-    // Spanish and English (Azure Neural, non-robotic).
-    const voiceEs = process.env.NEXT_PUBLIC_VOICE_ES || 'es-MX-Valeria:MAI-Voice-2';
-    const voiceEn = process.env.NEXT_PUBLIC_VOICE_EN || 'en-US-Harper:MAI-Voice-2';
-    const selectedVoice = language === 'es' ? voiceEs : voiceEn;
+    const { audio, contentType } = await speechSynthesis({
+      model: TTS_MODEL,
+      input: body.text,
+      voice: resolveVoice(body.language),
+      signal: req.signal,
+    });
 
-    console.log('[TTS] Model: microsoft/mai-voice-2, Voice:', selectedVoice);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000);
-
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'microsoft/mai-voice-2',
-          input: text,
-          voice: selectedVoice,
-          response_format: 'mp3',
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        console.error('[TTS] OpenRouter error:', response.status, errorBody);
-        return NextResponse.json(
-          { error: `TTS upstream error: ${response.status}`, detail: errorBody },
-          { status: 502 }
-        );
-      }
-
-      const audioBuffer = await response.arrayBuffer();
-
-      if (audioBuffer.byteLength === 0) {
-        console.error('[TTS] OpenRouter returned empty audio buffer');
-        return NextResponse.json(
-          { error: 'TTS returned empty audio' },
-          { status: 502 }
-        );
-      }
-
-      // Detect content type from upstream; default to audio/mpeg for mp3
-      const upstreamCT = response.headers.get('Content-Type');
-      const contentType = upstreamCT
-        ? upstreamCT.split(';')[0].trim()
-        : 'audio/mpeg';
-
-      console.log(
-        `[TTS] Success — size: ${audioBuffer.byteLength} bytes, ` +
-        `Content-Type: ${contentType}`
-      );
-
-      return new NextResponse(audioBuffer, {
-        headers: {
-          'Content-Type': contentType,
-          'Content-Length': audioBuffer.byteLength.toString(),
-        },
-      });
-
-    } catch (fetchError: unknown) {
-      clearTimeout(timeout);
-      const fe = fetchError as Error;
-      if (fe.name === 'AbortError') {
-        console.error('[TTS] Request timed out after 25s');
-        return NextResponse.json(
-          { error: 'TTS request timed out' },
-          { status: 504 }
-        );
-      }
-      throw fetchError;
-    }
-
-  } catch (error: unknown) {
-    const err = error as Error;
-    console.error('[TTS] Unhandled error:', err.message);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return new NextResponse(audio, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(audio.byteLength),
+        // El audio es determinista para un mismo texto y voz, pero se marca como
+        // privado: es el contenido de una entrevista y no debe quedar en cachés
+        // intermedias compartidas.
+        'Cache-Control': 'private, no-store',
+      },
+    });
+  } catch (error) {
+    return handleApiError(error, '[tts]');
   }
 }

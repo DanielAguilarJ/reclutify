@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAppStore } from '@/store/appStore';
 import { createClient } from '@/utils/supabase/client';
 import Link from 'next/link';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface SearchResult { type: 'person' | 'job'; id: string; title: string; subtitle: string; url: string; avatar?: string; }
 
@@ -28,10 +29,10 @@ export function GlobalSearchBar() {
       const { data: profiles } = await supabase.from('profiles')
         .select('user_id, username, full_name, headline, avatar_url')
         .or(`full_name.ilike.%${query}%,headline.ilike.%${query}%,username.ilike.%${query}%`).limit(5);
-      if (profiles) profiles.forEach((p: any) => r.push({ type: 'person', id: p.user_id, title: p.full_name, subtitle: p.headline || p.username, url: `/profile/${p.username}`, avatar: p.avatar_url }));
+      if (profiles) profiles.forEach((p) => r.push({ type: 'person', id: p.user_id, title: p.full_name ?? '', subtitle: p.headline || p.username || '', url: `/profile/${p.username}`, avatar: p.avatar_url ?? undefined }));
       const { data: jobs } = await supabase.from('roles').select('id, title, location')
         .eq('is_published', true).or(`title.ilike.%${query}%,location.ilike.%${query}%`).limit(5);
-      if (jobs) jobs.forEach((j: any) => r.push({ type: 'job', id: j.id, title: j.title, subtitle: j.location || '', url: `/career-fair/${j.id}` }));
+      if (jobs) jobs.forEach((j) => r.push({ type: 'job', id: j.id, title: j.title, subtitle: j.location || '', url: `/career-fair/${j.id}` }));
       setResults(r); setIsOpen(r.length > 0); setLoading(false);
     }, 300);
     return () => { if (debounce.current) clearTimeout(debounce.current); };
@@ -58,7 +59,13 @@ export function GlobalSearchBar() {
           {results.map((r) => (
             <Link key={`${r.type}-${r.id}`} href={r.url} onClick={() => { setIsOpen(false); setQuery(''); }}
               className="flex items-center gap-3 px-4 py-3 hover:bg-muted/5 transition-colors border-b border-border/20 last:border-0">
-              {r.type === 'person' ? (r.avatar ? <img src={r.avatar} alt="" className="w-8 h-8 rounded-full object-cover" /> : <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center"><User className="h-4 w-4 text-primary" /></div>) : <div className="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center"><Briefcase className="h-4 w-4 text-success" /></div>}
+              {r.type === 'person' ? (
+                <Avatar src={r.avatar} name={r.title} size={32} decorative />
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
+                  <Briefcase className="h-4 w-4 text-success" aria-hidden="true" />
+                </div>
+              )}
               <div className="flex-1 min-w-0"><p className="text-sm font-medium text-foreground truncate">{r.title}</p><p className="text-xs text-muted truncate">{r.subtitle}</p></div>
             </Link>
           ))}

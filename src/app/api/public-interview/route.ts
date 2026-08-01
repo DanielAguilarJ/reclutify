@@ -1,159 +1,154 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse, type NextRequest } from 'next/server';
+
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import {
+  publicInterviewRegisterSchema,
+  publicInterviewTokenQuerySchema,
+} from '@/lib/schemas/api';
+import {
+  createPublicCandidateResult,
+  loadInterviewOrganization,
+  loadInterviewRoleByPublicToken,
+} from '@/lib/services/interview.service';
 
 /**
- * API: Validar public_token y retornar datos del rol para entrevista pública.
- * No requiere autenticación — es para candidatos que reciben un enlace general.
+ * Entrevista por enlace público de la vacante.
+ *
+ * `GET`  — valida el `public_token` y devuelve los datos que la pantalla necesita.
+ * `POST` — registra al candidato y crea su fila en `candidate_results`.
+ *
+ * POR QUÉ ESTA RUTA NO EXIGE SESIÓN
+ * ---------------------------------
+ * Es el flujo del enlace general: el candidato no tiene cuenta y su credencial es
+ * el `public_token`, que va en la URL que le compartió la empresa. Eso está bien
+ * y no cambia.
+ *
+ * QUÉ ESTABA MAL
+ * --------------
+ * 1. **Sin tope de tasa en el `POST`.** Cada llamada INSERTA una fila en
+ *    `candidate_results` de la organización. Un bucle llenaba el pipeline de la
+ *    empresa de candidatos falsos, que es a la vez basura operativa y una
+ *    denegación de servicio sobre el trabajo del reclutador.
+ *
+ * 2. **Sin validación.** `candidateName` y `candidateEmail` se insertaban con
+ *    cualquier longitud y sin comprobar el formato del correo. El correo es el
+ *    único identificador del candidato en ese flujo.
+ *
+ * 3. **Identificador de fila predecible.** `cr-${Date.now()}-${Math.random()...}`.
+ *    `Math.random()` no es criptográfico, y ese `resultId` es lo que el cliente
+ *    usa después para escribir su propia entrevista. Se pasa a `randomUUID()`.
+ *
+ * SOBRE LA RÚBRICA EN LA RESPUESTA (decisión consciente, NO un descuido)
+ * ---------------------------------------------------------------------
+ * `role.topics` incluye `rubric` con los descriptores `excellent` / `acceptable` /
+ * `poor` y el peso de cada criterio, y esta ruta lo devuelve completo. Es
+ * tentador recortarlo como hace `src/lib/jobs/public-projection.ts` en el portal
+ * de empleo, pero NO es el mismo caso, y el propio repositorio ya lo razonó:
+ *
+ *   «La entrevista SÍ necesita la rúbrica completa para evaluar.
+ *   `/api/interview/ticket` y `/api/public-interview` leen `topics` sin reducir,
+ *   corren con `service_role` y exigen una credencial —el token del ticket o el
+ *   `public_token` del puesto—. No usan esta proyección y no deben usarla.»
+ *   (`src/lib/jobs/public-projection.ts`)
+ *
+ * La diferencia con el portal es la credencial: el portal no pide ninguna, aquí
+ * hace falta el `public_token`. Y el cliente la necesita de verdad: `/api/chat`
+ * recibe `allTopics` con `rubric` para conducir la entrevista, y `/api/evaluate`
+ * recalcula la puntuación ponderada a partir de los pesos que llegan en `topics`.
+ * Recortarla aquí dejaría todas las puntuaciones con peso 5, es decir, rompería
+ * la evaluación.
+ *
+ * Queda anotado como deuda técnica en `REPORTE_REFACTOR.md`: la corrección de
+ * fondo es que `/api/chat` y `/api/evaluate` lean la rúbrica de `roles` por su
+ * cuenta con el `roleId` que ya reciben, y que deje de viajar al cliente. Eso
+ * elimina además la inyección de rúbrica en el prompt. Es un cambio del núcleo de
+ * la entrevista y no entra en esta ronda.
  */
+
+export const runtime = 'nodejs';
+
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const token = searchParams.get('token');
-
-  if (!token) {
-    return NextResponse.json(
-      { error: 'Token is required' },
-      { status: 400 }
-    );
-  }
-
-  // Usar service role para bypass de RLS (lectura de rol por public_token)
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Server configuration error' },
-      { status: 500 }
-    );
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-  // Buscar rol por public_token
-  const { data: role, error } = await supabase
-    .from('roles')
-    .select('id, title, description, location, salary, job_type, interview_duration, interview_mode, topics, org_id')
-    .eq('public_token', token)
-    .single();
-
-  if (error || !role) {
-    return NextResponse.json(
-      { error: 'Invalid or expired link' },
-      { status: 404 }
-    );
-  }
-
-  // Obtener info de la organización para branding
-  let orgName = '';
-  let orgPlanTier = 'starter';
-  if (role.org_id) {
-    const { data: org } = await supabase
-      .from('organizations')
-      .select('name, plan_tier')
-      .eq('id', role.org_id)
-      .single();
-    if (org) {
-      orgName = org.name || '';
-      orgPlanTier = org.plan_tier || 'starter';
-    }
-  }
-
-  return NextResponse.json({
-    role: {
-      id: role.id,
-      title: role.title,
-      description: role.description,
-      location: role.location,
-      salary: role.salary,
-      jobType: role.job_type,
-      interviewDuration: role.interview_duration ?? 30,
-      interviewMode: role.interview_mode || 'restricted',
-      topics: role.topics || [],
-      orgId: role.org_id,
-    },
-    org: {
-      name: orgName,
-      planTier: orgPlanTier,
-    },
-  });
-}
-
-/**
- * POST: Registrar candidato desde enlace público y crear resultado independiente.
- * Cada candidato que usa el enlace general obtiene su propia entrada.
- */
-export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { token, candidateName, candidateEmail, candidatePhone, linkedinUrl } = body;
-
-  if (!token || !candidateName || !candidateEmail) {
-    return NextResponse.json(
-      { error: 'Token, name and email are required' },
-      { status: 400 }
-    );
-  }
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Server configuration error' },
-      { status: 500 }
-    );
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-  // Validar token y obtener rol
-  const { data: role, error: roleError } = await supabase
-    .from('roles')
-    .select('id, title, org_id, interview_duration, interview_mode, topics')
-    .eq('public_token', token)
-    .single();
-
-  if (roleError || !role) {
-    return NextResponse.json(
-      { error: 'Invalid link' },
-      { status: 404 }
-    );
-  }
-
-  // Crear entrada de resultado de candidato independiente
-  const resultId = `cr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  
-  const { error: insertError } = await supabase
-    .from('candidate_results')
-    .insert({
-      id: resultId,
-      org_id: role.org_id,
-      candidate_name: candidateName,
-      candidate_email: candidateEmail,
-      candidate_phone: candidatePhone || '',
-      candidate_linkedin: linkedinUrl || '',
-      role_id: role.id,
-      role_title: role.title,
-      date: Date.now(),
-      status: 'in-progress',
-      duration: 0,
-      transcript: [],
-      source: 'public_link',
+  try {
+    const query = publicInterviewTokenQuerySchema.parse({
+      token: req.nextUrl.searchParams.get('token') ?? '',
     });
 
-  if (insertError) {
-    console.error('Error creating candidate result:', insertError);
-    return NextResponse.json(
-      { error: 'Failed to register candidate' },
-      { status: 500 }
-    );
-  }
+    // El tope se aplica también al GET: sin él, la ruta sirve de oráculo para
+    // adivinar `public_token` a fuerza bruta.
+    await enforceRateLimit(req, RATE_LIMITS.PUBLIC_REGISTER, null);
 
-  return NextResponse.json({
-    resultId,
-    roleId: role.id,
-    roleTitle: role.title,
-    interviewDuration: role.interview_duration ?? 30,
-    interviewMode: role.interview_mode || 'restricted',
-    topics: role.topics || [],
-  });
+    // La resolución vive en el servicio: esta misma consulta estaba duplicada en el `GET`
+    // y en el `POST` de este archivo, con listas de columnas DISTINTAS, así que la pantalla
+    // del candidato mostraba menos datos después de registrarse que antes.
+    const lookup = await loadInterviewRoleByPublicToken(query.token);
+
+    if (lookup.status === 'error') {
+      throw ApiError.misconfigured(lookup.message);
+    }
+
+    // Token inexistente y fila ilegible comparten respuesta: distinguirlos convertiría la
+    // ruta en un confirmador de enlaces válidos.
+    if (lookup.status === 'not-found') throw ApiError.notFound('Invalid or expired link');
+
+    const { role } = lookup;
+    const org = await loadInterviewOrganization(role.orgId);
+
+    return NextResponse.json({
+      // El servicio ya normalizó la forma, así que la respuesta es su contrato tal cual.
+      role: { ...role, orgId: role.orgId },
+      org,
+    });
+  } catch (error) {
+    return handleApiError(error, '[public-interview:GET]');
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    // El tope va ANTES de leer el cuerpo y de tocar la base: es el control que
+    // impide llenar el pipeline de la organización con un bucle.
+    await enforceRateLimit(req, RATE_LIMITS.PUBLIC_REGISTER, null);
+
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
+
+    const body = publicInterviewRegisterSchema.parse(rawBody);
+
+    const lookup = await loadInterviewRoleByPublicToken(body.token);
+
+    if (lookup.status === 'error') {
+      throw ApiError.misconfigured(lookup.message);
+    }
+
+    if (lookup.status === 'not-found') throw ApiError.notFound('Invalid link');
+
+    const { role } = lookup;
+
+    const created = await createPublicCandidateResult({
+      role,
+      candidateName: body.candidateName,
+      candidateEmail: body.candidateEmail,
+      candidatePhone: body.candidatePhone,
+      linkedinUrl: body.linkedinUrl,
+    });
+
+    if (created.status === 'error') {
+      throw ApiError.misconfigured(created.message);
+    }
+
+    const resultId = created.resultId;
+
+    return NextResponse.json({
+      resultId,
+      roleId: role.id,
+      roleTitle: role.title,
+      interviewDuration: role.interviewDuration,
+      interviewMode: role.interviewMode,
+      topics: role.topics,
+    });
+  } catch (error) {
+    return handleApiError(error, '[public-interview:POST]');
+  }
 }

@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import * as mammoth from 'mammoth';
 
+import { requireOrgMembership } from '@/lib/api/auth';
+import { handleApiError } from '@/lib/api/errors';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
 import { extractPdfText } from '@/lib/pdf-text';
 
 // pdf-parse uses Node-only deps. Force Node runtime.
@@ -9,8 +12,22 @@ export const maxDuration = 60;
 
 const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
 
+/**
+ * POST /api/parse-course-document — extrae la ficha de un curso de un documento.
+ *
+ * QUÉ SE AÑADE
+ * ------------
+ * Sesión de organización y tope de tasa. La ruta acepta ficheros de hasta 15 MB y
+ * hace una llamada al modelo por cada uno, así que sin autenticar era un
+ * consumidor de saldo de OpenRouter abierto a cualquiera. El único llamante es
+ * `/coach/create-course`, una pantalla autenticada.
+ */
 export async function POST(request: Request) {
   try {
+    const { orgId } = await requireOrgMembership();
+
+    await enforceRateLimit(request, RATE_LIMITS.FILE_PARSE, orgId);
+
     const formData = await request.formData();
     const file = formData.get('file') as File;
 
@@ -239,11 +256,9 @@ ${truncatedText}`;
 
     return NextResponse.json({ success: true, data: safeData, summary });
   } catch (error) {
-    const err = error as Error;
-    console.error('[parse-course-document] failure:', err.message);
-    return NextResponse.json(
-      { error: 'Error interno al procesar el documento. Intenta con otro archivo.' },
-      { status: 500 }
-    );
+    // `handleApiError` traduce los rechazos de `requireOrgMembership` (401/403) y
+    // los de tope de tasa (429) a su código correcto; antes cualquier excepción
+    // salía como un 500 con el mismo mensaje.
+    return handleApiError(error, '[parse-course-document]');
   }
 }

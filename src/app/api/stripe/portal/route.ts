@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe } from '@/lib/stripe';
 import { createClient } from '@/utils/supabase/server';
+import { createAdminClient } from '@/utils/supabase/admin';
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,7 +21,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No organization found' }, { status: 400 });
     }
 
-    const { data: org } = await supabase
+    // Cliente de servicio: `stripe_customer_id` ya no es legible con la clave
+    // anon. La identidad se estableció arriba con `auth.getUser()` y el `org_id`
+    // sale del perfil de ESE usuario, así que el cambio de cliente no relaja
+    // ninguna comprobación.
+    const { data: org } = await createAdminClient()
       .from('organizations')
       .select('stripe_customer_id')
       .eq('id', profile.org_id)

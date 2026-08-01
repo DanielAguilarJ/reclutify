@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getConversations, getMessages, sendMessage } from '@/app/actions/messaging';
 import { createClient } from '@/utils/supabase/client';
 import type { Conversation, Message } from '@/types/messaging';
+import { Avatar } from '@/components/ui/Avatar';
 
 interface MessagesClientProps {
   userId: string;
@@ -117,15 +118,14 @@ export default function MessagesClient({ userId, initialConversationId }: Messag
               <button key={conv.id} onClick={() => setActiveConvId(conv.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-neutral-10/50 transition-colors text-left
                   ${activeConvId === conv.id ? 'bg-blue-10/30 border-r-2 border-blue-50' : ''}`}>
-                <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-20 shrink-0">
-                  {conv.other_participant?.avatar_url ? (
-                    <img src={conv.other_participant.avatar_url} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-sm font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                      {(conv.other_participant?.full_name || '?').charAt(0)}
-                    </div>
-                  )}
-                </div>
+                {/* `decorative` porque el nombre está escrito al lado: sin esto el lector
+                    de pantalla lo diría dos veces por cada conversación de la lista. */}
+                <Avatar
+                  src={conv.other_participant?.avatar_url}
+                  name={conv.other_participant?.full_name || '?'}
+                  size={40}
+                  decorative
+                />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-neutral-80 truncate">
                     {conv.other_participant?.full_name || 'Usuario'}
@@ -148,15 +148,12 @@ export default function MessagesClient({ userId, initialConversationId }: Messag
           <>
             {/* Chat header */}
             <div className="h-16 bg-white border-b border-neutral-10 flex items-center px-5 gap-3">
-              <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-20">
-                {activeConv.other_participant?.avatar_url ? (
-                  <img src={activeConv.other_participant.avatar_url} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-sm font-bold text-neutral-50 bg-gradient-to-br from-blue-10 to-purple-10">
-                    {(activeConv.other_participant?.full_name || '?').charAt(0)}
-                  </div>
-                )}
-              </div>
+              <Avatar
+                src={activeConv.other_participant?.avatar_url}
+                name={activeConv.other_participant?.full_name || '?'}
+                size={40}
+                decorative
+              />
               <div>
                 <a href={activeConv.other_participant ? `/profile/${activeConv.other_participant.username}` : '#'}
                   className="font-semibold text-neutral-80 hover:text-blue-50 transition-colors text-sm">

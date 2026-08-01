@@ -234,3 +234,57 @@
     transparent
   );
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Movimiento reducido
+   ════════════════════════════════════════════════════════════════════════════
+
+   POR QUÉ HACE FALTA ESTO
+   -----------------------
+   `prefers-reduced-motion` es la preferencia del sistema con la que una persona pide que la
+   interfaz no se mueva. No es una cuestión de gusto: el movimiento repetido y las
+   transiciones grandes provocan mareo, náusea y migraña a quien tiene trastornos
+   vestibulares, y disparan crisis en algunas formas de epilepsia fotosensible.
+
+   Framer Motion respeta la preferencia por su cuenta desde la v12 —reduce sus animaciones a
+   instantáneas— pero las animaciones declaradas en CSS no la respetaban. Y son las peores
+   de este proyecto para quien la necesita:
+
+     · `orbPulse` y `orbSpeaking` animan el orbe de Zara EN BUCLE INFINITO durante toda la
+       entrevista, que puede durar una hora.
+     · `pulse-red` (`.recording-dot`) parpadea sin parar mientras el micrófono está abierto.
+     · El carrusel de logos de la landing se desplaza sin pausa.
+
+   Una entrevista de trabajo no es algo que se pueda abandonar y volver más tarde, así que
+   una animación que marea aquí es una barrera de acceso al empleo.
+
+   CÓMO ESTÁ RESUELTO
+   ------------------
+   No se desactiva el movimiento con `animation: none`, que dejaría los elementos en el
+   fotograma inicial —el orbe invisible, el punto de grabación sin color—. Se reducen a una
+   duración mínima y a UNA sola iteración, de modo que el elemento llega a su estado final y
+   se queda ahí: el orbe se ve, el punto se ve, y nada se mueve.
+
+   `scroll-behavior: auto` anula el desplazamiento suave: un salto instantáneo es
+   precisamente lo que pide la preferencia.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* `0.01ms` y no `0s`: con duración cero algunos navegadores no disparan los eventos
+       `animationend` / `transitionend`, y hay código que espera a que lleguen. Con una
+       duración mínima la animación termina de inmediato y el evento sí ocurre. */
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    /* Anula cualquier retardo, que en la práctica sería una espera en blanco. */
+    animation-delay: 0.01ms !important;
+    transition-delay: 0.01ms !important;
+  }
+
+  html {
+    scroll-behavior: auto !important;
+  }
+}

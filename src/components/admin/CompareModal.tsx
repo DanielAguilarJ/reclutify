@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Download, ArrowUpDown } from 'lucide-react';
 import type { CandidateResult } from '@/types';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface CompareModalProps {
   candidates: CandidateResult[];
@@ -11,6 +12,9 @@ interface CompareModalProps {
 }
 
 export default function CompareModal({ candidates, onClose, language }: CompareModalProps) {
+  // Trampa de foco, cierre con Escape, `role="dialog"` y devolución del foco al cerrar.
+  // Ver `src/hooks/useModalDialog.ts`: este modal no tenía ninguna de las cuatro.
+  const { containerRef, dialogProps, onBackdropClick } = useModalDialog({ isOpen: true, onClose });
   const es = language === 'es';
 
   // Sort candidates by overallScore descending
@@ -55,13 +59,16 @@ export default function CompareModal({ candidates, onClose, language }: CompareM
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-start justify-center p-4 pt-12 overflow-y-auto"
-        onClick={(e) => e.target === e.currentTarget && onClose()}
+        onClick={onBackdropClick}
       >
         <motion.div
           initial={{ opacity: 0, y: 40, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 40, scale: 0.95 }}
           transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+          ref={containerRef}
+          {...dialogProps}
+          aria-labelledby="compare-modal-title"
           className="bg-card rounded-3xl shadow-2xl border border-border/50 w-full max-w-6xl overflow-hidden print:shadow-none print:border-0 print:rounded-none"
         >
           {/* Header */}
@@ -69,7 +76,7 @@ export default function CompareModal({ candidates, onClose, language }: CompareM
             <div className="flex items-center gap-3">
               <ArrowUpDown className="h-5 w-5 text-primary" />
               <div>
-                <h2 className="text-lg font-semibold text-foreground">
+                <h2 id="compare-modal-title" className="text-lg font-semibold text-foreground">
                   {es ? 'Comparación de Candidatos' : 'Candidate Comparison'}
                 </h2>
                 <p className="text-xs text-muted">
@@ -86,10 +93,12 @@ export default function CompareModal({ candidates, onClose, language }: CompareM
                 {es ? 'Exportar PDF' : 'Export PDF'}
               </button>
               <button
+                type="button"
                 onClick={onClose}
+                aria-label={es ? 'Cerrar' : 'Close'}
                 className="flex items-center justify-center h-8 w-8 rounded-xl hover:bg-background transition-colors cursor-pointer"
               >
-                <X className="h-4 w-4 text-muted" />
+                <X className="h-4 w-4 text-muted" aria-hidden="true" />
               </button>
             </div>
           </div>

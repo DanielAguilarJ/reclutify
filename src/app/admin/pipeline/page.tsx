@@ -36,6 +36,10 @@ export default function PipelinePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // `/api/evaluate` exige `roleId` para comprobar que la credencial
+          // acredita esta vacante. Desde el panel la credencial es la sesión del
+          // empleador, que se comprueba contra la organización dueña del puesto.
+          roleId: candidate.roleId,
           transcript: candidate.transcript,
           topics: role?.topics || [],
           candidateName: candidate.candidate.name,

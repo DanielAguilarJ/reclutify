@@ -28,7 +28,7 @@ export default function TicketsPage() {
 
   const es = language === 'es';
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (roles.length === 0) {
       alert(es ? 'Debes crear un puesto primero en /admin/create-role' : 'You must create a role first in /admin/create-role');
       return;
@@ -40,12 +40,25 @@ export default function TicketsPage() {
     
     const finalName = name.trim() || (email.trim() ? email.trim().split('@')[0] : 'Candidato');
 
-    // Generar el ticket y mostrar éxito de inmediato en la UI
     const ticket = addTicket(finalName, finalRoleId, selectedLang);
-    setJustCreated(ticket.token);
 
-    // Sincronizar con Supabase en segundo plano
-    syncAddTicket(ticket);
+    // Se espera la persistencia ANTES de dar el enlace por bueno.
+    //
+    // Antes se mostraba el token de inmediato y `syncAddTicket` corría sin `await` tragándose
+    // cualquier fallo: el admin copiaba un enlace que devolvía 404 y no había forma de saberlo
+    // hasta que el candidato lo intentaba.
+    const sync = await syncAddTicket(ticket);
+    if (!sync.ok) {
+      setIsSending(false);
+      alert(
+        es
+          ? 'No se pudo guardar el ticket, así que el enlace no funcionaría. Revisa tu sesión y la conexión, y vuelve a intentarlo.'
+          : 'The ticket could not be saved, so the link would not work. Check your session and connection, then try again.',
+      );
+      return;
+    }
+
+    setJustCreated(ticket.token);
     
     const role = roles.find((r) => r.id === ticket.roleId);
     // El enlace lleva solo el token. Antes se le adjuntaba `?d=` con el ticket y

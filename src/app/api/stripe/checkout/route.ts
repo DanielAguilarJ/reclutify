@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe, PRICE_IDS, type PlanTier, type BillingInterval } from '@/lib/stripe';
 import { createClient } from '@/utils/supabase/server';
+import { createAdminClient } from '@/utils/supabase/admin';
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,8 +34,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No organization found. Complete onboarding first.' }, { status: 400 });
     }
 
-    // Fetch org to get or create Stripe customer
-    const { data: org } = await supabase
+    // Fetch org to get or create Stripe customer.
+    // Cliente de servicio: las columnas de Stripe ya no son legibles con la clave
+    // anon (migración 202608020002). La identidad viene de `auth.getUser()` y el
+    // `org_id` del perfil de ese usuario, nunca del cuerpo de la petición.
+    const admin = createAdminClient();
+
+    const { data: org } = await admin
       .from('organizations')
       .select('id, name, stripe_customer_id, stripe_subscription_id, plan_tier')
       .eq('id', profile.org_id)
@@ -108,8 +114,10 @@ export async function POST(req: NextRequest) {
       });
       customerId = customer.id;
 
-      // Persist customer ID immediately
-      await supabase
+      // Persist customer ID immediately. Con clave de servicio, igual que la
+      // lectura: la escritura de columnas de facturación no debe depender de las
+      // políticas de la sesión del navegador.
+      await admin
         .from('organizations')
         .update({ stripe_customer_id: customerId })
         .eq('id', org.id);

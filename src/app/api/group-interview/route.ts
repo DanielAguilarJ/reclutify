@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+import { CONTENT_GENERATION_MODEL } from '@/lib/ai-model';
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { chatCompletion } from '@/lib/api/openrouter';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import { groupInterviewRequestSchema } from '@/lib/schemas/api';
 import { createClient } from '@/utils/supabase/server';
 
 /**
@@ -12,11 +18,14 @@ import { createClient } from '@/utils/supabase/server';
  */
 export async function POST(req: NextRequest) {
   try {
-    const { roleId, language = 'es', questionCount = 10 } = await req.json();
+    // Esta ruta YA comprobaba sesión y pertenencia a la organización: es el
+    // patrón correcto que el resto de los endpoints de IA no seguía. Lo que le
+    // faltaba era validación de entrada y tope de tasa.
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
 
-    if (!roleId) {
-      return NextResponse.json({ error: 'roleId is required' }, { status: 400 });
-    }
+    const { roleId, language, questionCount } = groupInterviewRequestSchema.parse(rawBody);
 
     // ─── Auth check ───
     const supabase = await createClient();
@@ -47,12 +56,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // ─── Build the AI prompt ───
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: 'AI API key not configured' }, { status: 500 });
-    }
+    // Después de autorizar: la cuota se consume por organización, no por IP.
+    await enforceRateLimit(req, RATE_LIMITS.AI_GENERATE, role.org_id);
 
+    // ─── Build the AI prompt ───
     const lang = language === 'es' ? 'Spanish (Espanol)' : 'English';
     const topics = Array.isArray(role.topics) ? role.topics : [];
     const topicsDescription = topics.length > 0
@@ -95,60 +102,26 @@ DESCRIPTION: ${role.description || 'Not provided — infer from the title'}
 EVALUATION TOPICS AND RUBRICS:
 ${topicsDescription}`;
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://reclutify.com',
-        'X-Title': 'Reclutify Group Interview',
-      },
-      body: JSON.stringify({
-        model: 'deepseek/deepseek-v4-flash',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.6,
-      }),
+    const completion = await chatCompletion({
+      model: CONTENT_GENERATION_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.6,
+      jsonMode: true,
+      timeoutMs: 45_000,
+      title: 'Reclutify Group Interview',
+      signal: req.signal,
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('OpenRouter group-interview error:', errorText);
-      return NextResponse.json({ error: 'Failed to generate questions' }, { status: 500 });
-    }
+    const parsed = completion.parseJson<{ questions?: unknown } | unknown[]>();
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '';
-
-    // Parse the JSON response
-    let questions: string[] = [];
-    try {
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed.questions)) {
-        questions = parsed.questions;
-      } else if (Array.isArray(parsed)) {
-        questions = parsed;
-      } else {
-        // Try to find an array in the response
-        const arrMatch = content.match(/\[[\s\S]*\]/);
-        if (arrMatch) {
-          questions = JSON.parse(arrMatch[0]);
-        }
-      }
-    } catch {
-      // Try regex fallback
-      const arrMatch = content.match(/\[[\s\S]*\]/);
-      if (arrMatch) {
-        try {
-          questions = JSON.parse(arrMatch[0]);
-        } catch {
-          return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 });
-        }
-      }
-    }
+    const questions = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { questions?: unknown })?.questions)
+        ? ((parsed as { questions: unknown[] }).questions)
+        : [];
 
     if (!Array.isArray(questions) || questions.length === 0) {
       return NextResponse.json({ error: 'No questions generated' }, { status: 500 });
@@ -159,7 +132,6 @@ ${topicsDescription}`;
       roleTitle: role.title,
     });
   } catch (error) {
-    console.error('Group interview API error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return handleApiError(error, '[group-interview]');
   }
 }

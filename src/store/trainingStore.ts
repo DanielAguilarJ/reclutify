@@ -412,9 +412,24 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       }
 
       const data = await response.json();
-      set({
-        generalMessages: data.history && data.history.length > 0 ? data.history : historyBackup,
-      });
+
+      // El respaldo NO puede ser `historyBackup`: se capturó ANTES de añadir el mensaje del
+      // usuario, así que cuando el servidor responde `200` sin `history` —o con una lista
+      // vacía— el mensaje que la persona acababa de escribir desaparecía de la pantalla, y con
+      // él la conversación, sin ningún error porque `response.ok` era verdadero.
+      //
+      // Se cae al estado ACTUAL, que ya incluye su mensaje, y se le añade la respuesta del
+      // tutor, que viene en `data.message`.
+      if (Array.isArray(data.history) && data.history.length > 0) {
+        set({ generalMessages: data.history });
+      } else {
+        const reply = typeof data.message === 'string' ? data.message.trim() : '';
+        set((state) => ({
+          generalMessages: reply
+            ? [...state.generalMessages, { role: 'assistant' as const, content: reply, timestamp: Date.now() }]
+            : state.generalMessages,
+        }));
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Failed to get answer';
       set({ generalMessages: historyBackup, error: errMsg });

@@ -1,6 +1,65 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createClient } from '@/utils/supabase/client';
+import type { CoachSettingsRow } from '@/app/actions/coach-settings';
+import {
+  getCoachSettings as getCoachSettingsAction,
+  saveCoachSettings as saveCoachSettingsAction,
+} from '@/app/actions/coach-settings-secure';
+
+
+/**
+ * Estrechamiento de los valores de unión que llegan de la base.
+ *
+ * POR QUÉ HACE FALTA
+ * ------------------
+ * `coach_settings.conversation_tone`, `session_language` y `default_closing_mode` son
+ * columnas de TEXTO LIBRE en Postgres, pero el store las declara como uniones cerradas
+ * (`'formal' | 'amigable' | 'entusiasta'`, etc.).
+ *
+ * Antes esa discrepancia estaba tapada: la fila llegaba de un `select('*')` sin tipo y los
+ * campos entraban por asignación implícita. Al tipar la fila correctamente el compilador la
+ * señaló, que es la señal de que el tipo anterior no comprobaba nada.
+ *
+ * Un valor inesperado —una migración a medias, una escritura manual en el panel de
+ * Supabase— cae al defecto en lugar de propagar una cadena que el resto del código trata
+ * como miembro válido de la unión. El síntoma que evita: un `switch` sobre el tono que no
+ * coincide con ninguna rama y deja el prompt del asesor sin instrucciones de estilo.
+ */
+function narrowTo<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+}
+
+/** Valores válidos de cada columna de unión. */
+const CONVERSATION_TONES = ['formal', 'amigable', 'entusiasta'] as const;
+const SESSION_LANGUAGES = ['es', 'en'] as const;
+const CLOSING_MODES = ['presential', 'remote', 'both'] as const;
+
+/**
+ * Normaliza el JSONB `integrations`, rellenando con los valores por defecto lo que falte.
+ *
+ * `as Integrations` a secas era una mentira: el JSONB puede venir vacío, a medias o con una
+ * integración que aún no existía cuando se guardó, y cada acceso posterior habría dado
+ * `undefined` en un campo declarado obligatorio.
+ */
+function normalizeIntegrations(raw: unknown, fallback: Integrations): Integrations {
+  if (!raw || typeof raw !== 'object') return fallback;
+
+  const source = raw as Partial<Integrations>;
+
+  return {
+    webhook: { ...fallback.webhook, ...source.webhook },
+    google_sheets: { ...fallback.google_sheets, ...source.google_sheets },
+    hubspot: { ...fallback.hubspot, ...source.hubspot },
+    notion: { ...fallback.notion, ...source.notion },
+  };
+}
 
 // ─── Types ───
 
@@ -47,6 +106,8 @@ export interface CoachSettings {
   customInstructions: string;
   // Session Defaults
   defaultSessionDuration: number;
+  /** Zona horaria IANA de la organización. Se guardaba en ningún sitio antes de existir esta clave. */
+  timezone: string;
   defaultClosingMode: 'presential' | 'remote' | 'both';
   autoNotifyOnInvestment: boolean;
   notificationSound: boolean;
@@ -88,6 +149,15 @@ interface CoachSettingsState {
   orgId: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * `true` si hay cambios locales sin guardar.
+   *
+   * Lo usa el aviso de «no cierres con trabajo pendiente». Se lleva en el store y no en la página
+   * porque los cambios entran por `updateSettings` y `updateIntegration`, que son del store: una
+   * copia en la página tendría que interceptar las dos y quedaría desincronizada en cuanto
+   * apareciera una tercera.
+   */
+  isDirty: boolean;
 
   // Actions
   setOrgId: (orgId: string) => void;
@@ -111,6 +181,7 @@ const defaultSettings: CoachSettings = {
   salesPersistence: 2,
   customInstructions: '',
   defaultSessionDuration: 20,
+  timezone: 'America/Mexico_City',
   defaultClosingMode: 'both',
   autoNotifyOnInvestment: true,
   notificationSound: true,
@@ -139,6 +210,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
       orgId: null,
       loading: false,
       error: null,
+      isDirty: false,
 
       setOrgId: (orgId) => set({ orgId }),
 
@@ -148,58 +220,76 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
 
         set({ loading: true, error: null });
         try {
-          const supabase = createClient();
-          const { data, error } = await supabase
-            .from('coach_settings')
-            .select('*')
-            .eq('org_id', orgId)
-            .single();
+          // La lectura pasa por una server action que REDACTA los secretos de
+          // integraciones antes de que salgan del servidor.
+          //
+          // Antes era `select('*')` desde el navegador, lo que enviaba al cliente el JSON
+          // de la cuenta de servicio de Google (con su clave privada), el token de HubSpot,
+          // el de Notion y el secreto del webhook. Son credenciales de sistemas de
+          // TERCEROS: quien las captura hace daño en el CRM del cliente, no en el nuestro.
+          // Ver `src/lib/coach/integration-secrets.ts`.
+          const result = await getCoachSettingsAction(orgId);
 
-          if (error && error.code === 'PGRST116') {
-            // No settings yet — create defaults
-            const { error: insertError } = await supabase
-              .from('coach_settings')
-              .insert({ org_id: orgId });
-
-            if (insertError) throw insertError;
-            set({ settings: { ...defaultSettings }, loading: false });
+          if (!result.success) {
+            set({ error: result.error ?? 'No se pudo cargar la configuración', loading: false });
             return;
           }
 
-          if (error) throw error;
+          const data = result.data;
 
-          if (data) {
-            const integrations = (data.integrations as Integrations) || defaultSettings.integrations;
-            set({
-              settings: {
-                assistantName: data.assistant_name || defaultSettings.assistantName,
-                conversationTone: data.conversation_tone || defaultSettings.conversationTone,
-                sessionLanguage: data.session_language || defaultSettings.sessionLanguage,
-                welcomeMessage: data.welcome_message || '',
-                salesPersistence: data.sales_persistence ?? defaultSettings.salesPersistence,
-                customInstructions: data.custom_instructions || '',
-                defaultSessionDuration: data.default_session_duration ?? defaultSettings.defaultSessionDuration,
-                defaultClosingMode: data.default_closing_mode || defaultSettings.defaultClosingMode,
-                autoNotifyOnInvestment: data.auto_notify_on_investment ?? true,
-                notificationSound: data.notification_sound ?? true,
-                emailOnClosing: data.email_on_closing ?? true,
-                emailOnNewLead: data.email_on_new_lead ?? true,
-                emailOnObjection: data.email_on_objection ?? false,
-                emailDailySummary: data.email_daily_summary ?? false,
-                additionalEmails: data.additional_emails || [],
-                publicWelcomeMessage: data.public_welcome_message || '',
-                showOrgName: data.show_org_name ?? true,
-                accentColor: data.accent_color || '#D3FB52',
-                integrations: {
-                  webhook: integrations.webhook || defaultSettings.integrations.webhook,
-                  google_sheets: integrations.google_sheets || defaultSettings.integrations.google_sheets,
-                  hubspot: integrations.hubspot || defaultSettings.integrations.hubspot,
-                  notion: integrations.notion || defaultSettings.integrations.notion,
-                },
-              },
-              loading: false,
-            });
+          if (!data) {
+            // Organización sin configuración todavía: valores por defecto.
+            set({ settings: { ...defaultSettings }, loading: false, isDirty: false });
+            return;
           }
+
+          // `row` acota el acceso a la fila sin repetir el cast en cada campo.
+          //
+          // Se declara como parcial de la fila y no como `Record<string, never>`, que era
+          // lo primero que escribí: `never` es asignable a todo, así que compilaba pero
+          // describía una fila cuyos campos no pueden tener valor. Un tipo que miente pasa
+          // la comprobación y no comprueba nada.
+          const row = data as Partial<CoachSettingsRow> & Record<string, unknown>;
+          const integrations = normalizeIntegrations(row.integrations, defaultSettings.integrations);
+
+          set({
+            settings: {
+              assistantName: row.assistant_name || defaultSettings.assistantName,
+              conversationTone: narrowTo(row.conversation_tone, CONVERSATION_TONES, defaultSettings.conversationTone),
+              sessionLanguage: narrowTo(row.session_language, SESSION_LANGUAGES, defaultSettings.sessionLanguage),
+              welcomeMessage: row.welcome_message || '',
+              salesPersistence: row.sales_persistence ?? defaultSettings.salesPersistence,
+              customInstructions: row.custom_instructions || '',
+              defaultSessionDuration: row.default_session_duration ?? defaultSettings.defaultSessionDuration,
+              // Se comprueba el tipo en vez de hacer `as string`: `database.types.ts` se genera
+              // desde la base y todavía no conoce esta columna, así que aquí llega como
+              // `unknown`. Un cast compilaría y no comprobaría nada.
+              timezone:
+                typeof row.timezone === 'string' && row.timezone.length > 0
+                  ? row.timezone
+                  : defaultSettings.timezone,
+              defaultClosingMode: narrowTo(row.default_closing_mode, CLOSING_MODES, defaultSettings.defaultClosingMode),
+              autoNotifyOnInvestment: row.auto_notify_on_investment ?? true,
+              notificationSound: row.notification_sound ?? true,
+              emailOnClosing: row.email_on_closing ?? true,
+              emailOnNewLead: row.email_on_new_lead ?? true,
+              emailOnObjection: row.email_on_objection ?? false,
+              emailDailySummary: row.email_daily_summary ?? false,
+              additionalEmails: row.additional_emails || [],
+              publicWelcomeMessage: row.public_welcome_message || '',
+              showOrgName: row.show_org_name ?? true,
+              accentColor: row.accent_color || '#D3FB52',
+              integrations: {
+                webhook: integrations.webhook || defaultSettings.integrations.webhook,
+                google_sheets: integrations.google_sheets || defaultSettings.integrations.google_sheets,
+                hubspot: integrations.hubspot || defaultSettings.integrations.hubspot,
+                notion: integrations.notion || defaultSettings.integrations.notion,
+              },
+            },
+            loading: false,
+            // Lo que se acaba de traer del servidor es, por definición, lo guardado.
+            isDirty: false,
+          });
         } catch (err) {
           set({ error: (err as Error).message, loading: false });
         }
@@ -208,11 +298,13 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
       updateSettings: (updates) => {
         set((state) => ({
           settings: { ...state.settings, ...updates },
+          isDirty: true,
         }));
       },
 
       updateIntegration: (key, data) => {
         set((state) => ({
+          isDirty: true,
           settings: {
             ...state.settings,
             integrations: {
@@ -228,10 +320,11 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
         if (!orgId) return false;
 
         try {
-          const supabase = createClient();
-          const { error } = await supabase
-            .from('coach_settings')
-            .upsert({
+          // La escritura pasa por la server action, que recompone los secretos que el
+          // cliente no cambió: el marcador `'__SAVED__'` conserva el valor almacenado. Sin
+          // eso, pulsar «Guardar» sin tocar nada sobrescribiría la credencial real con el
+          // marcador y el usuario destruiría su propia integración.
+          const result = await saveCoachSettingsAction(orgId, {
               org_id: orgId,
               assistant_name: settings.assistantName,
               conversation_tone: settings.conversationTone,
@@ -240,6 +333,7 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               sales_persistence: settings.salesPersistence,
               custom_instructions: settings.customInstructions,
               default_session_duration: settings.defaultSessionDuration,
+              timezone: settings.timezone,
               default_closing_mode: settings.defaultClosingMode,
               auto_notify_on_investment: settings.autoNotifyOnInvestment,
               notification_sound: settings.notificationSound,
@@ -252,9 +346,14 @@ export const useCoachSettingsStore = create<CoachSettingsState>()(
               show_org_name: settings.showOrgName,
               accent_color: settings.accentColor,
               integrations: settings.integrations,
-            }, { onConflict: 'org_id' });
+          });
 
-          if (error) throw error;
+          if (!result.success) {
+            set({ error: result.error ?? 'No se pudo guardar la configuración' });
+            return false;
+          }
+
+          set({ isDirty: false });
           return true;
         } catch (err) {
           set({ error: (err as Error).message });

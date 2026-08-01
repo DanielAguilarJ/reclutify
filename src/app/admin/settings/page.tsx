@@ -9,16 +9,15 @@ import { useWebhookStore } from '@/store/webhookStore';
 import { dictionaries } from '@/lib/i18n';
 import { createClient } from '@/utils/supabase/client';
 import type { PlanTier } from '@/lib/stripe';
+import { getOrgBillingSummary, type OrgBillingSummary } from '@/app/actions/billing';
 
 // ─── Subscription card ────────────────────────────────────────────────────────
-interface OrgSubscription {
-  plan_tier: PlanTier;
-  subscription_status: string;
-  subscription_period_end: string | null;
-  billing_interval: string | null;
-  stripe_customer_id: string | null;
-  stripe_subscription_id: string | null;
-}
+//
+// El estado de facturación ya NO se lee desde el navegador. La tabla
+// `organizations` tenía lectura abierta a `anon` (`public_company_select`), así
+// que pedir aquí `subscription_status` y los identificadores de Stripe exponía el
+// estado de suscripción de TODAS las organizaciones a cualquiera con la clave
+// anon. Ver `src/app/actions/billing.ts` y la migración `202608020002`.
 
 const PLAN_META: Record<PlanTier, { label: string; price: number; color: string; Icon: React.ElementType }> = {
   starter:    { label: 'Starter',    price: 87,  color: '#D3FB52', Icon: Zap },
@@ -27,35 +26,29 @@ const PLAN_META: Record<PlanTier, { label: string; price: number; color: string;
 };
 
 function BillingCard({ language }: { language: string }) {
-  const [sub, setSub]                 = useState<OrgSubscription | null>(null);
+  const [sub, setSub]                 = useState<OrgBillingSummary | null>(null);
   const [loading, setLoading]         = useState(true);
   const [portalLoading, setPortal]    = useState(false);
   const [checkoutTier, setCheckout]   = useState<string | null>(null);
   const es = language === 'es';
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setLoading(false); return; }
-
-      const { data: profile } = await supabase
-        .from('user_profiles')
-        .select('org_id')
-        .eq('user_id', user.id)
-        .single();
-      if (!profile?.org_id) { setLoading(false); return; }
-
-      const { data: org } = await supabase
-        .from('organizations')
-        .select('plan_tier, subscription_status, subscription_period_end, billing_interval, stripe_customer_id, stripe_subscription_id')
-        .eq('id', profile.org_id)
-        .single();
-
-      if (org) setSub(org as OrgSubscription);
+      const summary = await getOrgBillingSummary();
+      // Sin esta guarda, una navegación rápida deja un `setState` sobre un
+      // componente ya desmontado.
+      if (cancelled) return;
+      setSub(summary);
       setLoading(false);
     }
+
     load();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function openPortal() {
@@ -92,12 +85,12 @@ function BillingCard({ language }: { language: string }) {
     );
   }
 
-  const currentTier = (sub?.plan_tier ?? 'starter') as PlanTier;
+  const currentTier = (sub?.planTier ?? 'starter') as PlanTier;
   const meta        = PLAN_META[currentTier];
   const Icon        = meta.Icon;
-  const isActive    = !sub?.subscription_status || ['active','trialing'].includes(sub.subscription_status);
-  const periodEnd   = sub?.subscription_period_end
-    ? new Date(sub.subscription_period_end).toLocaleDateString(es ? 'es-MX' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  const isActive    = !sub?.subscriptionStatus || ['active','trialing'].includes(sub.subscriptionStatus);
+  const periodEnd   = sub?.subscriptionPeriodEnd
+    ? new Date(sub.subscriptionPeriodEnd).toLocaleDateString(es ? 'es-MX' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' })
     : null;
 
   return (
@@ -114,12 +107,12 @@ function BillingCard({ language }: { language: string }) {
               <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
                 isActive ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
               }`}>
-                {isActive ? (es ? 'Activo' : 'Active') : sub?.subscription_status}
+                {isActive ? (es ? 'Activo' : 'Active') : sub?.subscriptionStatus}
               </span>
             </div>
             <p className="text-sm text-muted">
               ${meta.price}/mo
-              {sub?.billing_interval === 'yearly' && (
+              {sub?.billingInterval === 'yearly' && (
                 <span className="ml-2 text-xs text-success">
                   {es ? '(facturado anual — 20% off)' : '(billed yearly — 20% off)'}
                 </span>
@@ -133,7 +126,7 @@ function BillingCard({ language }: { language: string }) {
           </div>
         </div>
 
-        {sub?.stripe_customer_id && (
+        {sub?.hasBillingAccount && (
           <button
             onClick={openPortal}
             disabled={portalLoading}
@@ -179,7 +172,7 @@ function BillingCard({ language }: { language: string }) {
         </div>
       )}
 
-      {!sub?.stripe_customer_id && (
+      {!sub?.hasBillingAccount && (
         <div className="pt-4 border-t border-border/30">
           <button
             onClick={() => upgrade('pro')}
@@ -253,10 +246,11 @@ export default function SettingsPage() {
     setTestingWebhook(true);
 
     const testPayload = {
-      webhookUrl,
-      webhookSecret,
+      // `webhookUrl` y `webhookSecret` ya NO se envían: la ruta los lee de
+      // `webhook_configs` para la organización de la sesión. Enviarlos permitía
+      // dirigir la petición del servidor a cualquier destino (SSRF) y firmar la
+      // carga con un secreto elegido por quien llamaba.
       candidateId: 'test-candidate-001',
-      roleId: 'test-role-001',
       candidateName: 'Test Candidate',
       overallScore: 82,
       recommendation: 'Strong Hire',

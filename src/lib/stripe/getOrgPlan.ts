@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
+import { createAdminClient } from '@/utils/supabase/admin';
 import type { PlanTier } from '@/lib/stripe';
 
 export interface OrgPlan {
@@ -58,11 +59,15 @@ export async function getOrgPlan(): Promise<OrgPlan> {
       .single();
     if (!profile?.org_id) return buildPlan('starter', 'trialing');
 
-    const { data: org } = await supabase
+    // Cliente de servicio: `subscription_status` ya no es legible con la clave
+    // anon (migración 202608020002 revoca la columna para anon/authenticated).
+    // La autorización la da `profile.org_id`, resuelto arriba desde el perfil del
+    // propio usuario autenticado y nunca desde la petición.
+    const { data: org } = await createAdminClient()
       .from('organizations')
       .select('plan_tier, subscription_status')
       .eq('id', profile.org_id)
-      .single();
+      .maybeSingle();
 
     const tier   = (org?.plan_tier as PlanTier) ?? 'starter';
     const status = org?.subscription_status ?? 'trialing';

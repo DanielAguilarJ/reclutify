@@ -1,29 +1,96 @@
-import { NextResponse } from 'next/server';
-import * as crypto from 'crypto';
+import { NextResponse, type NextRequest } from 'next/server';
+import * as crypto from 'node:crypto';
 
-interface TestIntegrationRequest {
-  type: 'webhook' | 'google_sheets' | 'hubspot' | 'notion';
-  config: Record<string, unknown>;
-}
+import { requireOrgMembership } from '@/lib/api/auth';
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { assertSafeOutboundUrl } from '@/lib/api/outbound-url';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import { testIntegrationRequestSchema, type TestIntegrationRequest } from '@/lib/schemas/api';
 
+/**
+ * POST /api/test-integration — prueba las integraciones del panel del asesor.
+ *
+ * QUÉ ESTABA MAL
+ * --------------
+ * La ruta no exigía sesión y su primer caso hacía esto:
+ *
+ *     const { url, secret } = config;
+ *     const response = await fetch(url, { method: 'POST', headers, body });
+ *     return { success: response.ok, message: `...Status: ${response.status}`, statusCode: response.status };
+ *
+ * Es un **SSRF completo, anónimo y con oráculo**. El servidor hacía la petición
+ * desde dentro de la red del despliegue y devolvía al llamante el código de
+ * estado y el cuerpo del error. Con eso se podía:
+ *
+ *  - Leer el servicio de metadatos de la plataforma (`169.254.169.254`), que en
+ *    varios proveedores entrega credenciales temporales de la instancia.
+ *  - Enumerar la red interna usando el estado y la latencia como señal
+ *    (`http://10.0.0.5:6379`, `http://localhost:5432`).
+ *  - Alcanzar servicios internos que autorizan por origen de red.
+ *
+ * Los otros tres casos (Google Sheets, HubSpot, Notion) no son SSRF —la URL es
+ * fija— pero sí eran **oráculos de credenciales anónimos**: permitían a cualquiera
+ * validar contra nuestro servidor si un token de HubSpot o de Notion robado sigue
+ * siendo válido, y de paso escribir filas de prueba en la hoja o la base de datos
+ * de un tercero.
+ *
+ * CÓMO SE CIERRA
+ * --------------
+ *  1. **Sesión de organización obligatoria.** El único llamante real es
+ *     `/coach/settings`, una pantalla autenticada.
+ *  2. **`assertSafeOutboundUrl`** para el caso `webhook`: exige HTTPS, puerto
+ *     estándar y que el nombre no resuelva a ningún rango no enrutable.
+ *  3. **Los cuerpos de error de los proveedores ya no se devuelven al cliente.**
+ *     Antes se interpolaban tal cual (`Error al escribir en Google Sheets:
+ *     ${appendErr}`), lo que convertía la respuesta en un canal de lectura de lo
+ *     que dijera el destino. Ahora el detalle va al log y el cliente recibe un
+ *     mensaje accionable pero sin contenido ajeno.
+ *  4. **Tope de tasa**, para que la ruta no sirva de motor de fuerza bruta.
+ */
+
+export const runtime = 'nodejs';
+export const maxDuration = 30;
+
+/** Resultado que ve el panel. */
 interface TestResult {
   success: boolean;
   message: string;
   statusCode?: number;
 }
 
-// ─── Webhook Test ───
+/** Tope de tiempo de cada llamada saliente. */
+const OUTBOUND_TIMEOUT_MS = 10_000;
 
-async function testWebhook(config: {
-  url: string;
-  secret: string;
-  events: string[];
-}): Promise<TestResult> {
-  const { url, secret } = config;
+/**
+ * Traduce un fallo de red a un mensaje para el panel.
+ *
+ * El mensaje del error se registra pero no se devuelve: en un `fetch` fallido
+ * contiene el host y el puerto del destino, que es justo la información que el
+ * oráculo de red buscaba.
+ */
+function describeNetworkFailure(error: unknown, context: string): TestResult {
+  console.warn(`${context} outbound request failed:`, error);
 
-  if (!url) {
-    return { success: false, message: 'URL del webhook es requerida.' };
+  const name = error instanceof Error ? error.name : '';
+
+  if (name === 'AbortError' || name === 'TimeoutError') {
+    return { success: false, message: 'Timeout: el destino no respondió en 10 segundos.' };
   }
+
+  return {
+    success: false,
+    message: 'No se pudo conectar con el destino. Verifica la configuración e inténtalo de nuevo.',
+  };
+}
+
+// ─── Webhook ─────────────────────────────────────────────────────────────────
+
+async function testWebhook(
+  config: Extract<TestIntegrationRequest, { type: 'webhook' }>['config'],
+): Promise<TestResult> {
+  // Se valida el destino ANTES de construir nada: un destino no permitido se
+  // rechaza sin firmar ninguna carga ni abrir ninguna conexión.
+  const { url } = await assertSafeOutboundUrl(config.url, '[test-integration/webhook]');
 
   const samplePayload = {
     event: 'test',
@@ -45,12 +112,11 @@ async function testWebhook(config: {
     'User-Agent': 'Reclutify-Webhook/1.0',
   };
 
-  if (secret) {
-    const signature = crypto
-      .createHmac('sha256', secret)
+  if (config.secret) {
+    headers['X-Webhook-Signature'] = `sha256=${crypto
+      .createHmac('sha256', config.secret)
       .update(body)
-      .digest('hex');
-    headers['X-Webhook-Signature'] = `sha256=${signature}`;
+      .digest('hex')}`;
   }
 
   try {
@@ -58,7 +124,10 @@ async function testWebhook(config: {
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(10000),
+      // Sin seguir redirecciones: un `302` hacia `http://169.254.169.254`
+      // eludiría la validación del destino, que solo se hizo sobre la URL inicial.
+      redirect: 'manual',
+      signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
     });
 
     if (response.ok) {
@@ -71,104 +140,93 @@ async function testWebhook(config: {
 
     return {
       success: false,
-      message: `El servidor respondió con status ${response.status}: ${response.statusText}`,
+      message: `El destino respondió con status ${response.status}.`,
       statusCode: response.status,
     };
-  } catch (err) {
-    const error = err as Error;
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      return { success: false, message: 'Timeout: El servidor no respondió en 10 segundos.' };
-    }
-    return { success: false, message: `Error de conexión: ${error.message}` };
+  } catch (error) {
+    return describeNetworkFailure(error, '[test-integration/webhook]');
   }
 }
 
-// ─── Google Sheets Test ───
+// ─── Google Sheets ───────────────────────────────────────────────────────────
 
-async function testGoogleSheets(config: {
-  spreadsheet_id: string;
-  credentials: string;
-  sheet_name: string;
-}): Promise<TestResult> {
-  const { spreadsheet_id, credentials, sheet_name } = config;
+async function testGoogleSheets(
+  config: Extract<TestIntegrationRequest, { type: 'google_sheets' }>['config'],
+): Promise<TestResult> {
+  let serviceAccount: { client_email?: unknown; private_key?: unknown };
 
-  if (!spreadsheet_id || !credentials) {
-    return { success: false, message: 'Spreadsheet ID y credenciales son requeridos.' };
-  }
-
-  let serviceAccount: { client_email: string; private_key: string };
   try {
-    serviceAccount = JSON.parse(credentials);
+    serviceAccount = JSON.parse(config.credentials) as typeof serviceAccount;
   } catch {
     return { success: false, message: 'Las credenciales no son un JSON válido.' };
   }
 
-  if (!serviceAccount.client_email || !serviceAccount.private_key) {
-    return { success: false, message: 'Las credenciales deben incluir client_email y private_key.' };
+  const clientEmail = typeof serviceAccount.client_email === 'string' ? serviceAccount.client_email : '';
+  const privateKey = typeof serviceAccount.private_key === 'string' ? serviceAccount.private_key : '';
+
+  if (!clientEmail || !privateKey) {
+    return {
+      success: false,
+      message: 'Las credenciales deben incluir client_email y private_key.',
+    };
   }
 
-  // Generate JWT for Google API authentication
   try {
     const now = Math.floor(Date.now() / 1000);
-    const header = Buffer.from(
-      JSON.stringify({ alg: 'RS256', typ: 'JWT' })
-    ).toString('base64url');
-
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
     const payload = Buffer.from(
       JSON.stringify({
-        iss: serviceAccount.client_email,
+        iss: clientEmail,
         scope: 'https://www.googleapis.com/auth/spreadsheets',
         aud: 'https://oauth2.googleapis.com/token',
         exp: now + 3600,
         iat: now,
-      })
+      }),
     ).toString('base64url');
 
     const signInput = `${header}.${payload}`;
-
-    // Sign with private key
     const sign = crypto.createSign('RSA-SHA256');
     sign.update(signInput);
-    const signature = sign.sign(serviceAccount.private_key, 'base64url');
+    const jwt = `${signInput}.${sign.sign(privateKey, 'base64url')}`;
 
-    const jwt = `${signInput}.${signature}`;
-
-    // Exchange JWT for access token
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
-      signal: AbortSignal.timeout(10000),
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+      signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
     });
 
     if (!tokenRes.ok) {
-      const errText = await tokenRes.text();
+      // El cuerpo de Google va al log: puede nombrar el proyecto y la cuenta de
+      // servicio, que no son datos que el panel necesite mostrar.
+      console.warn(
+        '[test-integration/google_sheets] token exchange failed:',
+        tokenRes.status,
+        await tokenRes.text().catch(() => '(unreadable)'),
+      );
+
       return {
         success: false,
-        message: `Error de autenticación con Google: ${errText}`,
+        message:
+          'Google rechazó las credenciales. Verifica que la cuenta de servicio sea válida y tenga la API de Sheets habilitada.',
         statusCode: tokenRes.status,
       };
     }
 
-    const tokenData = await tokenRes.json();
-    const accessToken = tokenData.access_token;
+    const tokenData = (await tokenRes.json()) as { access_token?: unknown };
+    const accessToken = typeof tokenData.access_token === 'string' ? tokenData.access_token : '';
 
-    // Append test row
-    const sheetName = sheet_name || 'Leads';
-    const range = `${sheetName}!A:E`;
-    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheet_id}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    if (!accessToken) {
+      return { success: false, message: 'Google no devolvió un token de acceso utilizable.' };
+    }
 
-    const testRow = {
-      values: [
-        [
-          new Date().toISOString(),
-          'Test Lead (Reclutify)',
-          'test@reclutify.com',
-          '+52 555 000 0000',
-          'PRUEBA - Puede eliminar esta fila',
-        ],
-      ],
-    };
+    const sheetName = config.sheet_name || 'Leads';
+    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      config.spreadsheet_id,
+    )}/values/${encodeURIComponent(`${sheetName}!A:E`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
     const appendRes = await fetch(appendUrl, {
       method: 'POST',
@@ -176,8 +234,18 @@ async function testGoogleSheets(config: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(testRow),
-      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({
+        values: [
+          [
+            new Date().toISOString(),
+            'Test Lead (Reclutify)',
+            'test@reclutify.com',
+            '+52 555 000 0000',
+            'PRUEBA - Puede eliminar esta fila',
+          ],
+        ],
+      }),
+      signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
     });
 
     if (appendRes.ok) {
@@ -188,36 +256,33 @@ async function testGoogleSheets(config: {
       };
     }
 
-    const appendErr = await appendRes.text();
+    console.warn(
+      '[test-integration/google_sheets] append failed:',
+      appendRes.status,
+      await appendRes.text().catch(() => '(unreadable)'),
+    );
+
     return {
       success: false,
-      message: `Error al escribir en Google Sheets: ${appendErr}`,
+      message:
+        'No se pudo escribir en la hoja. Verifica el ID del documento, el nombre de la pestaña y que la cuenta de servicio tenga permiso de edición.',
       statusCode: appendRes.status,
     };
-  } catch (err) {
-    const error = err as Error;
-    return { success: false, message: `Error: ${error.message}` };
+  } catch (error) {
+    return describeNetworkFailure(error, '[test-integration/google_sheets]');
   }
 }
 
-// ─── HubSpot Test ───
+// ─── HubSpot ─────────────────────────────────────────────────────────────────
 
-async function testHubspot(config: {
-  api_key: string;
-  pipeline_id: string;
-}): Promise<TestResult> {
-  const { api_key } = config;
-
-  if (!api_key) {
-    return { success: false, message: 'Private App Token es requerido.' };
-  }
-
+async function testHubspot(
+  config: Extract<TestIntegrationRequest, { type: 'hubspot' }>['config'],
+): Promise<TestResult> {
   try {
-    // Create a test contact
     const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${api_key}`,
+        Authorization: `Bearer ${config.api_key}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -229,21 +294,26 @@ async function testHubspot(config: {
           phone: '+52 555 000 0000',
         },
       }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
     });
 
     if (response.ok) {
-      const data = await response.json();
-      // Try to delete the test contact to keep things clean
-      try {
-        await fetch(`https://api.hubapi.com/crm/v3/objects/contacts/${data.id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${api_key}` },
-          signal: AbortSignal.timeout(5000),
-        });
-      } catch {
-        // Non-critical: test contact may remain
+      const data = (await response.json()) as { id?: unknown };
+
+      // Limpieza del contacto de prueba. Su fallo no cambia el veredicto: la
+      // conexión ya quedó demostrada.
+      if (typeof data.id === 'string') {
+        try {
+          await fetch(`https://api.hubapi.com/crm/v3/objects/contacts/${encodeURIComponent(data.id)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${config.api_key}` },
+            signal: AbortSignal.timeout(5_000),
+          });
+        } catch {
+          console.warn('[test-integration/hubspot] test contact cleanup failed');
+        }
       }
+
       return {
         success: true,
         message: 'Conexión con HubSpot exitosa. Contacto de prueba creado y eliminado.',
@@ -251,7 +321,6 @@ async function testHubspot(config: {
       };
     }
 
-    // Handle 409 conflict (contact already exists) as partial success
     if (response.status === 409) {
       return {
         success: true,
@@ -260,75 +329,66 @@ async function testHubspot(config: {
       };
     }
 
-    const errText = await response.text();
+    console.warn(
+      '[test-integration/hubspot] request failed:',
+      response.status,
+      await response.text().catch(() => '(unreadable)'),
+    );
+
     return {
       success: false,
-      message: `HubSpot respondió con error ${response.status}: ${errText}`,
+      message: `HubSpot rechazó la petición (status ${response.status}). Verifica el Private App Token y sus permisos.`,
       statusCode: response.status,
     };
-  } catch (err) {
-    const error = err as Error;
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      return { success: false, message: 'Timeout: HubSpot no respondió en 10 segundos.' };
-    }
-    return { success: false, message: `Error de conexión: ${error.message}` };
+  } catch (error) {
+    return describeNetworkFailure(error, '[test-integration/hubspot]');
   }
 }
 
-// ─── Notion Test ───
+// ─── Notion ──────────────────────────────────────────────────────────────────
 
-async function testNotion(config: {
-  token: string;
-  database_id: string;
-}): Promise<TestResult> {
-  const { token, database_id } = config;
-
-  if (!token || !database_id) {
-    return { success: false, message: 'Integration Token y Database ID son requeridos.' };
-  }
-
+async function testNotion(
+  config: Extract<TestIntegrationRequest, { type: 'notion' }>['config'],
+): Promise<TestResult> {
   try {
     const response = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${config.token}`,
         'Content-Type': 'application/json',
         'Notion-Version': '2022-06-28',
       },
       body: JSON.stringify({
-        parent: { database_id },
+        parent: { database_id: config.database_id },
         properties: {
           Name: {
-            title: [
-              {
-                text: {
-                  content: `[TEST] Reclutify - ${new Date().toISOString()}`,
-                },
-              },
-            ],
+            title: [{ text: { content: `[TEST] Reclutify - ${new Date().toISOString()}` } }],
           },
         },
       }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
     });
 
     if (response.ok) {
-      const data = await response.json();
-      // Try to archive the test page
-      try {
-        await fetch(`https://api.notion.com/v1/pages/${data.id}`, {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            'Notion-Version': '2022-06-28',
-          },
-          body: JSON.stringify({ archived: true }),
-          signal: AbortSignal.timeout(5000),
-        });
-      } catch {
-        // Non-critical: test page may remain
+      const data = (await response.json()) as { id?: unknown };
+
+      if (typeof data.id === 'string') {
+        try {
+          await fetch(`https://api.notion.com/v1/pages/${encodeURIComponent(data.id)}`, {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${config.token}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28',
+            },
+            body: JSON.stringify({ archived: true }),
+            signal: AbortSignal.timeout(5_000),
+          });
+        } catch {
+          console.warn('[test-integration/notion] test page cleanup failed');
+        }
       }
+
       return {
         success: true,
         message: 'Conexión con Notion exitosa. Página de prueba creada y archivada.',
@@ -336,60 +396,50 @@ async function testNotion(config: {
       };
     }
 
-    const errText = await response.text();
+    console.warn(
+      '[test-integration/notion] request failed:',
+      response.status,
+      await response.text().catch(() => '(unreadable)'),
+    );
+
     return {
       success: false,
-      message: `Notion respondió con error ${response.status}: ${errText}`,
+      message: `Notion rechazó la petición (status ${response.status}). Verifica el token y que la base de datos esté compartida con la integración.`,
       statusCode: response.status,
     };
-  } catch (err) {
-    const error = err as Error;
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      return { success: false, message: 'Timeout: Notion no respondió en 10 segundos.' };
-    }
-    return { success: false, message: `Error de conexión: ${error.message}` };
+  } catch (error) {
+    return describeNetworkFailure(error, '[test-integration/notion]');
   }
 }
 
-// ─── Route Handler ───
+// ─── Route handler ───────────────────────────────────────────────────────────
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const body: TestIntegrationRequest = await req.json();
-    const { type, config } = body;
+    const { orgId } = await requireOrgMembership();
 
-    if (!type || !config) {
-      return NextResponse.json(
-        { success: false, message: 'Tipo de integración y configuración son requeridos.' },
-        { status: 400 }
-      );
-    }
+    await enforceRateLimit(req, RATE_LIMITS.AI_GENERATE, orgId);
 
-    let result: TestResult;
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
 
-    switch (type) {
-      case 'webhook':
-        result = await testWebhook(config as Parameters<typeof testWebhook>[0]);
-        break;
-      case 'google_sheets':
-        result = await testGoogleSheets(config as Parameters<typeof testGoogleSheets>[0]);
-        break;
-      case 'hubspot':
-        result = await testHubspot(config as Parameters<typeof testHubspot>[0]);
-        break;
-      case 'notion':
-        result = await testNotion(config as Parameters<typeof testNotion>[0]);
-        break;
-      default:
-        result = { success: false, message: `Tipo de integración desconocido: ${type}` };
-    }
+    // La unión discriminada rechaza un `type` desconocido en la validación, así
+    // que ya no hace falta el `default` del `switch` que confirmaba qué tipos
+    // existen.
+    const body = testIntegrationRequestSchema.parse(rawBody);
+
+    const result: TestResult =
+      body.type === 'webhook'
+        ? await testWebhook(body.config)
+        : body.type === 'google_sheets'
+          ? await testGoogleSheets(body.config)
+          : body.type === 'hubspot'
+            ? await testHubspot(body.config)
+            : await testNotion(body.config);
 
     return NextResponse.json(result, { status: result.success ? 200 : 422 });
-  } catch (err) {
-    const error = err as Error;
-    return NextResponse.json(
-      { success: false, message: `Error interno: ${error.message}` },
-      { status: 500 }
-    );
+  } catch (error) {
+    return handleApiError(error, '[test-integration]');
   }
 }

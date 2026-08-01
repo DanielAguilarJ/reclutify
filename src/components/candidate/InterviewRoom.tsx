@@ -3,19 +3,28 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Clock, Mic, CheckCircle2, AlertCircle, Square } from "lucide-react";
 import { useInterviewStore } from "@/store/interviewStore";
 import { useAdminStore } from "@/store/adminStore";
 import { useAppStore } from "@/store/appStore";
 import { dictionaries } from "@/lib/i18n";
+import { accessProofRequestFields } from "@/lib/candidate-results/access-proof-contracts";
 import Logo from "@/components/ui/Logo";
 import AiOrb from "./AiOrb";
 import {
   computeInterviewPlan,
   getQuestionBudget,
 } from "@/lib/interviewTimingEngine";
+import {
+  deriveInterviewFlags,
+  describeRejectedEvent,
+  initialInterviewPhase,
+  interviewReducer,
+  type InterviewEndReason,
+  type InterviewEvent,
+} from "@/lib/interview/machine";
 
 export default function InterviewRoom({
   roleId,
@@ -35,13 +44,10 @@ export default function InterviewRoom({
     addTranscriptEntry,
     timerSeconds,
     setTimerSeconds,
-    isAiSpeaking,
     setIsAiSpeaking,
     currentSubtitle,
     setCurrentSubtitle,
-    isRecording,
     setIsRecording,
-    isProcessing,
     setIsProcessing,
     setPhase,
     candidate,
@@ -57,12 +63,107 @@ export default function InterviewRoom({
   const activeInterviewMode = currentRole?.interviewMode || interviewMode || 'restricted';
   const isInternalInterview = activeInterviewMode === 'internal';
 
+  // ─── Estado de la entrevista ───
+  //
+  // Un solo valor con forma de unión discriminada, en lugar de los cuatro booleanos
+  // independientes que había (`isAiSpeaking`, `isRecording`, `isProcessing`,
+  // `isTranscribing`). Cuatro booleanos son dieciséis combinaciones y solo cinco significan
+  // algo: las otras once incluyen «Zara habla con el micrófono abierto», que hacía que el
+  // reconocedor transcribiera la voz de Zara y la enviara al modelo como respuesta del
+  // candidato.
+  //
+  // El razonamiento completo y la tabla de transiciones están en
+  // `src/lib/interview/machine.ts`, con 42 pruebas.
+  const [phase, rawDispatch] = useReducer(interviewReducer, initialInterviewPhase);
+
+  // Las banderas se DERIVAN del estado, así que no pueden contradecirse. Conservan los
+  // nombres anteriores para que el JSX y las guardas no cambien en el mismo commit que
+  // introduce la máquina.
+  const {
+    hasStarted,
+    isAiSpeaking,
+    isRecording,
+    isTranscribing,
+    isProcessing,
+    isProcessingSlow: processingTooLong,
+    canStartTurn,
+    canFinishTurn,
+  } = deriveInterviewFlags(phase);
+
+  // El estado actual también en un ref, para que los manejadores de eventos y los
+  // temporizadores lo lean sin quedar capturados en una clausura obsoleta.
+  const phaseRef = useRef(phase);
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
+  /**
+   * Despacha un evento y REGISTRA los rechazos.
+   *
+   * El reductor devuelve la misma referencia cuando el evento no corresponde al estado, así
+   * que el rechazo se detecta comparando identidad. Registrarlo es lo que convierte «el
+   * candidato pulsó hablar mientras Zara hablaba» de una carrera silenciosa en una línea con
+   * la que se puede depurar la queja de un candidato concreto.
+   */
+  const dispatch = useCallback((event: InterviewEvent) => {
+    const current = phaseRef.current;
+    const next = interviewReducer(current, event);
+
+    if (next === current) {
+      console.warn(describeRejectedEvent(current, event));
+      return;
+    }
+
+    // El ref se adelanta al renderizado A PROPÓSITO.
+    //
+    // Sin esta línea, dos despachos en la misma tarea leían el mismo `phaseRef` —que solo se
+    // actualiza en un efecto, después del renderizado— así que el segundo se comparaba contra
+    // un estado obsoleto y podía rechazarse siendo válido. Y ocurre de verdad:
+    // `finishCandidateTurn` despacha `CANDIDATE_TURN_SUBMITTED` y `completeCandidateTurn`
+    // puede despachar `TRANSCRIPTION_EMPTY` en el mismo turno del bucle de eventos.
+    //
+    // El efecto de abajo se queda como red: reasigna el mismo valor tras el renderizado.
+    phaseRef.current = next;
+    rawDispatch(event);
+  }, []);
+
+  // El store conserva sus banderas porque forman parte de su API pública, pero pasan a ser
+  // una PROYECCIÓN de la máquina en lugar de una segunda fuente de verdad: se escriben en un
+  // solo sitio, derivadas del estado.
+  useEffect(() => {
+    setIsAiSpeaking(isAiSpeaking);
+    setIsRecording(isRecording);
+    setIsProcessing(isProcessing);
+  }, [isAiSpeaking, isRecording, isProcessing, setIsAiSpeaking, setIsRecording, setIsProcessing]);
+
+  /**
+   * Credenciales que acreditan esta entrevista ante las rutas de IA.
+   *
+   * `/api/chat`, `/api/evaluate` y `/api/upload-video` ya no aceptan peticiones
+   * anónimas: exigen `roleId` más la prueba de acceso (token del ticket o
+   * `public_token` del enlace general), la misma que `/api/candidate-results`
+   * pedía desde antes.
+   *
+   * Se lee del store con `getState()` en el momento de cada petición, no de una
+   * dependencia del render: en el flujo del enlace público la prueba se guarda
+   * después del montaje del componente, así que capturarla en una constante del
+   * cuerpo del render dejaría fuera al primer turno.
+   */
+  const interviewCredentials = useCallback(
+    (): Record<string, string> => ({
+      roleId,
+      ...accessProofRequestFields(useInterviewStore.getState().accessProof),
+    }),
+    [roleId],
+  );
+
   const { language } = useAppStore();
   const { candidates, addCandidate, updateCandidate } = useAdminStore();
   const t = dictionaries[language];
   const langCode = language === "es" ? "es-ES" : "en-US";
 
-  const [hasStarted, setHasStarted] = useState(false);
+  // `hasStarted`, `isTranscribing` y `processingTooLong` se DERIVAN de la máquina de
+  // estados: eran tres `useState` que podían contradecir a los otros cuatro booleanos.
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
@@ -109,9 +210,7 @@ export default function InterviewRoom({
   );
   // Mutex to prevent concurrent SpeechRecognition restart attempts
   const restartingRef = useRef<boolean>(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
   const [speechInputError, setSpeechInputError] = useState<string | null>(null);
-  const [processingTooLong, setProcessingTooLong] = useState(false);
   const processingTimerRef = useRef<NodeJS.Timeout | null>(null);
   // Tracks whether the native recognition object is actually running. The
   // watchdog can recover it, but only during a turn explicitly opened by the user.
@@ -259,7 +358,8 @@ export default function InterviewRoom({
         content: closingMsg,
         timestamp: Date.now(),
       });
-      speakText(closingMsg).then(() => endInterview());
+      // Cierre por reloj: el motivo lo distingue del cierre normal en el informe.
+      speakText(closingMsg).then(() => endInterview("time-exhausted"));
     }
   }, [timerSeconds, hasStarted, allTopicsCovered]);
 
@@ -282,8 +382,7 @@ export default function InterviewRoom({
   // freeze permanently a few questions into a topic ("ya no escucha").
   const createRecognitionInstance = useCallback(() => {
     const SpeechRecognitionCtor =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
+      window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) return null;
 
     const rec = new SpeechRecognitionCtor();
@@ -334,8 +433,9 @@ export default function InterviewRoom({
       if (fatalErrors.includes(event.error)) {
         candidateTurnActiveRef.current = false;
         candidateTurnSubmissionPendingRef.current = false;
-        setIsRecording(false);
-        setIsTranscribing(false);
+        // El turno se abandona sin resultado: el control vuelve al candidato en vez de
+        // dejar el micrófono marcado como abierto.
+        dispatch({ type: "TURN_ABORTED" });
         setSpeechInputError(
           language === "es"
             ? "No se pudo usar el reconocimiento de voz. Revisa el permiso del micrófono e inténtalo de nuevo."
@@ -406,9 +506,11 @@ export default function InterviewRoom({
         if (!fresh) return;
         recognitionRef.current = fresh;
         fresh.start();
-        setIsRecording(true);
-      } catch (e) {
-        // Already started or other error — ignore, the watchdog below will retry
+        // Sin `setIsRecording(true)`: el estado ya es `listening` y reiniciar la instancia
+        // del reconocedor no lo cambia. Antes hacía falta porque un camino de error podía
+        // haber puesto el booleano en `false` dejándolo inconsistente con la realidad.
+      } catch {
+        // Ya estaba arrancado, o el navegador lo rechazó. El vigilante reintenta.
       }
     }, 500);
   }, [createRecognitionInstance]);
@@ -562,9 +664,10 @@ export default function InterviewRoom({
         content: rephraseMsg,
         timestamp: Date.now(),
       });
+      // `speakText` despacha SPEECH_STARTED y SPEECH_ENDED, que sacan el estado de
+      // `processing` y lo devuelven a `awaitingCandidate`.
       await speakText(rephraseMsg);
       processingLockRef.current = false;
-      setIsProcessing(false);
       return;
     }
 
@@ -616,14 +719,19 @@ export default function InterviewRoom({
     }
 
     setCurrentSubtitle("");
-    setIsRecording(false);
-    setIsProcessing(true);
+    // `finishCandidateTurn` ya dejó el estado en `transcribing`; aquí se confirma que hay
+    // texto que enviar y se pasa a `processing`.
+    dispatch({ type: "TRANSCRIPTION_SETTLED", at: Date.now() });
 
-    // BUG 2 FIX: Detect if processing takes too long (>15s) — show retry option
-    setProcessingTooLong(false);
+    // Espera larga: a los 15 s la interfaz avisa de que está tardando más de lo normal.
+    //
+    // Ya no hace falta poner la bandera en `false` al empezar: es un campo del estado
+    // `processing`, así que nace en `false` con cada turno nuevo. Antes era un `useState`
+    // aparte que había que recordar reiniciar, y olvidarlo dejaba el aviso pegado en la
+    // pantalla durante los turnos siguientes.
     if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
     processingTimerRef.current = setTimeout(() => {
-      setProcessingTooLong(true);
+      dispatch({ type: "PROCESSING_SLOW" });
     }, 15000);
 
     // Stop recognition while processing
@@ -670,7 +778,8 @@ export default function InterviewRoom({
         console.log(
           `[Frontend Guard] Hard limit reached: ${zaraQsInTopic}/${maxQuestionsHardLimit} — forcing advance`,
         );
-        setIsProcessing(false);
+        // El estado sale de `processing` por el `speakText` de cualquiera de las dos
+        // ramas de abajo.
         if (freshIsLastTopic) {
           const closingMsg =
             language === "es"
@@ -724,6 +833,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: freshCurrentTopic?.label || "",
           allTopics,
           cvData: candidate?.cvData || null,
@@ -842,9 +952,19 @@ export default function InterviewRoom({
       });
       await speakText(errorMsg);
     } finally {
-      setIsProcessing(false);
+      // Red de seguridad. Todos los caminos de salida de este manejador pasan por
+      // `speakText`, que devuelve el estado a `awaitingCandidate`, así que en el camino
+      // normal esto es un no-op. Existe para que un camino nuevo que se olvide de hablar no
+      // deje la entrevista atascada en `processing` con el botón deshabilitado y el
+      // candidato sin poder continuar.
+      // Cubre `processing` Y `transcribing`. Solo `processing` era insuficiente: los caminos
+      // de reformulación y de callejón sin salida responden desde `transcribing` sin pasar por
+      // el modelo, y si alguno de ellos fallara antes de hablar, el estado se quedaría ahí.
+      const stuckStatus = phaseRef.current.status;
+      if (stuckStatus === "processing" || stuckStatus === "transcribing") {
+        dispatch({ type: "TURN_ABORTED" });
+      }
       processingLockRef.current = false;
-      setProcessingTooLong(false);
       if (processingTimerRef.current) {
         clearTimeout(processingTimerRef.current);
         processingTimerRef.current = null;
@@ -876,9 +996,11 @@ export default function InterviewRoom({
     utteranceBufferRef.current = "";
     candidateInterimRef.current = "";
     setCurrentSubtitle("");
-    setIsTranscribing(false);
 
     if (fullUtterance.length < 2) {
+      // Nada utilizable: el turno vuelve al candidato en vez de gastar una llamada al
+      // modelo con una cadena vacía, que produciría una pregunta desconectada.
+      dispatch({ type: "TRANSCRIPTION_EMPTY" });
       setSpeechInputError(
         language === "es"
           ? "No alcanzamos a escuchar una respuesta. Pulsa el botón e inténtalo de nuevo; tu turno no avanzó."
@@ -928,11 +1050,15 @@ export default function InterviewRoom({
       }
       recognitionRef.current = fresh;
       fresh.start();
-      setIsRecording(true);
+      dispatch({ type: "CANDIDATE_TURN_STARTED", at: Date.now() });
     } catch (error) {
       console.error("Could not start the candidate's voice turn:", error);
       candidateTurnActiveRef.current = false;
-      setIsRecording(false);
+      // Sin `setIsRecording(false)`: el `dispatch` de arriba no llegó a ejecutarse, así que
+      // el estado sigue en `awaitingCandidate` y no hay nada que revertir. Antes había que
+      // deshacer el booleano a mano porque se ponía ANTES de saber si el reconocedor
+      // arrancaba, y si el orden se invertía quedaba pegado en `true`.
+      dispatch({ type: "TURN_ABORTED" });
       setSpeechInputError(
         language === "es"
           ? "Tu navegador no pudo iniciar el reconocimiento de voz. Revisa el permiso del micrófono e inténtalo de nuevo."
@@ -946,8 +1072,7 @@ export default function InterviewRoom({
 
     candidateTurnActiveRef.current = false;
     candidateTurnSubmissionPendingRef.current = true;
-    setIsRecording(false);
-    setIsTranscribing(true);
+    dispatch({ type: "CANDIDATE_TURN_SUBMITTED" });
 
     // Some browsers deliver the last final recognition result only after stop().
     // onend submits immediately; this timeout is a fallback for broken onend events.
@@ -1005,6 +1130,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: freshCurrentTopic?.label || "",
           allTopics,
           cvData: candidate?.cvData || null,
@@ -1111,9 +1237,14 @@ export default function InterviewRoom({
       streamRef.current = stream;
       setMediaError(null);
 
-      // Media acquired successfully — NOW transition to interview UI
-      setHasStarted(true);
-      setIsAiSpeaking(true);
+      // Permisos concedidos: la entrevista pasa a `preparing`.
+      //
+      // Antes esto era `setHasStarted(true); setIsAiSpeaking(true);`, y el segundo era
+      // PREMATURO: Zara todavía no hablaba —la petición del saludo ni había salido— así que
+      // la interfaz mostraba el orbe hablando sobre silencio. `preparing` es ese intervalo,
+      // y su valor real es que el botón de hablar NO está habilitado durante él: antes lo
+      // estaba, y un clic temprano iniciaba el turno del candidato antes del saludo.
+      dispatch({ type: "START" });
       interviewActiveRef.current = true; // Enable auto-restart for SpeechRecognition
 
       // Try to attach immediately if ref is already mounted
@@ -1214,6 +1345,16 @@ export default function InterviewRoom({
     }
 
     // Start timer
+    //
+    // La guarda no es defensa hipotética: `startInterview` la dispara un `onClick`, y
+    // un doble clic —o un re-render que vuelva a montar el botón— la invocaba dos
+    // veces. La segunda llamada SOBRESCRIBÍA `timerRef.current`, así que el primer
+    // `setInterval` quedaba corriendo sin referencia: nadie podía pararlo, ni
+    // `endInterview` ni el cleanup del desmontaje. El síntoma es un temporizador que
+    // avanza al doble de velocidad y una entrevista que entra en periodo de gracia a
+    // mitad de su duración real.
+    if (timerRef.current) clearInterval(timerRef.current);
+
     timerRef.current = setInterval(() => {
       setTimerSeconds((prev) => prev + 1);
     }, 1000);
@@ -1233,6 +1374,7 @@ export default function InterviewRoom({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...interviewCredentials(),
           currentTopic: topics[0]?.label || "",
           allTopics: allTopicsPayload,
           cvData: candidate?.cvData || null,
@@ -1316,8 +1458,9 @@ export default function InterviewRoom({
       speakingRef.current = true;
 
       candidateTurnActiveRef.current = false;
-      setIsRecording(false);
-      setIsAiSpeaking(true);
+      // Una sola transición donde antes había dos asignaciones: entre ellas existía un
+      // renderizado en el que la interfaz mostraba el micrófono abierto Y a Zara hablando.
+      dispatch({ type: "SPEECH_STARTED", text });
       setCurrentSubtitle(text);
       if (recognitionRef.current) {
         try {
@@ -1346,11 +1489,12 @@ export default function InterviewRoom({
           ttsTimeoutRef.current = null;
         }
         speakingRef.current = false;
-        setIsAiSpeaking(false);
+        dispatch({ type: "SPEECH_ENDED" });
         setCurrentSubtitle("");
-        // The microphone remains closed. The candidate decides when to open
-        // the next turn after Zara has completely finished speaking.
-        setIsRecording(false);
+        // El micrófono sigue cerrado: `SPEECH_ENDED` deja el estado en
+        // `awaitingCandidate`, que es precisamente «Zara calló y el candidato decide cuándo
+        // hablar». Antes hacía falta la asignación explícita porque el booleano podía haber
+        // quedado en `true` por otro camino.
         resolve();
       };
 
@@ -1511,7 +1655,14 @@ export default function InterviewRoom({
     }
   };
 
-  const endInterview = () => {
+  /**
+   * Cierra la entrevista.
+   *
+   * El motivo va al informe, así que se distingue: un cierre por tiempo agotado no debe
+   * quedar registrado como «el candidato la cortó». Por defecto `'completed'`, que es el
+   * caso de las cinco llamadas que ocurren cuando Zara emite `[END_INTERVIEW]`.
+   */
+  const endInterview = (endReason: InterviewEndReason = "completed") => {
     interviewActiveRef.current = false;
     candidateTurnActiveRef.current = false;
     candidateTurnSubmissionPendingRef.current = false;
@@ -1551,11 +1702,8 @@ export default function InterviewRoom({
     processingLockRef.current = false;
     utteranceBufferRef.current = "";
     candidateInterimRef.current = "";
-    setIsAiSpeaking(false);
-    setIsProcessing(false);
-    setIsRecording(false);
-    setIsTranscribing(false);
-    setProcessingTooLong(false);
+    // Un solo evento donde antes había tres asignaciones que podían quedarse a medias.
+    dispatch({ type: "END", reason: endReason });
     if (processingTimerRef.current) {
       clearTimeout(processingTimerRef.current);
       processingTimerRef.current = null;
@@ -1610,14 +1758,23 @@ export default function InterviewRoom({
         localStorage.setItem("tempVideoUrl", localUrl);
 
         try {
-          const filename = `recording-${sessionId || Date.now()}.webm`;
           const contentType = "video/webm";
 
           // Step 1 – ask the API for a presigned PUT URL (tiny JSON, well within Vercel limits)
+          //
+          // `filename` ya NO se envía: la ruta derivaba la clave del objeto de ese
+          // campo sin comprobar nada, así que era escritura arbitraria en el
+          // bucket. Ahora se declara a qué entrevista pertenece la grabación y el
+          // servidor construye la ruta con el `orgId` que acredita la credencial.
           const presignRes = await fetch("/api/upload-video", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename, contentType }),
+            body: JSON.stringify({
+              ...interviewCredentials(),
+              resultId: publicResultId || sessionId || `session-${Date.now()}`,
+              extension: "webm",
+              contentType,
+            }),
           });
 
           if (!presignRes.ok) {
@@ -1676,12 +1833,39 @@ export default function InterviewRoom({
   };
 
   // Cleanup
+  //
+  // QUÉ FALTABA AQUÍ
+  // ----------------
+  // Este cleanup limpiaba temporizadores, reconocimiento de voz, `AudioContext` y la
+  // URL de objeto del audio, pero NO detenía dos cosas:
+  //
+  //  1. `streamRef.current` — las pistas de cámara y micrófono.
+  //  2. `mediaRecorderRef.current` — la grabación en curso.
+  //
+  // Solo las detenía `endInterview()`. Es decir: si el componente se desmontaba por
+  // NAVEGACIÓN —el candidato pulsa atrás, cierra la pestaña de la entrevista, o React
+  // lo desmonta por un error de un ancestro— las pistas quedaban vivas. El síntoma
+  // visible es el LED de la cámara encendido después de salir de la entrevista, y el
+  // real es que seguimos capturando cámara y micrófono de alguien que ya se fue de la
+  // pantalla. Para una aplicación que graba entrevistas, eso no es una fuga de memoria:
+  // es un problema de privacidad.
+  //
+  // POR QUÉ AQUÍ SE DETIENE LA GRABACIÓN «EN DURO» Y EN `endInterview` NO
+  // ---------------------------------------------------------------------
+  // `endInterview` instala un `onstop` que sube el vídeo a R2 antes de avanzar de fase,
+  // así que ahí la grabadora tiene que terminar su ciclo. En el desmontaje no hay nadie
+  // a quien entregar el resultado —el componente ya no existe y el store se resetea—,
+  // así que lo correcto es cortar: se quita el `onstop` para no lanzar una subida
+  // huérfana y se detiene.
   useEffect(() => {
     return () => {
       interviewActiveRef.current = false;
       candidateTurnActiveRef.current = false;
       candidateTurnSubmissionPendingRef.current = false;
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       if (ttsTimeoutRef.current) clearTimeout(ttsTimeoutRef.current);
       if (candidateTurnSubmissionTimerRef.current)
         clearTimeout(candidateTurnSubmissionTimerRef.current);
@@ -1694,9 +1878,59 @@ export default function InterviewRoom({
           recognitionRef.current.onend = null;
           recognitionRef.current.onerror = null;
           recognitionRef.current.stop();
-        } catch (e) {}
+        } catch {
+          // `stop()` lanza si el reconocimiento ya estaba parado. Es el estado que
+          // queremos, así que no hay nada que hacer con el error.
+        }
       }
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
+
+      // El elemento de audio de Zara: si no se pausa, el turno en curso sigue
+      // sonando después de salir de la pantalla.
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+          // Vaciar `src` es lo que hace que el navegador suelte el buffer; solo
+          // pausar deja el audio decodificado en memoria.
+          audioRef.current.src = '';
+        } catch {
+          // Un elemento ya descartado por el navegador lanza aquí; da igual.
+        }
+        audioRef.current = null;
+      }
+
+      // Grabación: se corta sin subir, por el motivo explicado arriba.
+      if (mediaRecorderRef.current) {
+        try {
+          mediaRecorderRef.current.onstop = null;
+          mediaRecorderRef.current.ondataavailable = null;
+          if (mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
+        } catch {
+          // Idem: una grabadora ya inactiva lanza al pararla.
+        }
+        mediaRecorderRef.current = null;
+      }
+      // Los fragmentos grabados pueden ser decenas de megabytes de vídeo. Sin esto
+      // quedan retenidos hasta que el recolector alcance el componente entero.
+      recordedChunksRef.current = [];
+
+      // Cámara y micrófono. Es la corrección que importa.
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
+      // Compartición de pantalla del modo restringido. Vive en el store, así que se
+      // lee con `getState()`: capturarla como dependencia del efecto haría que el
+      // cleanup se ejecutara cada vez que cambia, deteniendo la captura a mitad de la
+      // entrevista.
+      const activeScreenStream = useInterviewStore.getState().screenStream;
+      if (activeScreenStream) {
+        activeScreenStream.getTracks().forEach((track) => track.stop());
+      }
+
       // Release AudioContext and any lingering TTS object URL on unmount.
       if (audioCtxRef.current) {
         audioCtxRef.current.close().catch(() => {});
@@ -1779,7 +2013,10 @@ export default function InterviewRoom({
         {hasStarted ? (
           <div className="flex items-center gap-4">
             <button
-              onClick={endInterview}
+              type="button"
+              // Se envuelve en una lambda para no pasar el evento del ratón como motivo, y
+              // para registrar que fue el candidato quien la cortó: ese motivo va al informe.
+              onClick={() => endInterview("candidate-ended")}
               className="px-3 py-1.5 rounded-full text-xs font-medium text-danger bg-danger/10 hover:bg-danger/20 transition-colors cursor-pointer"
             >
               {language === "es" ? "Terminar Anticipadamente" : "End Early"}
@@ -2049,14 +2286,26 @@ export default function InterviewRoom({
               <div className="flex flex-col items-start gap-2 mb-3">
                 <button
                   type="button"
-                  onClick={isRecording ? finishCandidateTurn : startCandidateTurn}
-                  disabled={!isRecording && (isAiSpeaking || isProcessing || isTranscribing)}
+                  onClick={canFinishTurn ? finishCandidateTurn : startCandidateTurn}
+                  // La habilitación sale de la MÁQUINA, no de una expresión con cuatro
+                  // booleanos.
+                  //
+                  // La fórmula anterior era `!isRecording && (isAiSpeaking || isProcessing ||
+                  // isTranscribing)` negada, y tenía un hueco que encontró una revisión
+                  // independiente: durante `preparing` —permisos concedidos, saludo en camino—
+                  // los cuatro booleanos son `false`, así que el botón salía HABILITADO. Un
+                  // clic ahí abría el micrófono físicamente y el `dispatch` se rechazaba, con
+                  // lo que el micrófono quedaba abierto sin que el estado lo reflejara.
+                  //
+                  // `canStartTurn` es verdadero solo en `awaitingCandidate`, que es la
+                  // definición de «Zara calló y te toca». No hay hueco posible.
+                  disabled={!canStartTurn && !canFinishTurn}
                   className={`min-w-[250px] inline-flex items-center justify-center gap-3 px-6 py-3.5 rounded-full text-sm font-semibold text-white shadow-lg transition-all focus:outline-none focus-visible:ring-4 cursor-pointer disabled:cursor-not-allowed disabled:shadow-none ${
-                    isRecording
+                    canFinishTurn
                       ? "bg-danger hover:bg-danger/90 shadow-danger/20 focus-visible:ring-danger/20"
-                      : isAiSpeaking || isProcessing || isTranscribing
-                        ? "bg-slate-400/70"
-                        : "bg-primary hover:bg-primary-hover shadow-primary/25 focus-visible:ring-primary/20"
+                      : canStartTurn
+                        ? "bg-primary hover:bg-primary-hover shadow-primary/25 focus-visible:ring-primary/20"
+                        : "bg-slate-400/70"
                   }`}
                   aria-pressed={isRecording}
                 >
@@ -2117,11 +2366,31 @@ export default function InterviewRoom({
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
+                    // El estado de la entrevista se comunicaba SOLO con color y
+                    // animación: un punto rojo que pulsa para «grabando», un círculo que
+                    // gira para «procesando». Para quien usa lector de pantalla eso no
+                    // existe, así que no había forma de saber si el micrófono estaba
+                    // abierto ni si el sistema estaba esperando — en una entrevista de
+                    // trabajo grabada.
+                    //
+                    // `role="status"` con `aria-live="polite"` hace que el lector anuncie
+                    // cada cambio de texto. `polite` y no `assertive` a propósito: los
+                    // estados cambian varias veces por turno y `assertive` interrumpiría
+                    // la lectura de la pregunta de Zara, que es lo que el candidato
+                    // necesita oír.
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
                     className="self-start flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-black/[0.04]"
                   >
                     {isTranscribing && !isProcessing && !isAiSpeaking ? (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+                        <div
+                          className="w-2 h-2 rounded-full bg-warning animate-pulse"
+                          // El punto es decorativo: el texto de al lado ya dice el estado,
+                          // y anunciarlo añadiría ruido sin información.
+                          aria-hidden="true"
+                        />
                         <span className="text-xs font-semibold text-warning uppercase tracking-wider">
                           {language === "es"
                             ? "Transcribiendo..."
@@ -2130,14 +2399,14 @@ export default function InterviewRoom({
                       </>
                     ) : isRecording ? (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-danger animate-pulse" />
+                        <div className="w-2 h-2 rounded-full bg-danger animate-pulse" aria-hidden="true" />
                         <span className="text-xs font-semibold text-danger uppercase tracking-wider">
                           {t.recordingPill}
                         </span>
                       </>
                     ) : isProcessing ? (
                       <>
-                        <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                        <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" aria-hidden="true" />
                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
                           {processingTooLong
                             ? language === "es"
@@ -2148,7 +2417,7 @@ export default function InterviewRoom({
                       </>
                     ) : (
                       <>
-                        <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                        <div className="w-2 h-2 rounded-full bg-primary animate-pulse" aria-hidden="true" />
                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
                           {t.waitingPill}
                         </span>

@@ -1,4 +1,3 @@
-import {ClerkProvider} from "@clerk/nextjs";
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import PostHogProvider from "@/components/PostHogProvider";
@@ -175,13 +174,26 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased`}
       >
-        <ClerkProvider>
-          <PostHogProvider>
-          <ToastProvider>
-          {children}
-          </ToastProvider>
-          </PostHogProvider>
-        </ClerkProvider>
+        {/*
+          `ClerkProvider` envolvía toda la aplicación, pero la autenticación de este
+          producto es Supabase de principio a fin: `/login` usa
+          `supabase.auth.signInWithPassword`, el middleware valida con
+          `supabase.auth.getUser()` y cada ruta comprueba la sesión de Supabase.
+
+          Clerk no autenticaba nada. Mantenerlo tenía tres costes: el paquete en el
+          bundle del cliente, un proveedor en el árbol de React de cada página, y
+          —el que importa— DOS sistemas de autenticación aparentes en el código,
+          que es exactamente la clase de ambigüedad que hace que una revisión de
+          seguridad mire el sitio equivocado.
+
+          Se retira junto a las dos rutas muertas que lo usaban
+          (`/sign-in/[[...sign-in]]` y `/sign-up/[[...sign-up]]`, que renderizaban
+          widgets de Clerk sin configurar) y la entrada `/__clerk/(.*)` del
+          `matcher` del middleware.
+        */}
+        <PostHogProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </PostHogProvider>
       </body>
     </html>
   );

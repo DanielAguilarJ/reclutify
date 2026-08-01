@@ -96,7 +96,7 @@ export default async function CompanyPage({ params }: { params: Promise<{ slug: 
             <p className="text-sm text-muted text-center py-8">No open positions at the moment.</p>
           ) : (
             <div className="space-y-3">
-              {jobs.map((job: any) => (
+              {jobs.map((job) => (
                 <Link key={job.id} href={`/career-fair/${job.id}`}
                   className="block p-4 rounded-xl border border-border/50 hover:border-primary/30 transition-colors">
                   <p className="text-sm font-semibold text-foreground">{job.title}</p>

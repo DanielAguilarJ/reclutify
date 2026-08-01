@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Share2, MapPin, Briefcase, DollarSign, Building2, Check, ExternalLink } from 'lucide-react';
 import type { JobListing } from '@/types/jobs';
 import ApplyForm from './ApplyForm';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface JobDetailModalProps {
   job: JobListing;
@@ -29,6 +30,13 @@ function JobDescription({ text }: { text: string }) {
 }
 
 export default function JobDetailModal({ job, isOpen, onClose }: JobDetailModalProps) {
+  // Trampa de foco, cierre con Escape, `role="dialog"` y devolución del foco al cerrar.
+  // Ver `src/hooks/useModalDialog.ts`: este modal no tenía ninguna de las cuatro.
+  //
+  // El fondo y el diálogo son hermanos, no anidados, así que el cierre por clic en el
+  // fondo se queda en `onClose` directo: `onBackdropClick` comprueba
+  // `target === currentTarget`, que aquí siempre es cierto porque el fondo no tiene hijos.
+  const { containerRef, dialogProps } = useModalDialog({ isOpen, onClose });
   const [showApplyForm, setShowApplyForm] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
@@ -76,6 +84,9 @@ export default function JobDetailModal({ job, isOpen, onClose }: JobDetailModalP
               md:w-full md:max-w-2xl md:max-h-[85vh] z-50
               bg-[#111822] border border-white/10 rounded-2xl shadow-[0_20px_80px_rgba(0,0,0,0.6)]
               flex flex-col overflow-hidden"
+            ref={containerRef}
+            {...dialogProps}
+            aria-labelledby="job-detail-modal-title"
           >
             {/* Header */}
             <div className="flex items-start justify-between p-6 border-b border-white/[0.06] shrink-0">
@@ -96,7 +107,7 @@ export default function JobDetailModal({ job, isOpen, onClose }: JobDetailModalP
                 )}
 
                 <div className="min-w-0">
-                  <h2 className="text-xl font-bold text-white leading-tight">{job.title}</h2>
+                  <h2 id="job-detail-modal-title" className="text-xl font-bold text-white leading-tight">{job.title}</h2>
                   <div className="flex items-center gap-1.5 mt-1">
                     <Building2 className="h-3.5 w-3.5 text-white/40" />
                     <span className="text-sm text-white/50">{orgName}</span>
@@ -106,17 +117,20 @@ export default function JobDetailModal({ job, isOpen, onClose }: JobDetailModalP
 
               <div className="flex items-center gap-2 shrink-0 ml-4">
                 <button
+                  type="button"
                   onClick={handleShare}
                   className="p-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white/40 hover:text-white transition-all"
-                  title="Copiar enlace"
+                  aria-label={linkCopied ? 'Enlace copiado' : 'Copiar enlace'}
                 >
-                  {linkCopied ? <Check className="h-4 w-4 text-emerald-400" /> : <Share2 className="h-4 w-4" />}
+                  {linkCopied ? <Check className="h-4 w-4 text-emerald-400" aria-hidden="true" /> : <Share2 className="h-4 w-4" aria-hidden="true" />}
                 </button>
                 <button
+                  type="button"
                   onClick={onClose}
+                  aria-label="Cerrar"
                   className="p-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white/40 hover:text-white transition-all"
                 >
-                  <X className="h-4 w-4" />
+                  <X className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
             </div>

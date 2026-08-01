@@ -1,8 +1,9 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useId } from 'react';
 import { Bell } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useAppStore } from '@/store/appStore';
+import { useDisclosure } from '@/hooks/useDisclosure';
 import Link from 'next/link';
 
 interface Notification {
@@ -11,11 +12,20 @@ interface Notification {
 }
 
 export function NotificationBell({ userId }: { userId: string }) {
+  // Identificador único de esta instancia, para el nombre del canal de Realtime.
+  //
+  // El nombre era estático, así que dos instancias montadas a la vez —o el doble montaje
+  // del modo estricto de React en desarrollo— pedían el MISMO canal y la segunda
+  // suscripción no se establecía. El síntoma es una lista que deja de actualizarse en
+  // tiempo real, sin ningún error. `useId` da un valor estable por instancia.
+  const channelId = useId();
+
   const { language } = useAppStore();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [isOpen, setIsOpen] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
+  // Apertura, cierre con Escape, clic fuera y `aria-expanded`, en un solo hook. El clic
+  // fuera se hacía a mano con un `mousedown` propio y no cubría el cierre con teclado.
+  const { isOpen, close, triggerProps, panelProps } = useDisclosure();
 
   useEffect(() => {
     const supabase = createClient();
@@ -25,17 +35,12 @@ export function NotificationBell({ userId }: { userId: string }) {
       if (data) { setNotifications(data); setUnreadCount(data.filter((n: Notification) => !n.read).length); }
     };
     fetch();
-    const channel = supabase.channel('notif-rt')
+    const channel = supabase.channel(`notif-rt-${channelId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
         (payload) => { const n = payload.new as Notification; setNotifications(prev => [n, ...prev.slice(0, 19)]); setUnreadCount(prev => prev + 1); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [userId]);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (panelRef.current && !panelRef.current.contains(e.target as Node)) setIsOpen(false); };
-    document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
-  }, []);
+  }, [userId, channelId]);
 
   const markAllRead = async () => {
     const supabase = createClient();
@@ -55,8 +60,17 @@ export function NotificationBell({ userId }: { userId: string }) {
     return '/feed';
   };
 
+  // `Date.now()` se lee UNA vez al montar en lugar de en cada render.
+  //
+  // Llamarlo durante el render hace que el mismo componente produzca marcas
+  // distintas en el servidor y en el cliente, lo que rompe la hidratación de
+  // React con un aviso de contenido no coincidente. Anclarlo también evita que
+  // la lista de avisos cambie de texto en re-renderizados que no tienen nada que
+  // ver con el tiempo.
+  const [now] = useState(() => Date.now());
+
   const timeAgo = (d: string) => {
-    const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
+    const s = Math.floor((now - new Date(d).getTime()) / 1000);
     if (s < 60) return language === 'es' ? 'ahora' : 'now';
     const m = Math.floor(s / 60); if (m < 60) return `${m}m`;
     const h = Math.floor(m / 60); if (h < 24) return `${h}h`;
@@ -64,17 +78,40 @@ export function NotificationBell({ userId }: { userId: string }) {
   };
 
   return (
-    <div className="relative" ref={panelRef}>
-      <button onClick={() => setIsOpen(!isOpen)} className="relative p-2 rounded-lg text-muted hover:text-foreground hover:bg-muted/10 transition-colors">
-        <Bell className="h-5 w-5" />
+    <div className="relative">
+      {/* `aria-expanded` y `aria-controls` los pone `triggerProps`. Sin ellos el lector de
+          pantalla anunciaba «botón» sin decir si el panel está abierto, así que no había
+          forma de saber si pulsarlo abre o cierra. Ver `src/hooks/useDisclosure.ts`. */}
+      <button
+        {...triggerProps}
+        aria-label={
+          unreadCount > 0
+            ? language === 'es'
+              ? `Notificaciones, ${unreadCount} sin leer`
+              : `Notifications, ${unreadCount} unread`
+            : language === 'es'
+              ? 'Notificaciones'
+              : 'Notifications'
+        }
+        className="relative p-2 rounded-lg text-muted hover:text-foreground hover:bg-muted/10 transition-colors"
+      >
+        <Bell className="h-5 w-5" aria-hidden="true" />
+        {/* El contador ya está en el `aria-label` del botón, así que aquí es decorativo:
+            anunciarlo dos veces solo añade ruido. */}
         {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-danger text-white text-[10px] font-bold px-1">
+          <span
+            aria-hidden="true"
+            className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-danger text-white text-[10px] font-bold px-1"
+          >
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
       </button>
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 max-h-[480px] bg-card rounded-xl border border-border shadow-xl overflow-hidden z-50">
+        <div
+          {...panelProps}
+          className="absolute right-0 top-full mt-2 w-80 max-h-[480px] bg-card rounded-xl border border-border shadow-xl overflow-hidden z-50"
+        >
           <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
             <h3 className="text-sm font-semibold text-foreground">{language === 'es' ? 'Notificaciones' : 'Notifications'}</h3>
             {unreadCount > 0 && (
@@ -87,7 +124,7 @@ export function NotificationBell({ userId }: { userId: string }) {
             {notifications.length === 0 ? (
               <div className="py-12 text-center"><Bell className="h-8 w-8 text-muted/30 mx-auto mb-2" /><p className="text-xs text-muted">{language === 'es' ? 'Sin notificaciones' : 'No notifications'}</p></div>
             ) : notifications.map((n) => (
-              <Link key={n.id} href={link(n)} onClick={() => setIsOpen(false)}
+              <Link key={n.id} href={link(n)} onClick={close}
                 className={`flex items-start gap-3 px-4 py-3 hover:bg-muted/5 transition-colors border-b border-border/20 ${!n.read ? 'bg-primary/5' : ''}`}>
                 <span className="text-lg mt-0.5">{icon(n.type)}</span>
                 <div className="flex-1 min-w-0">

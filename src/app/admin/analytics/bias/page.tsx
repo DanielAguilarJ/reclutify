@@ -5,7 +5,7 @@ import { useAdminStore } from '@/store/adminStore';
 import type { BiasFlag } from '@/types';
 import { useAppStore } from '@/store/appStore';
 import { ShieldAlert, Info, TrendingDown, AlertTriangle, ShieldCheck, Users, Clock, Zap } from 'lucide-react';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from '@/components/admin/charts';
 
 export default function BiasAnalyticsPage() {
   const { candidates, roles } = useAdminStore();

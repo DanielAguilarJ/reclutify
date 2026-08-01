@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sparkles, X, Plus, Loader2, GraduationCap, BookOpen,
@@ -78,6 +80,7 @@ export default function CreateCoursePage() {
 
   // ─── UI states ───
   const [loading, setLoading] = useState(false);
+  const savingRef = useRef(false);
   const [generating, setGenerating] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -113,6 +116,37 @@ export default function CreateCoursePage() {
       }
 
       const data = result.data;
+
+      // EL AUTORRELLENADO REEMPLAZA TRECE CAMPOS. SE PIDE PERMISO PRIMERO.
+      //
+      // Antes se aplicaba directamente: quien hubiera escrito cinco objetivos, tres módulos y dos
+      // planes a mano y subiera después un documento con dos objetivos y un módulo, perdía lo suyo
+      // y se quedaba con lo del documento. El aviso «Revisa y ajusta los datos antes de guardar»
+      // aparecía DESPUÉS, cuando ya no había nada que revisar.
+      //
+      // Se compara contra el contenido, no contra un indicador de «tocado»: lo que importa es si
+      // hay trabajo que perder.
+      const hasContent =
+        name.trim().length > 0 ||
+        description.trim().length > 0 ||
+        targetAudience.trim().length > 0 ||
+        objectives.length > 0 ||
+        benefits.length > 0 ||
+        testimonials.length > 0 ||
+        urgencyHooks.length > 0 ||
+        modules.length > 0 ||
+        plans.length > 0 ||
+        objections.length > 0;
+
+      if (hasContent) {
+        const proceed = confirm(
+          'El documento reemplazará los datos que ya tienes en el formulario.\n\n¿Continuar?',
+        );
+        if (!proceed) {
+          setUploadSummary(null);
+          return;
+        }
+      }
 
       // Auto-fill all form fields with extracted data
       if (data.name) setName(data.name);
@@ -165,7 +199,24 @@ export default function CreateCoursePage() {
     } finally {
       setUploadLoading(false);
     }
-  }, []);
+    // Las dependencias son las que lee `hasContent`. Con `[]` el callback capturaba los valores
+    // del primer renderizado —todos vacíos— así que la confirmación no se mostraba nunca y el
+    // documento seguía machacando el trabajo del usuario en silencio.
+    //
+    // Que el callback cambie de identidad no importa aquí: solo se pasa al `input` de archivo y a
+    // la zona de arrastre, no a nada memoizado por identidad.
+  }, [
+    name,
+    description,
+    targetAudience,
+    objectives.length,
+    benefits.length,
+    testimonials.length,
+    urgencyHooks.length,
+    modules.length,
+    plans.length,
+    objections.length,
+  ]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -294,6 +345,10 @@ export default function CreateCoursePage() {
   // ─── Save Course ───
   const handleSave = async (generatedTopics?: unknown[]) => {
     if (!name.trim()) return;
+    // Guarda de reentrada, además del `disabled` del botón: `handleGenerateTopics` llama aquí
+    // directamente, y entre ese momento y el siguiente renderizado el botón todavía está activo.
+    if (savingRef.current) return;
+    savingRef.current = true;
     setLoading(true);
 
     try {
@@ -367,11 +422,23 @@ export default function CreateCoursePage() {
     } catch (error) {
       console.error('Failed to save course:', error);
     } finally {
+      savingRef.current = false;
       setLoading(false);
     }
   };
 
   const canSave = name.trim().length > 0;
+
+  // Aviso al recargar o cerrar la pestaña. Este formulario junta objetivos, módulos, planes,
+  // testimonios y objeciones: es el más largo del producto.
+  useUnsavedChangesWarning(
+    !success &&
+      (name.trim().length > 0 ||
+        description.trim().length > 0 ||
+        objectives.length > 0 ||
+        modules.length > 0 ||
+        plans.length > 0),
+  );
 
   return (
     <div>

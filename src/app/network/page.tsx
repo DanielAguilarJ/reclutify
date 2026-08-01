@@ -5,6 +5,8 @@ import { getPendingRequests, getMyConnections } from '@/app/actions/connections'
 import { getMyProfile } from '@/app/actions/profile';
 import { ConnectionButton } from '@/components/network/ConnectionButton';
 import AppNavbar from '@/components/ui/AppNavbar';
+import Link from 'next/link';
+import { Avatar } from '@/components/ui/Avatar';
 
 export const metadata: Metadata = {
   title: 'Mi Red — Reclutify',
@@ -50,15 +52,7 @@ export default async function NetworkPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {pendingRequests.map((req) => (
                 <div key={req.id} className="bg-card rounded-2xl p-5 shadow-sm border border-border flex flex-col items-center text-center">
-                  <div className="w-16 h-16 rounded-full overflow-hidden bg-surface mb-3">
-                    {req.profile.avatar_url ? (
-                      <img src={req.profile.avatar_url} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-xl font-bold text-white bg-primary">
-                        {req.profile.full_name.charAt(0)}
-                      </div>
-                    )}
-                  </div>
+                  <Avatar src={req.profile.avatar_url} name={req.profile.full_name} size={64} decorative className="mb-3" />
                   <a href={`/profile/${req.profile.username}`} className="font-semibold text-foreground hover:text-primary transition-colors">
                     {req.profile.full_name}
                   </a>
@@ -91,9 +85,9 @@ export default async function NetworkPage() {
               <p className="text-sm text-muted mb-4">
                 Explora perfiles y envía solicitudes de conexión para ampliar tu red.
               </p>
-              <a href="/career-fair" className="inline-flex px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all">
+              <Link href="/career-fair" className="inline-flex px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all">
                 Explorar vacantes
-              </a>
+              </Link>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -102,13 +96,7 @@ export default async function NetworkPage() {
                   <div className="flex items-center gap-3">
                     <a href={`/profile/${conn.profile.username}`}
                       className="shrink-0 w-12 h-12 rounded-full overflow-hidden bg-surface">
-                      {conn.profile.avatar_url ? (
-                        <img src={conn.profile.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-lg font-bold text-white bg-primary">
-                          {conn.profile.full_name.charAt(0)}
-                        </div>
-                      )}
+                      <Avatar src={conn.profile.avatar_url} name={conn.profile.full_name} size={48} decorative />
                     </a>
                     <div className="flex-1 min-w-0">
                       <a href={`/profile/${conn.profile.username}`}

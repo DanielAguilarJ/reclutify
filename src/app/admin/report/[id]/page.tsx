@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { use, useState } from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
@@ -30,8 +31,24 @@ import { useAdminStore } from '@/store/adminStore';
 import { useAppStore } from '@/store/appStore';
 import ScoreGauge from '@/components/admin/ScoreGauge';
 import TopicScoreBar from '@/components/admin/TopicScoreBar';
-import PDFExportButton from '@/components/admin/ScorecardPDF';
+// `@react-pdf/renderer` pesa ~300 KB comprimido y solo se necesita cuando el
+// reclutador pulsa «exportar». Con el import estático, cada apertura de un informe
+// lo descargaba y evaluaba aunque nadie exportara nada. `ssr: false` porque la
+// librería genera el PDF en el navegador.
+const PDFExportButton = dynamic(() => import('@/components/admin/ScorecardPDF'), {
+  ssr: false,
+  loading: () => (
+    <span className="text-xs text-muted" role="status">
+      Preparando exportación…
+    </span>
+  ),
+});
 import HireModal from '@/components/admin/HireModal';
+import {
+  classifyConfidence,
+  readConfidence,
+  UNMEASURED_CONFIDENCE_PLOT_VALUE,
+} from '@/lib/candidate-results/sentiment';
 
 export default function ReportPage({
   params,
@@ -639,13 +656,25 @@ export default function ReportPage({
               const chartH = height - padding * 2;
               const step = sentimentEntries.length > 1 ? chartW / (sentimentEntries.length - 1) : chartW;
 
-              const points = sentimentEntries.map((e, i) => ({
-                x: padding + (sentimentEntries.length > 1 ? i * step : chartW / 2),
-                y: padding + chartH - (((e.sentiment?.confidence || 50) / 100) * chartH),
-                confidence: e.sentiment?.confidence || 50,
-                evasion: e.sentiment?.evasion || false,
-                signals: e.sentiment?.keySignals || [],
-              }));
+              const points = sentimentEntries.map((e, i) => {
+                // `readConfidence` distingue «midió 0» de «no midió». Con el `|| 50` anterior, un
+                // 0 medido —el candidato no mostró ninguna seguridad— se pintaba en el punto
+                // medio, así que aparecía sereno; y la lista de abajo lo marcaba en rojo con el
+                // mismo dato.
+                const measured = readConfidence(e.sentiment);
+
+                return {
+                  x: padding + (sentimentEntries.length > 1 ? i * step : chartW / 2),
+                  y:
+                    padding +
+                    chartH -
+                    (((measured ?? UNMEASURED_CONFIDENCE_PLOT_VALUE) / 100) * chartH),
+                  confidence: measured,
+                  isMeasured: measured !== null,
+                  evasion: e.sentiment?.evasion || false,
+                  signals: e.sentiment?.keySignals || [],
+                };
+              });
 
               const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
               const areaD = `${pathD} L ${points[points.length - 1].x} ${padding + chartH} L ${points[0].x} ${padding + chartH} Z`;
@@ -670,7 +699,17 @@ export default function ReportPage({
                     {/* Data points */}
                     {points.map((p, i) => (
                       <g key={i}>
-                        <circle cx={p.x} cy={p.y} r="4" fill={p.evasion ? '#ef4444' : '#3b4cca'} stroke="white" strokeWidth="2" />
+                        <circle
+                          cx={p.x}
+                          cy={p.y}
+                          r="4"
+                          // Hueco si no hubo medición: la línea sigue continua para que la
+                          // gráfica se lea, pero el punto no se disfraza de dato.
+                          fill={p.isMeasured ? (p.evasion ? '#ef4444' : '#3b4cca') : 'white'}
+                          stroke={p.isMeasured ? 'white' : '#9ca3af'}
+                          strokeWidth="2"
+                          strokeDasharray={p.isMeasured ? undefined : '2,2'}
+                        />
                         <text x={p.x} y={padding + chartH + 16} textAnchor="middle" fontSize="8" fill="#6b7280">Q{i + 1}</text>
                       </g>
                     ))}
@@ -707,13 +746,34 @@ export default function ReportPage({
                 <div key={idx} className="flex items-start gap-3 p-3 rounded-xl bg-background border border-border/30">
                   <div className="flex items-center gap-1 shrink-0">
                     <span className="text-xs font-semibold text-muted">Q{idx + 1}</span>
-                    <div className={`ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      (entry.sentiment?.confidence || 0) >= 70 ? 'bg-success/10 text-success' :
-                      (entry.sentiment?.confidence || 0) >= 40 ? 'bg-warning/10 text-warning' :
-                      'bg-danger/10 text-danger'
-                    }`}>
-                      {entry.sentiment?.confidence || 0}%
-                    </div>
+                    {(() => {
+                      // El `|| 0` anterior pintaba una confianza NO MEDIDA como «0 %» en rojo,
+                      // que se lee como evasión máxima. Un hueco en los datos no es una señal
+                      // contra el candidato, así que ahora se distingue.
+                      const value = readConfidence(entry.sentiment);
+                      const level = classifyConfidence(value);
+                      const styles = {
+                        high: 'bg-success/10 text-success',
+                        medium: 'bg-warning/10 text-warning',
+                        low: 'bg-danger/10 text-danger',
+                        unmeasured: 'bg-muted/10 text-muted',
+                      } as const;
+
+                      return (
+                        <div
+                          className={`ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${styles[level]}`}
+                          title={
+                            level === 'unmeasured'
+                              ? language === 'es'
+                                ? 'El modelo no midió la confianza en esta respuesta'
+                                : 'The model did not measure confidence for this answer'
+                              : undefined
+                          }
+                        >
+                          {value === null ? (language === 'es' ? 's/d' : 'n/a') : `${value}%`}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-foreground/80 truncate">{entry.content.substring(0, 100)}...</p>

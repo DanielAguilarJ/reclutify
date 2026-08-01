@@ -2,16 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 
+import { ApiError, handleApiError } from '@/lib/api/errors';
+import { enforceRateLimit, RATE_LIMITS } from '@/lib/api/rate-limit';
+import { infoNotifyRequestSchema } from '@/lib/schemas/api';
+
+/**
+ * POST /api/info-notify — avisa al asesor de que un cliente está listo para el cierre.
+ *
+ * La dispara la sesión informativa pública, así que no exige sesión por el mismo
+ * motivo que `/api/info-chat`. Lo que se añade es el tope de tasa: la ruta INSERTA en
+ * `coach_notifications` y envía correo con Resend, así que sin tope un bucle llena la
+ * bandeja del asesor y consume la cuota del proveedor de correo.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const { sessionId, orgId, clientName, courseName, type } = await req.json();
+    await enforceRateLimit(req, RATE_LIMITS.EMAIL_SEND, null);
 
-    if (!sessionId || !orgId || !type) {
-      return NextResponse.json(
-        { error: 'Missing required fields: sessionId, orgId, type' },
-        { status: 400 }
-      );
-    }
+    const rawBody: unknown = await req.json().catch(() => {
+      throw ApiError.badRequest('Request body must be valid JSON');
+    });
+
+    const { sessionId, orgId, clientName, courseName, type } =
+      infoNotifyRequestSchema.parse(rawBody);
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

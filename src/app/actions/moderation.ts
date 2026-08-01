@@ -27,7 +27,7 @@ export async function getBlockedUsers() {
   if (!user) return { blocked: [] };
   const { data } = await supabase.from('user_blocks').select('blocked_id, created_at').eq('blocker_id', user.id);
   if (!data || data.length === 0) return { blocked: [] };
-  const ids = data.map((b: any) => b.blocked_id);
+  const ids = data.map((b) => b.blocked_id);
   const { data: profiles } = await supabase.from('profiles').select('user_id, username, full_name, avatar_url').in('user_id', ids);
   return { blocked: profiles || [] };
 }

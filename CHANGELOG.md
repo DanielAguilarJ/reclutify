@@ -1,5 +1,55 @@
 # CHANGELOG
 
+## [Unreleased] — Producción: módulo social y claves foráneas
+
+Trabajo hecho con acceso real al proyecto de Supabase de producción, no solo sobre el código.
+
+### Vulnerabilidad crítica cerrada en vivo
+
+- **`interview_telemetry` seguía expuesta en producción.** La migración `202608020002` del
+  repositorio elimina la política `USING (true)` que permitía a cualquier cuenta autenticada
+  leer el CV extraído de todos los candidatos — pero nunca se había desplegado. Verificado en
+  vivo antes de corregirlo: 624 filas de 55 candidatos distintos expuestas. Cerrado con un
+  `DROP POLICY` mínimo y reversible; la escritura no se vio afectada porque usa `service_role`.
+
+### Módulo social desplegado
+
+- **14 tablas nuevas** que existían en el código pero no en la base real: `notifications`,
+  `endorsements`, `saved_jobs`, `job_applications`, `follows`, `hashtags`, `post_hashtags`,
+  `groups`, `group_members`, `group_posts`, `user_blocks`, `reports`, `poll_votes`,
+  `api_rate_limits`. De 36 a 50 tablas, todas con RLS activo.
+- Aplicadas con las correcciones de seguridad ya conocidas incorporadas desde el origen: sin las
+  políticas de escritura abiertas de `hashtags`/`post_hashtags`, sin `notif_insert` sin acotar.
+- Efecto colateral corregido en el momento: las seis funciones `SECURITY DEFINER` nuevas (los
+  disparadores de notificación, hashtags y contadores) quedaron ejecutables por
+  `/rest/v1/rpc/<nombre>` para cualquier cuenta — el linter de seguridad de Supabase lo marcó
+  inmediatamente después de crearlas. Se revocó `EXECUTE` de las seis: ninguna se invoca por RPC
+  desde el código.
+- Corregido el diagnóstico de la sección 6.3 del reporte: seis tablas que se creían ausentes
+  (`courses`, `coach_settings`, `info_sessions`, etc.) ya existían con políticas correctas —
+  se habían creado por una vía distinta al historial de migraciones del repositorio.
+
+### Claves foráneas: acción `ON DELETE` explícita en las 10 que no la tenían
+
+Verificado con `pg_constraint` contra el esquema real, no por nombre de archivo: 10 columnas en
+`NO ACTION`, no 7 como se había estimado antes de tener acceso.
+
+- `RESTRICT` explícito en las cinco que apuntan a `organizations` (`roles`, `candidates`,
+  `interviews`, `user_profiles`, `job_applications`): borrar una organización con datos reales
+  queda bloqueado a propósito, no por accidente de no haber declarado nada.
+- `RESTRICT` en `candidates.role_id` e `interviews.candidate_id`: un candidato y su entrevista
+  son historial de contratación, no se borran en cascada al retirar la vacante.
+- `RESTRICT` en `user_profiles.user_id`, distinto del resto de tablas que apuntan a
+  `auth.users` con `CASCADE`: borrar una cuenta no debe borrar en silencio su membresía de
+  organización.
+- `SET NULL` en `team_invitations.invited_by`: la única de las diez donde bloquear el borrado
+  sería el error.
+- `RESTRICT` en `groups.creator_id` (no `SET NULL`, la columna es `NOT NULL`; queda documentado
+  como deuda pendiente).
+- El único borrador de puestos en el código (`removeRole`) ahora distingue el código Postgres
+  `23503` y muestra un mensaje que explica que el puesto tiene candidatos, en vez del aviso
+  genérico de sincronización. 3 pruebas nuevas.
+
 ## [Unreleased] — Auditoría de seguridad y refactorización
 
 Informe completo con el detalle de cada hallazgo: [`REPORTE_REFACTOR.md`](REPORTE_REFACTOR.md).

@@ -19,10 +19,14 @@ import type { Role } from '@/types';
 
 /** Controla si la escritura a Supabase falla, por prueba. */
 let writeFails = false;
+/** Código de error que debe llevar el fallo simulado, cuando `writeFails` es `true`. */
+let writeErrorCode: string | undefined;
 
 vi.mock('@/utils/supabase/client', () => ({
   createClient: () => {
-    const fail = () => ({ error: writeFails ? { message: 'boom' } : null });
+    const fail = () => ({
+      error: writeFails ? { message: 'boom', code: writeErrorCode } : null,
+    });
     return {
       auth: { getUser: async () => ({ data: { user: { id: 'u1' } }, error: null }) },
       from: () => ({
@@ -62,6 +66,7 @@ async function freshStore(initial: Role[]) {
 describe('reversión de escrituras optimistas de puestos', () => {
   beforeEach(() => {
     writeFails = false;
+    writeErrorCode = undefined;
     localStorage.clear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -185,6 +190,44 @@ describe('reversión de escrituras optimistas de puestos', () => {
       await store.getState().removeRole('no-existe');
 
       expect(store.getState().roles.map((r) => r.id)).toEqual(['r1']);
+    });
+
+    describe('el puesto tiene candidatos asociados (FK RESTRICT, migración 202608040002)', () => {
+      // `candidates.role_id → roles` se declaró ON DELETE RESTRICT: un candidato con entrevista
+      // registrada bloquea el borrado del puesto a propósito, en vez de desaparecer en cascada.
+      // Postgres devuelve el código 23503. Sin distinguirlo, el admin veía «no se pudo guardar
+      // el cambio», que no explica qué hacer para conseguir lo que quería.
+      it('muestra un mensaje que explica POR QUÉ, no el genérico de sincronización', async () => {
+        writeFails = true;
+        writeErrorCode = '23503';
+        const store = await freshStore([makeRole('r1')]);
+        await store.getState().removeRole('r1');
+
+        expect(store.getState().error).toContain('candidatos');
+        expect(store.getState().error).not.toBe(
+          'No se pudo guardar el cambio del puesto. Se ha deshecho para no mostrar algo distinto de lo guardado.',
+        );
+      });
+
+      it('el puesto se restaura igual, con el código 23503 o sin él', async () => {
+        writeFails = true;
+        writeErrorCode = '23503';
+        const store = await freshStore([makeRole('a'), makeRole('r1'), makeRole('c')]);
+        await store.getState().removeRole('r1');
+
+        expect(store.getState().roles.map((r) => r.id)).toEqual(['a', 'r1', 'c']);
+      });
+
+      it('otros códigos de error siguen mostrando el mensaje genérico', async () => {
+        writeFails = true;
+        writeErrorCode = '42501'; // violación de política RLS, no de FK.
+        const store = await freshStore([makeRole('r1')]);
+        await store.getState().removeRole('r1');
+
+        expect(store.getState().error).toBe(
+          'No se pudo guardar el cambio del puesto. Se ha deshecho para no mostrar algo distinto de lo guardado.',
+        );
+      });
     });
   });
 });

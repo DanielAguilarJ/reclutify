@@ -1173,24 +1173,73 @@ Una restricción real exige mover el informe a servidor y generar el PDF allí, 
 antes de responder. Es un cambio de arquitectura, no una condición en un `render`. Se documenta como
 decisión de producto en lugar de dejar un tope que aparente proteger.
 
-### 6.15 Claves ajenas sin `ON DELETE` y tipos de fecha incoherentes
+### 6.15 Claves ajenas sin `ON DELETE`: resuelto
 
-Una auditoría de las migraciones encontró siete tablas fundacionales cuyas claves ajenas a
-`organizations`, `roles` y `candidates` no declaran `ON DELETE`, así que quedan en `RESTRICT`
-implícito: borrar una organización o un puesto falla con un error de integridad en lugar de
-propagarse o de bloquearse con un mensaje claro. Y `groups.creator_id` apunta a `auth.users` sin
-acción, así que borrar una cuenta deja filas huérfanas.
+**Resuelto: claves foráneas sin `ON DELETE`.** Con acceso real al proyecto de Supabase se
+verificaron las 61 claves foráneas del esquema con `pg_constraint` (no por nombre de migración,
+que ya había dado un diagnóstico incompleto en 6.3). Diez tenían `NO ACTION` — nueve columnas
+distintas, ya que `user_profiles` tenía dos—, no siete: `roles.org_id`, `candidates.org_id`,
+`candidates.role_id`, `interviews.org_id`, `interviews.candidate_id`, `user_profiles.org_id`,
+`user_profiles.user_id`, `job_applications.org_id`, `team_invitations.invited_by` y
+`groups.creator_id`.
 
-Además, `interview_tickets.created_at`/`expires_at` y `candidate_results.date` son `BIGINT` con
-epoch en milisegundos mientras el resto del esquema usa `TIMESTAMPTZ`. Los dos lados son coherentes
-consigo mismos —se comprobó que no hay desajuste de unidades— pero obliga a conversiones distintas
-según la tabla.
+Se declaró explícitamente una acción en cada una (migración `202608040002`), sin dejar ninguna en
+`NO ACTION`:
 
-Ninguna de las dos cosas se ha tocado: cambiar el tipo de una columna o la acción de una clave ajena
-en tablas con datos requiere acceso al proyecto de Supabase para medir el impacto, y una migración
-mal medida ahí es de las pocas cosas de este trabajo que no serían reversibles.
+ - **`RESTRICT` en las cinco que apuntan a `organizations`** (`roles`, `candidates`, `interviews`,
+   `user_profiles`, `job_applications`). Se consideró `CASCADE` y se descartó: `organizations` es
+   la raíz del tenant, y un `CASCADE` ahí borra en cadena todos los roles, candidatos, entrevistas
+   y perfiles de una empresa sin ninguna confirmación intermedia. Se comprobó que hoy no existe
+   ninguna función que borre una organización con datos reales — los tres
+   `.from('organizations').delete()` del repositorio son rollback de una organización recién
+   creada en la misma petición, antes de que exista una fila dependiente—, así que `RESTRICT` no
+   cambia ningún comportamiento actual.
+ - **`RESTRICT` en `candidates.role_id` e `interviews.candidate_id`**: mismo criterio que ya
+   tenían `training_documents.role_id` y `training_employees.role_id` en el esquema existente. Un
+   candidato y su entrevista son historial de contratación, no un dato desechable al borrar la
+   vacante.
+ - **`RESTRICT` en `user_profiles.user_id`**, distinto del resto de tablas que apuntan a
+   `auth.users` (que usan `CASCADE` porque son contenido social del propio usuario).
+   `user_profiles` es el enrutamiento organización↔persona: permitir `CASCADE` haría que borrar
+   una cuenta de Supabase Auth borrara en silencio su membresía de organización sin que ningún
+   flujo de la aplicación lo decidiera.
+ - **`SET NULL` en `team_invitations.invited_by`**: es la única de las diez donde bloquear el
+   borrado sería el error. Si quien invitó borra su cuenta, la invitación pendiente no debe
+   impedirlo. La columna ya admitía `NULL`.
+ - **`RESTRICT` en `groups.creator_id`**, no `SET NULL`: la columna es `NOT NULL` en la definición
+   de la tabla, y relajar esa restricción es un cambio de otro alcance —afecta a qué puede mostrar
+   la interfaz de un grupo sin creador—, así que se deja fuera de esta migración. Queda como deuda
+   en 6.17.
 
-### 6.16 El aviso de cambios sin guardar no cubre la navegación interna
+El único borrador de `roles` en todo el código (`removeRole` en `adminStore.ts`) recibió un
+mensaje específico para cuando el borrado choca con la nueva restricción: antes de este cambio,
+un puesto con candidatos habría mostrado el mismo aviso genérico que cualquier otro fallo de
+sincronización, sin explicar que hay que cerrarlo en vez de borrarlo. Se distingue por el código
+Postgres `23503` (violación de clave foránea). 3 pruebas nuevas, verificadas contra una reversión
+manual del cambio.
+
+### 6.17 Pendiente: `groups.creator_id` sigue en `RESTRICT`, no en `SET NULL`
+
+Documentado como decisión deliberada en 6.15. Para pasar a `SET NULL` haría falta primero relajar
+`creator_id` a nullable, y eso cambia lo que la interfaz de un grupo puede mostrar cuando no hay
+creador (hoy ese caso es literalmente irrepresentable). Es un cambio de producto, no solo de
+esquema, y el módulo de grupos tiene cero filas en producción — no hay urgencia real.
+
+### 6.18 Tipos de fecha incoherentes: sigue pendiente
+
+`interview_tickets.created_at`/`expires_at` y `candidate_results.date` son `BIGINT` con epoch en
+milisegundos mientras el resto del esquema usa `TIMESTAMPTZ`. Se confirmó con acceso real al
+proyecto que los dos lados son coherentes consigo mismos —no hay desajuste de unidades entre lo
+que el código escribe y lo que la columna espera—, pero obliga a conversiones distintas según la
+tabla.
+
+No se ha tocado: migrar el tipo de una columna con datos (95 tickets, 103 resultados de candidato
+reales) es una operación que reescribe la tabla entera, y a diferencia de una acción de clave
+foránea —que es un cambio de metadatos reversible en el acto— una migración de tipo mal medida sí
+puede perder precisión o fallar a mitad. Se prioriza correctamente por debajo de las claves
+foráneas, que eran el riesgo de integridad más alto y ya están resueltas.
+
+### 6.19 El aviso de cambios sin guardar no cubre la navegación interna
 
 `useUnsavedChangesWarning` se apoya en `beforeunload`, que cubre recargar, cerrar la pestaña y salir
 del sitio. **No** cubre pulsar un enlace del panel, porque el App Router lo resuelve en el cliente
@@ -1213,7 +1262,7 @@ más de lo que protege.
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
 | Bugs funcionales corregidos | 40 |
-| Pruebas | 798 → **1 167** (+369); 52 → 72 archivos |
+| Pruebas | 798 → **1 171** (+373); 52 → 72 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |
@@ -1223,6 +1272,14 @@ más de lo que protege.
 | Hooks reutilizables nuevos | 7 (medios, voz, realtime, diálogo, desplegable) |
 | Modales con teclado accesible | 0 → 4 · Desplegables accesibles | 0 → 2 |
 | `<img>` nativos | 26 → 19 |
+
+**Trabajo directo en el proyecto de Supabase de producción** (con acceso real vía MCP, separado
+de las cifras de código de arriba): 1 vulnerabilidad crítica cerrada en vivo (`interview_telemetry`,
+624 filas de 55 candidatos expuestas), 14 tablas nuevas creadas (módulo social completo, 36 → 50
+tablas), 10 acciones `ON DELETE` declaradas explícitamente donde no había ninguna, 7 avisos de
+seguridad del propio linter de Supabase corregidos tras crearlos (funciones `SECURITY DEFINER`
+expuestas por RPC). Verificado en cada paso con `get_advisors` antes/después, no solo con la
+suite de pruebas local.
 | Cobertura de `src/app/actions` | 2,89 % → **17,21 %** |
 | Variables en `.env.example` | 14 → 34 |
 | Dependencias | −1 (`@clerk/nextjs`), +1 (`server-only`, antes transitiva) |

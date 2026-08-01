@@ -406,25 +406,42 @@ function restoreRemovedRole(
   set: (fn: (state: AdminState) => Partial<AdminState>) => void,
   removed: Role | undefined,
   index: number,
+  message: string = ROLE_SYNC_ERROR,
 ): void {
   if (!removed) {
-    set(() => ({ error: ROLE_SYNC_ERROR }));
+    set(() => ({ error: message }));
     return;
   }
 
   set((state: AdminState) => {
     // Si otra escritura ya lo repuso, no se duplica.
     if (state.roles.some((r) => r.id === removed.id)) {
-      return { error: ROLE_SYNC_ERROR };
+      return { error: message };
     }
 
     const roles = [...state.roles];
     roles.splice(Math.max(0, Math.min(index, roles.length)), 0, removed);
-    return { roles, error: ROLE_SYNC_ERROR };
+    return { roles, error: message };
   });
 }
 
 const ROLE_SYNC_ERROR = "No se pudo guardar el cambio del puesto. Se ha deshecho para no mostrar algo distinto de lo guardado.";
+
+/**
+ * Mensaje para cuando el borrado de un puesto choca con `candidates.role_id`.
+ *
+ * `candidates.role_id → roles` se declaró `ON DELETE RESTRICT` (migración
+ * `202608040002`): un candidato es historial de contratación y no debe desaparecer
+ * en cascada solo porque se borró la vacante. Postgres devuelve el código `23503`
+ * cuando el borrado choca con esa restricción — sin este mensaje, `ROLE_SYNC_ERROR`
+ * habría dicho «no se pudo guardar el cambio», que no explica qué hacer para
+ * conseguirlo.
+ */
+const ROLE_HAS_CANDIDATES_ERROR =
+  "No se puede eliminar este puesto: tiene candidatos con entrevista registrada. Publícalo como cerrado en vez de borrarlo si quieres retirarlo de las vacantes activas.";
+
+/** Código de Postgres para violación de clave foránea (`23503`). */
+const FOREIGN_KEY_VIOLATION_CODE = "23503";
 
 function pushToSyncQueue(
   item: Omit<SyncQueueItem, "id" | "createdAt" | "attempts">,
@@ -650,7 +667,17 @@ export const useAdminStore = create<AdminState>()((set, get) => ({
             "[AdminStore] Error eliminando rol en Supabase:",
             error,
           );
-          restoreRemovedRole(set, removed, removedIndex);
+          // `23503` es el código de Postgres para violación de clave foránea. Desde la
+          // migración `202608040002`, `candidates.role_id → roles` es `ON DELETE RESTRICT`:
+          // un candidato con entrevista registrada bloquea el borrado del puesto a propósito,
+          // en vez de desaparecer en cascada. Sin esta comprobación, el admin veía el mensaje
+          // genérico «no se pudo guardar el cambio», que no dice qué hacer para conseguirlo.
+          restoreRemovedRole(
+            set,
+            removed,
+            removedIndex,
+            error.code === FOREIGN_KEY_VIOLATION_CODE ? ROLE_HAS_CANDIDATES_ERROR : undefined,
+          );
         }
       } catch (err) {
         console.error(

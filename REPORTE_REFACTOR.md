@@ -1112,6 +1112,18 @@ y de rendimiento, no de exposición.
 `adminStore` es el de mayor peso: 682 líneas con cola de reintento en `localStorage`, mapeos
 y detección de organización. Debería delegar en un servicio.
 
+**Cobertura de stores, actualizada.** `adminStore` ya tenía pruebas de la cola de reintento y de
+la reversión de escrituras optimistas de roles. Se añadieron `coachSettingsStore` (17 pruebas:
+`isDirty` se limpia en `fetchSettings` y en un `saveSettings` con éxito, y NO se limpia cuando
+cualquiera de los dos falla; `partialize` no incluye `isDirty` ni ningún secreto de
+integraciones, solo `notificationSound`; las cuatro acciones de equipo con Supabase directo),
+`ticketStore` (9 pruebas: `syncAddTicket` devuelve un resultado con motivo para los tres fallos
+posibles —sin sesión, sin organización, escritura fallida— y ya no depende de `NODE_ENV` para
+avisar) y `trainingStore` (12 pruebas: la reversión de `sendGeneralMessage`/`sendModuleMessage`
+ante un fallo de red, aislada por módulo cuando corresponde, y la validación de forma de
+`incrementTimeSpent`). Las tres suites se verificaron revirtiendo manualmente el comportamiento
+que cada prueba afirma y confirmando que fallan.
+
 ### 6.12 Cobertura: el 70 % en `actions/` no se alcanzó
 
 **Estado real, medido con `npm run test:coverage`:**
@@ -1262,7 +1274,7 @@ más de lo que protege.
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
 | Bugs funcionales corregidos | 40 |
-| Pruebas | 798 → **1 171** (+373); 52 → 72 archivos |
+| Pruebas | 798 → **1 209** (+411); 52 → 75 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |
 | `console.log` de depuración | 29 → 0 en rutas API |

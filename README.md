@@ -245,7 +245,7 @@ src/
 ### Pruebas
 
 ```bash
-npm run test:run                                  # las 905
+npm run test:run                                  # las 1 209
 npm run test:run -- src/__tests__/middleware.test.ts   # un archivo
 npm run test:run -- -t "rechaza loopback"              # por nombre
 npm run test:coverage
@@ -283,6 +283,33 @@ Controles que aplica el código, y dónde:
 
 Al añadir un endpoint que use `createAdminClient()`, valida identidad y organización
 en el propio endpoint: RLS no interviene ahí.
+
+---
+
+## Estado de seguridad y calidad
+
+Verificado con salida de comando real, no estimado. Comandos y resultados exactos en
+[`REPORTE_REFACTOR.md`](REPORTE_REFACTOR.md).
+
+| Verificación | Resultado |
+|---|---|
+| `npm run typecheck` (`tsc --noEmit`) | 0 errores |
+| `npm run test:run` | **1 209 pruebas / 75 archivos**, todas en verde |
+| `npm run build` | Compila sin errores |
+| `npm run lint` | 0 errores; avisos preexistentes documentados en el reporte |
+| Auditoría de seguridad | Completa — 18 vulnerabilidades corregidas, 41 bugs funcionales, RLS y `ON DELETE` verificados contra el proyecto de Supabase real |
+
+Deuda conocida, deliberadamente sin resolver y documentada con su razón:
+
+| Sección | Qué falta | Por qué se dejó así |
+|---|---|---|
+| [`§6.17`](REPORTE_REFACTOR.md) | `groups.creator_id` en `RESTRICT`, no `SET NULL` | La columna es `NOT NULL`; relajarla es un cambio de qué puede mostrar la interfaz de un grupo sin creador, no solo de esquema. El módulo de grupos tiene 0 filas en producción — sin urgencia real |
+| [`§6.18`](REPORTE_REFACTOR.md) | `interview_tickets` y `candidate_results` con fechas en `BIGINT` (epoch ms) mientras el resto del esquema usa `TIMESTAMPTZ` | Ambos lados son coherentes consigo mismos, sin desajuste de unidades. Migrar el tipo con datos reales (95 tickets, 103 resultados) reescribe la tabla entera y no es reversible como un cambio de metadatos |
+| [`§6.19`](REPORTE_REFACTOR.md) | `useUnsavedChangesWarning` no cubre la navegación interna del App Router | `beforeunload` no se dispara en navegación cliente de Next; cubrirlo exigiría envolver cada `<Link>` o vigilar el historial, y las dos cosas se rompen con cada cambio del enrutador. Documentado en el propio hook |
+
+Ninguna de las tres es una vulnerabilidad activa ni un bug en producción: son
+decisiones de alcance, tomadas y registradas para no repetir la evaluación en la
+próxima ronda.
 
 ---
 

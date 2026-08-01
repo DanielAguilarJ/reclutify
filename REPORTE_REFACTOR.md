@@ -787,6 +787,23 @@ real es la de `posts`, que sí comprueba el autor.
 `jobs.toggleRolePublished` devolvía `success: true` cuando el `roleId` no era de la
 organización, así que la interfaz informaba de un cambio que no ocurrió.
 
+### 2.41 Claves inestables en las listas animadas de `create-course`
+
+Cinco de las siete listas envueltas en `AnimatePresence` de `coach/create-course/page.tsx`
+(objetivos, beneficios, testimonios, ganchos de urgencia, respuestas a objeciones) usaban
+`key={`prefijo-${i}`}`. `AnimatePresence` decide qué elemento animar de SALIDA comparando las
+claves entre un renderizado y el siguiente; con la clave atada al índice, borrar un elemento
+del medio no hace desaparecer esa clave, desplaza hacia arriba las de todos los que le siguen.
+`AnimatePresence` veía morir el ÚLTIMO índice y animaba la salida del elemento equivocado,
+mientras el que el usuario borró de verdad desaparecía sin transición.
+
+Sustituidas por una clave derivada del contenido (truncado a 40 caracteres) con el índice
+como desempate, para el caso —posible en un campo de texto libre— de dos elementos con el
+mismo contenido exacto. Las otras dos listas del componente (módulos, planes) ya usaban
+`mod.id`/`plan.id`, un UUID generado una vez al crear el elemento, y no tenían este problema:
+no se tocaron. Sin pruebas nuevas — es un efecto puramente visual de `AnimatePresence`, sin
+lógica de estado que una prueba pudiera proteger.
+
 ---
 
 ## 3. Mejoras de rendimiento
@@ -1273,7 +1290,7 @@ más de lo que protege.
 | Migraciones nuevas | 2 |
 | Rutas API endurecidas | 15 |
 | Vulnerabilidades corregidas | 18 (9 críticas, 7 altas, 2 medias) |
-| Bugs funcionales corregidos | 40 |
+| Bugs funcionales corregidos | 41 |
 | Pruebas | 798 → **1 209** (+411); 52 → 75 archivos |
 | Errores de ESLint | 42 → **0**, sobre todo `src/` (antes 22 rutas ignoradas). Avisos: 101 → 92 |
 | `any` explícitos en `src/` | 42 → 12 (los restantes, en pruebas) |

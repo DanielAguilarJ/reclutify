@@ -36,6 +36,34 @@ interface ObjectionPair {
   response: string;
 }
 
+/**
+ * Clave estable para listas de texto libre dentro de `AnimatePresence`.
+ *
+ * ANTES ERA `key={`prefijo-${i}`}` EN CINCO SITIOS DE ESTE ARCHIVO (objectives, benefits,
+ * testimonials, urgencyHooks, objections). Los otros dos bloques de `AnimatePresence` del
+ * componente —módulos y planes— ya usaban `mod.id`/`plan.id`, un UUID que se genera una vez al
+ * crear el elemento, así que no tenían este problema.
+ *
+ * `AnimatePresence` decide qué animar de SALIDA comparando las claves entre un renderizado y
+ * el siguiente. Con la clave atada al índice, borrar el elemento del medio de la lista no
+ * borra esa clave: desplaza hacia arriba las de todos los elementos que le siguen, así que
+ * `AnimatePresence` no ve un elemento desaparecer — ve que el ÚLTIMO índice deja de existir, y
+ * anima la salida del elemento equivocado mientras el que el usuario borró de verdad
+ * desaparece sin transición.
+ *
+ * La clave se deriva del contenido, truncado para no arrastrar párrafos completos al DOM, con
+ * el índice como desempate para el caso —posible en un campo de texto libre— de que dos
+ * elementos tengan exactamente el mismo contenido.
+ *
+ * @param prefix Distingue las claves entre listas distintas del mismo componente.
+ * @param content Texto del elemento. Con `ObjectionPair` se pasa `trigger` — ver la llamada.
+ * @param index Posición actual, solo como desempate ante contenido duplicado.
+ */
+function stableListKey(prefix: string, content: string, index: number): string {
+  const slug = content.trim().slice(0, 40);
+  return `${prefix}-${slug}-${index}`;
+}
+
 export default function CreateCoursePage() {
   const { addCourse } = useCoachStore();
   const { language } = useAppStore();
@@ -676,7 +704,7 @@ export default function CreateCoursePage() {
               <AnimatePresence>
                 {objectives.map((obj, i) => (
                   <motion.div
-                    key={`obj-${i}`}
+                    key={stableListKey('obj', obj, i)}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 10 }}
@@ -724,7 +752,7 @@ export default function CreateCoursePage() {
               <AnimatePresence>
                 {benefits.map((ben, i) => (
                   <motion.div
-                    key={`ben-${i}`}
+                    key={stableListKey('ben', ben, i)}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 10 }}
@@ -990,7 +1018,7 @@ export default function CreateCoursePage() {
               <AnimatePresence>
                 {testimonials.map((t, i) => (
                   <motion.div
-                    key={`test-${i}`}
+                    key={stableListKey('test', t, i)}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 10 }}
@@ -1043,7 +1071,7 @@ export default function CreateCoursePage() {
               <AnimatePresence>
                 {urgencyHooks.map((h, i) => (
                   <motion.div
-                    key={`urg-${i}`}
+                    key={stableListKey('urg', h, i)}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 10 }}
@@ -1097,7 +1125,7 @@ export default function CreateCoursePage() {
               <AnimatePresence>
                 {objections.map((obj, i) => (
                   <motion.div
-                    key={`obj-${i}`}
+                    key={stableListKey('obj', obj.trigger, i)}
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -8 }}

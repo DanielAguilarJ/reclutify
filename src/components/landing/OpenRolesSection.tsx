@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, MapPin, Briefcase, Clock, DollarSign } from 'lucide-react';
@@ -24,6 +25,15 @@ export function OpenRolesSection() {
 
   return (
     <section id="roles" className="px-6 lg:px-8 py-32 lg:py-44">
+      <div className="relative aspect-[21/9] w-full max-h-[220px] overflow-hidden rounded-2xl mb-16 lg:mb-20">
+        <Image
+          src="/openroles-separator.webp"
+          alt=""
+          fill
+          sizes="100vw"
+          className="object-cover"
+        />
+      </div>
       <div className="max-w-[1320px] mx-auto">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-16 lg:mb-20">
           <div className="max-w-[640px]">

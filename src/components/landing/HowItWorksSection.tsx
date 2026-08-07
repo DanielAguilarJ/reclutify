@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { motion } from 'framer-motion';
 
 import { useAppStore } from '@/store/appStore';
@@ -56,6 +57,7 @@ export function HowItWorksSteps() {
       desc: es
         ? 'Define los requisitos. Generamos la rúbrica de evaluación y un enlace único en dos minutos.'
         : 'Define requirements. We generate the evaluation rubric and a unique link in two minutes.',
+      image: '/howitworks-step1-invitation.webp',
     },
     {
       num: '02',
@@ -63,6 +65,7 @@ export function HowItWorksSteps() {
       desc: es
         ? 'Cada candidato entra desde su navegador, en su horario. Sin instalaciones, sin agendas, sin Zoom.'
         : 'Every candidate enters from their browser, on their schedule. No installs, no scheduling, no Zoom.',
+      image: '/howitworks-step2-interview.webp',
     },
     {
       num: '03',
@@ -70,6 +73,7 @@ export function HowItWorksSteps() {
       desc: es
         ? 'Recibe puntuaciones por tema, transcripción, video, banderas y una recomendación clara. Decide en minutos.'
         : 'Get per-topic scores, transcript, video, flags, and a clear recommendation. Decide in minutes.',
+      image: '/howitworks-step3-report.webp',
     },
   ];
 
@@ -84,6 +88,15 @@ export function HowItWorksSteps() {
           transition={{ duration: 0.6, delay: i * 0.08 }}
           className="bg-[#0a0a0a] p-10 lg:p-14"
         >
+          <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl mb-10">
+            <Image
+              src={step.image}
+              alt=""
+              fill
+              sizes="(min-width: 768px) 33vw, 100vw"
+              className="object-cover"
+            />
+          </div>
           <div className="font-serif text-[26px] text-white/60 mb-16 tracking-[0.05em]">
             {step.num}
           </div>

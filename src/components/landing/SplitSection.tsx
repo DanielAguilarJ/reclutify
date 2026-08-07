@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { ArrowUpRight } from 'lucide-react';
@@ -26,6 +27,15 @@ export function SplitHeading() {
       <h2 className="font-serif font-normal text-[40px] lg:text-[64px] leading-[1] tracking-[-0.025em] text-white mb-16 max-w-[16ch]">
         {es ? '¿Qué estás buscando?' : 'What are you looking for?'}
       </h2>
+      <div className="relative aspect-[3/2] w-full overflow-hidden rounded-2xl border border-white/[0.07] mb-16">
+        <Image
+          src="/split-section-workspace.webp"
+          alt=""
+          fill
+          sizes="(min-width: 1024px) 1200px, 100vw"
+          className="object-cover"
+        />
+      </div>
     </>
   );
 }
